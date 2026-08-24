@@ -39,6 +39,10 @@ RUN mkdir -p storage/framework/sessions \
 # Instalar dependencias de producción
 RUN composer install --no-dev --optimize-autoloader --no-interaction
 
+# Generar archivo .env base y clave criptográfica de la aplicación
+RUN if [ ! -f .env ]; then cp .env.example .env; fi \
+    && php artisan key:generate --force
+
 # Puerto por defecto (Render asigna la variable $PORT automáticamente)
 ENV PORT=8000
 EXPOSE 8000
