@@ -1,0 +1,347 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helpers ──────────────────────────────────────────────
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return signedIn() && profile().role == 'admin';
+    }
+
+    function isPos() {
+      return signedIn() && profile().role == 'pos' && profile().active == true;
+    }
+
+    function myStore() {
+      return profile().get('storeId', '');
+    }
+
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    function str(v, minLen, maxLen) {
+      return v is string && v.size() >= minLen && v.size() <= maxLen;
+    }
+
+    // ─── company (singleton) ─────────────────────────────────
+    match /company/{docId} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // ─── users ────────────────────────────────────────────────
+    match /users/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['displayName', 'email', 'role', 'storeId', 'active', 'createdAt'])
+        && request.resource.data.keys().hasAll(['displayName', 'email', 'role', 'active'])
+        && str(request.resource.data.displayName, 2, 60)
+        && str(request.resource.data.email, 5, 120)
+        && request.resource.data.role in ['admin', 'pos', 'trabajador']
+        && request.resource.data.active == true;
+
+      allow update: if (
+          isAdmin()
+          && request.resource.data.keys().hasOnly(['displayName', 'email', 'role', 'storeId', 'active'])
+          && request.resource.data.role in ['admin', 'pos', 'trabajador']
+          && request.resource.data.active is bool
+        ) || (
+          request.auth.uid == uid
+          && changedKeys().hasOnly(['displayName'])
+          && str(request.resource.data.displayName, 2, 60)
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    // ─── stores / warehouses ─────────────────────────────────
+    match /stores/{id} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['name', 'code', 'address'])
+        && str(request.resource.data.name, 2, 60)
+        && str(request.resource.data.code, 1, 12);
+      allow delete: if isAdmin();
+    }
+
+    match /warehouses/{id} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['name', 'code', 'isCentral'])
+        && str(request.resource.data.name, 2, 60)
+        && str(request.resource.data.code, 1, 12)
+        && request.resource.data.isCentral is bool;
+      allow delete: if isAdmin();
+    }
+
+    // ─── products ────────────────────────────────────────────
+    match /products/{id} {
+      allow read: if signedIn();
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasOnly(['name', 'category', 'brand', 'unit',
+          'internalCode', 'barcode', 'salePrice', 'minStock', 'locationHint',
+          'promoLabel', 'promoActive', 'sunatCode', 'active', 'updatedAt'])
+        && str(request.resource.data.name, 1, 120)
+        && str(request.resource.data.category, 1, 40)
+        && str(request.resource.data.brand, 0, 40)
+        && request.resource.data.unit in ['UN', 'KG', 'LT', 'PAQ', 'CJA', 'DOC']
+        && str(request.resource.data.internalCode, 0, 32)
+        && str(request.resource.data.barcode, 0, 64)
+        && request.resource.data.salePrice is number
+        && request.resource.data.salePrice >= 0
+        && request.resource.data.salePrice <= 999999
+        && request.resource.data.minStock is int
+        && request.resource.data.minStock >= 0
+        && request.resource.data.promoActive is bool
+        && request.resource.data.active is bool;
+      allow delete: if isAdmin();
+    }
+
+    // ─── product_stocks ──────────────────────────────────────
+    match /product_stocks/{stockId} {
+      allow read: if signedIn();
+
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['productId', 'productName', 'barcode',
+          'salePrice', 'locationType', 'locationId', 'locationName', 'quantity', 'updatedAt'])
+        && str(request.resource.data.productId, 1, 64)
+        && str(request.resource.data.productName, 1, 120)
+        && request.resource.data.locationType in ['store', 'warehouse']
+        && str(request.resource.data.locationId, 1, 64)
+        && request.resource.data.quantity is int
+        && request.resource.data.quantity >= 0;
+
+      allow update: if (
+        isAdmin()
+        && changedKeys().hasOnly(['quantity', 'updatedAt'])
+        && request.resource.data.quantity is int
+        && request.resource.data.quantity >= 0
+      ) || (
+        isPos()
+        && resource.data.locationType == 'store'
+        && resource.data.locationId == myStore()
+        && changedKeys().hasOnly(['quantity', 'updatedAt'])
+        && request.resource.data.quantity is int
+        && request.resource.data.quantity >= 0
+        && request.resource.data.quantity - resource.data.quantity >= -10000
+        && request.resource.data.quantity - resource.data.quantity <= 10000
+      );
+
+      allow delete: if isAdmin();
+    }
+
+    // ─── stock_movements (append-only) ───────────────────────
+    match /stock_movements/{id} {
+      allow read: if isAdmin() || isPos();
+      allow create: if (isAdmin() || isPos())
+        && request.resource.data.keys().hasOnly(['type', 'productId', 'productName',
+          'qty', 'fromLocationId', 'toLocationId', 'reason', 'refId',
+          'userId', 'userName', 'userStoreId', 'createdAt'])
+        && request.resource.data.type in ['venta', 'ingreso', 'transferencia', 'ajuste', 'merma', 'recepcion']
+        && str(request.resource.data.productId, 1, 64)
+        && str(request.resource.data.productName, 1, 120)
+        && request.resource.data.qty is number
+        && request.resource.data.qty != 0
+        && request.resource.data.userId == request.auth.uid
+        && str(request.resource.data.userName, 1, 60);
+      allow update, delete: if false;
+    }
+    // ─── transfers ───────────────────────────────────────────
+    match /transfers/{id} {
+      function validTransferItems(items) {
+        return items is list && items.size() >= 1 && items.size() <= 200
+          && items.all(item,
+            item.keys().hasOnly(['productId', 'name', 'qtySent', 'qtyReceived'])
+            && str(item.name, 1, 120)
+            && item.qtySent is int && item.qtySent > 0 && item.qtySent <= 100000
+            && item.qtyReceived is int && item.qtyReceived >= 0 && item.qtyReceived <= item.qtySent);
+      }
+
+      allow read: if isAdmin() || (isPos() && resource.data.toLocationId == myStore());
+
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['code', 'fromLocationId', 'fromLocationName',
+          'toLocationId', 'toLocationName', 'status', 'items',
+          'createdBy', 'createdByName', 'createdAt', 'note'])
+        && str(request.resource.data.code, 3, 24)
+        && str(request.resource.data.fromLocationId, 1, 64)
+        && str(request.resource.data.toLocationId, 1, 64)
+        && request.resource.data.fromLocationId != request.resource.data.toLocationId
+        && request.resource.data.status == 'pendiente'
+        && validTransferItems(request.resource.data.items);
+
+      // POS destino solo puede recibir (pendiente/en_transito → recibido) con cantidades ≤ enviadas
+      allow update: if (
+          isAdmin()
+          && changedKeys().hasAny(['status', 'items'])
+        ) || (
+          isPos()
+          && resource.data.toLocationId == myStore()
+          && resource.data.status in ['pendiente', 'en_transito']
+          && request.resource.data.status in ['recibido', 'en_transito']
+          && changedKeys().hasOnly(['status', 'items', 'receivedBy', 'receivedByName', 'receivedAt'])
+          && validTransferItems(request.resource.data.items)
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    // ─── replenishment_requests ──────────────────────────────
+    match /replenishment_requests/{id} {
+      allow read: if isAdmin() || (isPos() && resource.data.storeId == myStore());
+
+      allow create: if (isPos() || isAdmin())
+        && request.resource.data.keys().hasOnly(['storeId', 'storeName', 'items', 'status',
+          'createdBy', 'createdByName', 'createdAt', 'note'])
+        && (isAdmin() || request.resource.data.storeId == myStore())
+        && request.resource.data.status == 'pendiente'
+        && request.resource.data.items is list
+        && request.resource.data.items.size() >= 1
+        && request.resource.data.items.size() <= 100
+        && request.resource.data.items.all(item,
+          item.keys().hasOnly(['productId', 'name', 'currentQty', 'requestedQty'])
+          && str(item.name, 1, 120)
+          && item.requestedQty is int && item.requestedQty > 0 && item.requestedQty <= 10000);
+
+      allow update, delete: if isAdmin();
+    }
+
+    // ─── incidents ───────────────────────────────────────────
+    match /incidents/{id} {
+      allow read: if isAdmin() || (signedIn() && (resource.data.storeId == myStore() || myStore() == ''));
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['storeId', 'storeName', 'productId', 'productName',
+          'type', 'description', 'photoUrl', 'status', 'createdBy', 'createdByName', 'createdAt'])
+        && (isAdmin() || request.resource.data.get('storeId', '') == myStore())
+        && request.resource.data.type in ['danado', 'vencido', 'sin_etiqueta', 'sin_codigo', 'otro']
+        && request.resource.data.status == 'abierta'
+        && str(request.resource.data.description, 3, 500)
+        && str(request.resource.data.createdByName, 1, 60);
+
+      allow update: if isAdmin()
+        && changedKeys().hasOnly(['status', 'resolutionNote', 'resolvedBy', 'resolvedByName', 'resolvedAt']);
+
+      allow delete: if isAdmin();
+    }
+
+    // ─── sales ───────────────────────────────────────────────
+    match /sales/{id} {
+      function validClient(client) {
+        return client is map
+          && client.keys().hasOnly(['tipo', 'numero', 'nombre'])
+          && client.tipo in ['-', 'DNI', 'RUC']
+          && client.numero.matches('^[0-9-]{0,15}$')
+          && str(client.nombre, 0, 120);
+      }
+
+      function validSaleItems(items) {
+        return items is list && items.size() >= 1 && items.size() <= 200
+          && items.all(item,
+            item.keys().hasOnly(['productId', 'name', 'qty', 'unitPrice', 'total'])
+            && str(item.name, 1, 120)
+            && item.qty is number && item.qty > 0
+            && item.unitPrice is number && item.unitPrice >= 0
+            && item.total is number && item.total >= 0);
+      }
+
+      allow read: if isAdmin() || (isPos() && resource.data.storeId == myStore());
+
+      allow create: if (isPos() || isAdmin())
+        && (isAdmin() || request.resource.data.storeId == myStore())
+        && request.resource.data.keys().hasOnly(['code', 'serie', 'correlativo', 'type', 'storeId',
+          'storeName', 'userId', 'userName', 'clientDoc', 'items', 'subtotal', 'igv', 'total',
+          'paymentMethod', 'paidAmount', 'changeAmount', 'consolidated',
+          'sunatStatus', 'sunatMessage', 'status', 'cashSessionId', 'anulationRequest', 'createdAt'])
+        && str(request.resource.data.code, 5, 24)
+        && request.resource.data.type in ['boleta', 'factura']
+        && request.resource.data.paymentMethod in ['efectivo', 'tarjeta', 'yape', 'plin', 'otro']
+        && request.resource.data.sunatStatus in ['pendiente', 'aceptado', 'rechazado', 'observado', 'no_enviado']
+        && request.resource.data.consolidated is bool
+        && request.resource.data.status == 'activa'
+        && request.resource.data.subtotal is number && request.resource.data.subtotal >= 0
+        && request.resource.data.igv is number && request.resource.data.igv >= 0
+        && request.resource.data.total is number && request.resource.data.total >= 0
+        && request.resource.data.total <= 999999
+        && validSaleItems(request.resource.data.items)
+        && validClient(request.resource.data.clientDoc)
+        && (request.resource.data.anulationRequest == null);
+
+      // POS solo puede solicitar la anulación de su propia venta (una sola vez)
+      allow update: if (
+          isAdmin()
+        ) || (
+          isPos()
+          && resource.data.userId == request.auth.uid
+          && resource.data.status == 'activa'
+          && resource.data.anulationRequest == null
+          && request.resource.data.status == 'activa'
+          && changedKeys().hasOnly(['anulationRequest'])
+          && request.resource.data.get('anulationRequest', null) is map
+          && request.resource.data.anulationRequest.byUserId == request.auth.uid
+          && str(request.resource.data.anulationRequest.reason, 3, 250)
+        );
+
+      allow delete: if false;
+    }
+
+    // ─── cash_sessions ───────────────────────────────────────
+    match /cash_sessions/{id} {
+      allow read: if isAdmin() || (isPos() && resource.data.userId == request.auth.uid);
+
+      allow create: if (isPos() || isAdmin())
+        && (isAdmin() || request.resource.data.storeId == myStore())
+        && request.resource.data.keys().hasOnly(['storeId', 'userId', 'userName', 'openingAmount',
+          'closingAmount', 'expectedAmount', 'difference', 'status', 'openedAt', 'closedAt'])
+        && request.resource.data.openingAmount is number
+        && request.resource.data.openingAmount >= 0
+        && request.resource.data.status == 'abierta';
+
+      allow update: if (
+          isAdmin()
+        ) || (
+          isPos()
+          && resource.data.userId == request.auth.uid
+          && resource.data.status == 'abierta'
+          && request.resource.data.status == 'cerrada'
+          && changedKeys().hasOnly(['closingAmount', 'expectedAmount', 'difference', 'status', 'closedAt'])
+          && request.resource.data.closingAmount is number
+          && request.resource.data.closingAmount >= 0
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    // ─── clients (caché DNI/RUC) ─────────────────────────────
+    match /clients/{docId} {
+      allow read: if isAdmin() || isPos();
+      allow write: if (isAdmin() || isPos())
+        && request.resource.data.keys().hasOnly(['tipo', 'numero', 'nombre', 'direccion', 'updatedAt'])
+        && request.resource.data.tipo in ['DNI', 'RUC']
+        && request.resource.data.numero.matches('^[0-9]{8}$|^[0-9]{11}$')
+        && str(request.resource.data.nombre, 1, 150);
+    }
+
+    // ─── counters (correlativos) ─────────────────────────────
+    match /counters/{serie} {
+      allow read: if isAdmin() || isPos();
+      allow update: if (isAdmin() || isPos())
+        && changedKeys().hasOnly(['current'])
+        && request.resource.data.current is int
+        && request.resource.data.current > resource.data.current;
+      allow create, delete: if false;
+    }
+  }
+}

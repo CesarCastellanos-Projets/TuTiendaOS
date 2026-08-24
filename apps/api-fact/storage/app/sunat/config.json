@@ -1,0 +1,10 @@
+{
+    "cert_path": "C:\\Proyectos\\Denzoz_Sistema\\apps\\api-fact\\storage\\app\/sunat\/certificate.pfx",
+    "cert_password": "demo",
+    "cert_filename": "certificado_demo_sunat.pfx",
+    "entorno": "beta",
+    "ruc": "20000000001",
+    "razon_social": "EMPRESA DEMO S.A.C.",
+    "sol_user": "MODDATOS",
+    "sol_password": "MODDATOS"
+}
