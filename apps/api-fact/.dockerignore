@@ -1,0 +1,5 @@
+vendor
+.env
+.git
+storage/logs/*.log
+composer.phar

@@ -67,6 +67,9 @@ class SunatConfigHelper
 
         $configArgs = ['digest_alg' => 'sha256'];
         $possibleCnf = [
+            '/etc/ssl/openssl.cnf',
+            '/usr/lib/ssl/openssl.cnf',
+            '/etc/pki/tls/openssl.cnf',
             dirname(PHP_BINARY).'/extras/ssl/openssl.cnf',
             dirname(PHP_BINARY).'/openssl.cnf',
             'C:/xampp/apache/bin/openssl.cnf',
