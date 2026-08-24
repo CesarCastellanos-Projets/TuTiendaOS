@@ -7,16 +7,16 @@ import { connectStorageEmulator, getStorage } from 'firebase/storage';
 const env = import.meta.env;
 
 export const firebaseConfig = {
-  apiKey: env.VITE_FIREBASE_API_KEY ?? '',
-  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN ?? '',
-  projectId: env.VITE_FIREBASE_PROJECT_ID ?? '',
-  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET ?? '',
-  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID ?? '',
-  appId: env.VITE_FIREBASE_APP_ID ?? '',
-  measurementId: env.VITE_FIREBASE_MEASUREMENT_ID ?? ''
+  apiKey: env.VITE_FIREBASE_API_KEY || 'AIzaSyDh5lYWZsM1jNTEiq9mJzph1BaRkj49-tM',
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || 'denzozsaas.firebaseapp.com',
+  projectId: env.VITE_FIREBASE_PROJECT_ID || 'denzozsaas',
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || 'denzozsaas.firebasestorage.app',
+  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || '685893382879',
+  appId: env.VITE_FIREBASE_APP_ID || '1:685893382879:web:941125e771d729925cef6a',
+  measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || 'G-CGH76ZQPH0'
 };
 
-/** true solo si hay credenciales reales en .env */
+/** true solo si hay credenciales reales */
 export const firebaseReady = Boolean(
   firebaseConfig.apiKey && firebaseConfig.projectId && firebaseConfig.appId
 );
