@@ -241,7 +241,7 @@ export const DEFAULT_COMPANY: CompanyConfig = {
   umbralConsolidacion: 5,
   solUser: 'MODDATOS',
   solPassword: 'MODDATOS',
-  apiFactUrl: 'http://localhost:8000',
+  apiFactUrl: 'https://denzoz-api-fact.onrender.com',
   apiFactToken: 'cambia-este-token-largo-y-seguro',
   isDemoMode: true
 };

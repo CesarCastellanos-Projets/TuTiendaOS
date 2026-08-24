@@ -8,6 +8,7 @@ interface SunatResponse {
   message?: string;
 }
 
+export const DEFAULT_API_FACT_URL = 'https://denzoz-api-fact.onrender.com';
 export const DEFAULT_API_FACT_TOKEN = 'cambia-este-token-largo-y-seguro';
 
 export const SUNAT_DEMO_CREDENTIALS = {
@@ -20,14 +21,21 @@ export const SUNAT_DEMO_CREDENTIALS = {
   solPassword: 'MODDATOS',
   serieFactura: 'F001',
   serieBoleta: 'B001',
-  apiFactUrl: 'http://localhost:8000',
+  apiFactUrl: DEFAULT_API_FACT_URL,
   apiFactToken: DEFAULT_API_FACT_TOKEN,
   isDemoMode: true
 };
 
 export function getApiFactUrl(cfg?: CompanyConfig | null): string {
-  const url = cfg?.apiFactUrl?.trim() || (import.meta.env.VITE_API_FACT_URL as string | undefined)?.trim() || 'http://localhost:8000';
-  return url.replace(/\/$/, '');
+  const url = cfg?.apiFactUrl?.trim();
+  if (url && url !== 'http://localhost:8000' && !url.includes('localhost')) {
+    return url.replace(/\/$/, '');
+  }
+  const envUrl = (import.meta.env.VITE_API_FACT_URL as string | undefined)?.trim();
+  if (envUrl && !envUrl.includes('localhost')) {
+    return envUrl.replace(/\/$/, '');
+  }
+  return DEFAULT_API_FACT_URL;
 }
 
 export function getApiFactToken(cfg?: CompanyConfig | null): string {
