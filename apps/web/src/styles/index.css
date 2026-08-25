@@ -3,6 +3,7 @@
 @theme {
   --color-primary: #4F46E5;
   --color-primary-hover: #4338CA;
+  --color-primary-light: #EEF2FF;
   --color-surface: #F8FAFC;
   --color-surface-container: #F1F5F9;
   --color-border: #E2E8F0;
@@ -11,13 +12,14 @@
   
   --color-success: #10B981;
   --color-warning: #F59E0B;
-  --color-critical: #DC2626;
+  --color-critical: #EF4444;
 
+  --color-yape: #732282;
+  --color-plin: #00D1D2;
 
-
-  --font-display: "Geist", sans-serif;
+  --font-display: "Plus Jakarta Sans", sans-serif;
   --font-sans: "Inter", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, monospace;
 
   --breakpoint-xs: 26rem;
 }
@@ -27,7 +29,7 @@
     -webkit-tap-highlight-color: transparent;
   }
   body {
-    @apply bg-slate-50 text-slate-900 font-sans antialiased;
+    @apply bg-slate-50 text-slate-900 font-sans antialiased selection:bg-primary/20 selection:text-primary;
   }
   :focus-visible {
     outline: 2px solid var(--color-primary);
@@ -39,17 +41,17 @@
     margin: 0;
   }
   h1, h2, h3, h4, h5, h6 {
-    @apply font-display tracking-tight;
+    @apply font-display tracking-tight text-slate-900;
   }
 }
 
 @layer components {
   .price-tag {
-    @apply font-display font-bold tracking-tight text-slate-900;
+    @apply font-display font-extrabold tracking-tight text-slate-900 tabular-nums;
   }
 
   .tape {
-    @apply bg-primary;
+    @apply bg-gradient-to-r from-primary via-indigo-500 to-indigo-600;
   }
 
   .btn,
@@ -58,43 +60,66 @@
   .btn-sol,
   .btn-ghost,
   .btn-danger {
-    @apply inline-flex items-center justify-center gap-2 rounded px-4 py-2 text-sm font-semibold
-      transition-colors disabled:cursor-not-allowed disabled:opacity-50 select-none;
-    min-height: 40px;
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-display font-semibold
+      transition-all duration-150 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 select-none shadow-sm;
+    min-height: 42px;
   }
   
   .btn-primary, .btn-brand, .btn-sol {
-    @apply bg-primary text-white hover:bg-primary-hover border border-transparent;
+    @apply bg-primary text-white hover:bg-primary-hover hover:shadow-md hover:shadow-primary/20 border border-transparent;
   }
   
   .btn-ghost {
-    @apply border border-slate-200 bg-white text-slate-900 hover:bg-slate-50;
+    @apply border border-slate-200 bg-white text-slate-800 hover:bg-slate-50 hover:border-slate-300 hover:text-slate-900;
   }
   
   .btn-danger {
-    @apply border border-critical bg-white text-critical hover:bg-red-50;
+    @apply border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 hover:border-red-300;
   }
 
   .field {
-    @apply w-full rounded border border-slate-200 bg-white px-3 py-2 text-sm
-      placeholder:text-slate-400 focus:border-primary focus:ring-2 focus:ring-primary/20 focus:outline-none transition-all;
-    min-height: 40px;
+    @apply w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-sans
+      placeholder:text-slate-400 focus:border-primary focus:ring-4 focus:ring-primary/10 focus:outline-none transition-all duration-150;
+    min-height: 42px;
   }
   .label {
-    @apply mb-1.5 block text-xs font-semibold text-slate-700 font-display tracking-wide uppercase;
+    @apply mb-1.5 block text-xs font-bold text-slate-600 font-display tracking-wider uppercase;
   }
   .card {
-    @apply rounded-lg border border-slate-200 bg-white;
+    @apply rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-900/5;
+  }
+  .card-interactive {
+    @apply rounded-2xl border border-slate-200/80 bg-white shadow-sm shadow-slate-900/5 transition-all duration-200 hover:border-primary/40 hover:shadow-md hover:-translate-y-0.5 active:scale-[0.99] cursor-pointer;
   }
   .th {
-    @apply px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-slate-900 bg-slate-50 border-b border-slate-200;
+    @apply px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-700 bg-slate-50/80 border-b border-slate-200;
   }
   .td {
-    @apply px-3 py-2.5 text-sm border-b border-slate-100;
+    @apply px-4 py-3.5 text-sm border-b border-slate-100 text-slate-800;
   }
   .badge {
-    @apply inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-semibold;
+    @apply inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-bold tracking-wide;
   }
+}
+
+/* Custom laser animation for barcode scanner */
+@keyframes laser-sweep {
+  0% {
+    top: 10%;
+    opacity: 0.8;
+  }
+  50% {
+    top: 85%;
+    opacity: 1;
+  }
+  100% {
+    top: 10%;
+    opacity: 0.8;
+  }
+}
+
+.animate-laser {
+  animation: laser-sweep 2s ease-in-out infinite;
 }
 
 @media print {
@@ -111,6 +136,6 @@
     width: 76mm;
     background: white;
     color: black;
-    font-family: "IBM Plex Mono", monospace;
+    font-family: "JetBrains Mono", monospace;
   }
 }

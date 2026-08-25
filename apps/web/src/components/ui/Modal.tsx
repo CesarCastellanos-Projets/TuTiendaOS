@@ -24,27 +24,29 @@ export function Modal({
   }, [open, onClose]);
 
   if (!open) return null;
+
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/50 p-0 sm:items-center sm:p-4">
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/60 backdrop-blur-xs p-0 sm:items-center sm:p-4 animate-in fade-in duration-200">
       <div
-        className={`card max-h-[92dvh] w-full overflow-auto rounded-b-none sm:rounded-b-xl ${
+        className={`w-full overflow-hidden rounded-t-3xl sm:rounded-3xl border border-slate-200 bg-white shadow-2xl transition-all animate-in zoom-in-95 duration-200 max-h-[92dvh] flex flex-col ${
           wide ? 'sm:max-w-2xl' : 'sm:max-w-md'
         }`}
         role="dialog"
         aria-modal="true"
         aria-label={title}
       >
-        <div className="sticky top-0 flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3">
-          <h2 className="font-semibold">{title}</h2>
+        <div className="tape h-1 w-full shrink-0" aria-hidden />
+        <div className="flex items-center justify-between border-b border-slate-100 bg-white px-5 py-3.5 shrink-0">
+          <h2 className="font-display font-bold text-base text-slate-900">{title}</h2>
           <button
             onClick={onClose}
-            aria-label="Cerrar"
-            className="rounded-lg p-1.5 hover:bg-slate-100"
+            aria-label="Cerrar modal"
+            className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-800 transition-colors"
           >
             <X size={18} />
           </button>
         </div>
-        <div className="p-4">{children}</div>
+        <div className="overflow-y-auto p-5">{children}</div>
       </div>
     </div>
   );

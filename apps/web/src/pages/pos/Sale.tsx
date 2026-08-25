@@ -1,6 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, getDoc, limit, onSnapshot, query, where } from 'firebase/firestore';
-import { Camera, Check, Minus, Plus, Search, Trash2, X } from 'lucide-react';
+import {
+  Camera,
+  CheckCircle2,
+  CreditCard,
+  DollarSign,
+  Minus,
+  Plus,
+  QrCode,
+  Search,
+  ShoppingCart,
+  Trash2,
+  User,
+  Building2,
+  X,
+  Printer,
+  Sparkles,
+  AlertCircle,
+  Vault,
+  ScanLine
+} from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../lib/auth';
 import { useCompany } from '../../hooks/useCompany';
@@ -19,7 +38,12 @@ interface CartLine extends SaleItem {
   promo?: boolean;
 }
 
-const PAYMENTS: PaymentMethod[] = ['efectivo', 'tarjeta', 'yape', 'plin'];
+const PAYMENTS: { id: PaymentMethod; label: string; icon: typeof DollarSign; colorClass: string }[] = [
+  { id: 'efectivo', label: 'Efectivo', icon: DollarSign, colorClass: 'border-emerald-500 text-emerald-700 bg-emerald-50/70' },
+  { id: 'tarjeta', label: 'Tarjeta', icon: CreditCard, colorClass: 'border-indigo-500 text-indigo-700 bg-indigo-50/70' },
+  { id: 'yape', label: 'Yape', icon: QrCode, colorClass: 'border-purple-600 text-purple-700 bg-purple-50/70' },
+  { id: 'plin', label: 'Plin', icon: QrCode, colorClass: 'border-cyan-500 text-cyan-700 bg-cyan-50/70' }
+];
 
 export function PosSale() {
   const profile = useAuth((s) => s.profile)!;
@@ -44,6 +68,7 @@ export function PosSale() {
   const [sessionOpen, setSessionOpen] = useState<(CashSession & { id: string }) | null>(null);
   const [busy, setBusy] = useState(false);
   const [storeName, setStoreName] = useState('Tienda');
+  const [selectedCategory, setSelectedCategory] = useState<string>('todos');
 
   useEffect(() => {
     void getDoc(doc(db, 'stores', storeId)).then((s) => {
@@ -62,13 +87,27 @@ export function PosSale() {
   const total = useMemo(() => cart.reduce((s, l) => s + l.total, 0), [cart]);
   const change = Math.max(0, (Number(paid) || 0) - total);
 
+  // Extract categories for fast filter chips
+  const categories = useMemo(() => {
+    const set = new Set<string>();
+    catalog.forEach((p) => {
+      if (p.locationName) set.add(p.locationName);
+    });
+    return Array.from(set);
+  }, [catalog]);
+
+  const filteredCatalog = useMemo(() => {
+    if (selectedCategory === 'todos') return catalog;
+    return catalog.filter((p) => p.locationName === selectedCategory);
+  }, [catalog, selectedCategory]);
+
   function addToCart(p: ProductStock): void {
     setError(null);
     setCart((prev) => {
       const existing = prev.find((l) => l.productId === p.productId);
       if (existing) {
         if (existing.qty + 1 > existing.stock) {
-          setError(`Solo quedan ${p.quantity} de ${p.productName}`);
+          setError(`Solo quedan ${p.quantity} unidades de ${p.productName}`);
           return prev;
         }
         return prev.map((l) =>
@@ -78,7 +117,7 @@ export function PosSale() {
         );
       }
       if (p.quantity < 1) {
-        setError(`${p.productName} sin stock`);
+        setError(`${p.productName} sin stock disponible`);
         return prev;
       }
       return [
@@ -97,18 +136,21 @@ export function PosSale() {
 
   const scanCode = (code: string) => {
     void findInCatalog(storeId, code, catalog).then((p) => {
-      if (p) addToCart(p);
-      else setError(`Código no encontrado: ${code}`);
+      if (p) {
+        addToCart(p);
+        if (navigator.vibrate) navigator.vibrate(80);
+      } else {
+        setError(`Código no encontrado: ${code}`);
+      }
     });
   };
 
   const scanner = useScanner(scanCode);
-
   const results = term.trim().length >= 2 ? searchIn(term) : [];
 
   async function doRucLookup(): Promise<void> {
     if (!RUC_RE.test(rucValue)) {
-      setError('El RUC debe tener 11 dígitos');
+      setError('El RUC debe tener exactamente 11 dígitos');
       return;
     }
     setLookupBusy(true);
@@ -118,7 +160,7 @@ export function PosSale() {
       setInvoiceMode(true);
       setDniModal(false);
     } catch {
-      setError('No se pudo consultar el RUC. Verifica conexión.');
+      setError('No se pudo consultar el RUC. Verifica tu conexión a internet.');
     } finally {
       setLookupBusy(false);
     }
@@ -131,7 +173,7 @@ export function PosSale() {
       return;
     }
     if (!DNI_RE.test(dniValue)) {
-      setError('El DNI debe tener 8 dígitos');
+      setError('El DNI debe tener 8 dígitos numéricos');
       return;
     }
     setLookupBusy(true);
@@ -155,19 +197,19 @@ export function PosSale() {
     const umbralConsol = company?.umbralConsolidacion ?? 5;
 
     if (total <= 0) {
-      setError('Agrega productos para cobrar');
+      setError('Agrega al menos un producto al carrito para cobrar.');
       return;
     }
     if (payment === 'efectivo' && (Number(paid) || 0) < total - 0.001) {
-      setError('El monto pagado es menor al total');
+      setError('El monto pagado en efectivo no puede ser menor al total.');
       return;
     }
     if (invoiceMode && clientDoc.tipo !== 'RUC') {
-      setError('Para factura necesitas RUC y razón social');
+      setError('Para emitir Factura Electrónica se requiere RUC y Razón Social.');
       return;
     }
     if (!invoiceMode && total >= minSinDni && clientDoc.tipo !== 'DNI') {
-      setError(`Desde S/ ${minSinDni} el DNI en boleta es obligatorio`);
+      setError(`Ventas desde S/ ${minSinDni.toFixed(2)} exigen DNI en Boleta.`);
       return;
     }
 
@@ -210,7 +252,7 @@ export function PosSale() {
 
       void sendToSunat(sale.code, sale);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al registrar la venta');
+      setError(err instanceof Error ? err.message : 'Error al registrar la venta.');
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -218,113 +260,239 @@ export function PosSale() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col lg:h-[calc(100dvh-4.5rem)] lg:flex-row">
-      {/* Panel izquierdo: escaneo y búsqueda */}
-      <section className="flex min-w-0 flex-1 flex-col gap-3 border-b border-slate-200 bg-white p-4 lg:border-b-0 lg:border-r">
+    <div className="flex h-full min-h-0 flex-1 flex-col lg:flex-row overflow-hidden bg-slate-100/60">
+      {/* ─── COLUMNA IZQUIERDA: CATÁLOGO Y BÚSQUEDA ───────────────────────────── */}
+      <section className="flex min-w-0 flex-1 flex-col overflow-hidden border-b border-slate-200 lg:border-b-0 lg:border-r bg-white">
+        {/* Banner de Estado de Caja */}
         {!sessionOpen && (
-          <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
-            Caja cerrada. Ábrela en la pestaña Caja antes de vender.
-          </p>
-        )}
-
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-            <WedgeInput
-              onSubmit={scanCode}
-              placeholder="Escanea o escribe código y Enter"
-              className="field !pl-9"
-            />
+          <div className="flex items-center justify-between gap-3 bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-xs font-semibold text-amber-900">
+            <div className="flex items-center gap-2">
+              <Vault size={16} className="text-amber-700 shrink-0" />
+              <span>Turno de caja cerrado. Abre tu caja para habilitar ventas.</span>
+            </div>
+            <a href="/pos/caja" className="underline font-bold text-amber-950 hover:text-amber-800">
+              Abrir caja
+            </a>
           </div>
-          <button
-            className="btn-sol shrink-0 !px-3 lg:hidden"
-            aria-label="Escanear con cámara"
-            onClick={() => (scanner.cameraOpen ? scanner.stop() : scanner.startCamera())}
-          >
-            <Camera size={20} />
-          </button>
-        </div>
-
-        {scanner.error && <p className="text-sm font-semibold text-critical">{scanner.error}</p>}
-        {scanner.cameraOpen && (
-          <div className="overflow-hidden rounded-lg border-2 border-slate-900" id={scanner.videoId} />
         )}
 
-        <div className="relative">
-          <input
-            className="field"
-            placeholder="Buscar por nombre…"
-            value={term}
-            onChange={(e) => setTerm(e.target.value)}
-            autoComplete="off"
-          />
-          {results.length > 0 && (
-            <ul className="absolute inset-x-0 top-full z-20 mt-1 max-h-72 overflow-auto rounded-xl border border-slate-200 bg-white shadow-lg">
-              {results.map((p) => (
-                <li key={p.productId}>
-                  <button
-                    onClick={() => {
-                      addToCart(p);
-                      setTerm('');
-                    }}
-                    className="flex w-full items-center justify-between px-3 py-2.5 text-left text-sm hover:bg-slate-100"
-                  >
-                    <span className="truncate">{p.productName}</span>
-                    <span className="ml-2 flex shrink-0 items-center gap-2">
-                      <span className={`badge ${p.quantity <= 5 ? 'bg-red-50 text-critical' : 'bg-emerald-50 text-success'}`}>
-                        {p.quantity}
-                      </span>
-                      <b className="font-mono">{money(p.salePrice)}</b>
-                    </span>
-                  </button>
-                </li>
+        {/* Barra de Búsqueda y Escáner */}
+        <div className="border-b border-slate-100 p-4 space-y-3">
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Search size={18} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <WedgeInput
+                onSubmit={scanCode}
+                placeholder="Escanea con pistola o escribe código (Enter)…"
+                className="field !pl-10 !h-12 !text-base font-medium shadow-xs"
+              />
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded-md bg-slate-100 border border-slate-200 px-2 py-0.5 text-[11px] font-bold text-slate-500 hidden sm:inline">
+                Pistola USB
+              </span>
+            </div>
+
+            <button
+              className={`btn shrink-0 !h-12 !px-4 ${scanner.cameraOpen ? 'btn-brand' : 'btn-ghost'}`}
+              title="Escanear con cámara"
+              onClick={() => (scanner.cameraOpen ? scanner.stop() : scanner.startCamera())}
+            >
+              <Camera size={20} />
+              <span className="hidden sm:inline text-xs font-bold">Cámara</span>
+            </button>
+          </div>
+
+          {/* Visor de Cámara PWA con animación de escáner */}
+          {scanner.cameraOpen && (
+            <div className="relative overflow-hidden rounded-2xl border-2 border-primary bg-slate-950 shadow-xl">
+              <div className="absolute inset-x-0 z-10 h-0.5 bg-primary shadow-lg shadow-primary animate-laser" />
+              <div className="p-2" id={scanner.videoId} />
+              <div className="absolute bottom-3 inset-x-0 flex justify-center z-10">
+                <span className="rounded-full bg-slate-900/80 backdrop-blur-md px-3 py-1 text-xs font-medium text-white flex items-center gap-1.5">
+                  <ScanLine size={14} className="text-primary" /> Apunta al código de barras
+                </span>
+              </div>
+            </div>
+          )}
+
+          {scanner.error && (
+            <div className="flex items-center gap-2 rounded-xl bg-red-50 p-2.5 text-xs font-semibold text-critical">
+              <AlertCircle size={15} />
+              <span>{scanner.error}</span>
+            </div>
+          )}
+
+          {/* Buscador Rápido por Nombre */}
+          <div className="relative">
+            <input
+              className="field !h-10 text-sm bg-slate-50/70"
+              placeholder="Buscar producto por nombre…"
+              value={term}
+              onChange={(e) => setTerm(e.target.value)}
+              autoComplete="off"
+            />
+            {results.length > 0 && (
+              <ul className="absolute inset-x-0 top-full z-30 mt-1 max-h-72 overflow-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl animate-in fade-in">
+                {results.map((p) => (
+                  <li key={p.productId}>
+                    <button
+                      onClick={() => {
+                        addToCart(p);
+                        setTerm('');
+                      }}
+                      className="flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm hover:bg-indigo-50/60 transition-colors"
+                    >
+                      <span className="truncate font-medium text-slate-800">{p.productName}</span>
+                      <div className="ml-3 flex shrink-0 items-center gap-2">
+                        <span className={`badge ${p.quantity <= 5 ? 'bg-red-50 text-critical' : 'bg-emerald-50 text-success'}`}>
+                          {p.quantity} en stock
+                        </span>
+                        <span className="price-tag text-base font-mono font-bold text-primary">
+                          {money(p.salePrice)}
+                        </span>
+                      </div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Filtros por Categoría */}
+          {categories.length > 0 && (
+            <div className="-mx-1 flex gap-1.5 overflow-x-auto pb-1">
+              <button
+                type="button"
+                onClick={() => setSelectedCategory('todos')}
+                className={`shrink-0 rounded-xl px-3 py-1 text-xs font-bold transition-all ${
+                  selectedCategory === 'todos'
+                    ? 'bg-slate-900 text-white shadow-xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                Todos los productos
+              </button>
+              {categories.map((cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setSelectedCategory(cat)}
+                  className={`shrink-0 rounded-xl px-3 py-1 text-xs font-bold transition-all ${
+                    selectedCategory === cat
+                      ? 'bg-primary text-white shadow-xs'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {cat}
+                </button>
               ))}
-            </ul>
+            </div>
           )}
         </div>
 
+        {/* Mensaje de Error en POS */}
         {error && (
-          <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-critical">
-            {error}
-          </p>
+          <div className="mx-4 mt-3 flex items-center justify-between rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-critical animate-in fade-in">
+            <div className="flex items-center gap-2">
+              <AlertCircle size={16} className="shrink-0" />
+              <span>{error}</span>
+            </div>
+            <button onClick={() => setError(null)} className="text-red-400 hover:text-red-700">
+              <X size={14} />
+            </button>
+          </div>
         )}
 
-        <div className="hidden grid-cols-2 gap-2 sm:grid">
-          {catalog.slice(0, 8).map((p) => (
-            <button
-              key={p.productId}
-              onClick={() => addToCart(p)}
-              disabled={p.quantity < 1}
-              className="card flex items-center justify-between gap-2 p-2.5 text-left transition-colors hover:bg-slate-100 disabled:opacity-40"
-            >
-              <span className="min-w-0 truncate text-sm font-medium">{p.productName}</span>
-              <span className="price-tag rounded px-1.5 py-0.5 font-mono text-sm font-bold">
-                {p.salePrice.toFixed(2)}
-              </span>
-            </button>
-          ))}
+        {/* Grilla Visual de Productos */}
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+            {filteredCatalog.map((p) => {
+              const isOutOfStock = p.quantity < 1;
+              const isLowStock = p.quantity > 0 && p.quantity <= 5;
+
+              return (
+                <button
+                  key={p.productId}
+                  onClick={() => addToCart(p)}
+                  disabled={isOutOfStock}
+                  className={`card-interactive group flex flex-col justify-between p-3.5 text-left transition-all ${
+                    isOutOfStock ? 'opacity-45 cursor-not-allowed !border-dashed' : ''
+                  }`}
+                >
+                  <div className="space-y-1.5">
+                    <span className="line-clamp-2 text-xs font-bold text-slate-800 group-hover:text-primary transition-colors leading-snug">
+                      {p.productName}
+                    </span>
+                    {p.locationName && (
+                      <span className="text-[10px] font-medium text-slate-400 block truncate">
+                        {p.locationName}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="mt-3 flex items-end justify-between gap-1 pt-2 border-t border-slate-100">
+                    <div>
+                      <span className="text-[10px] uppercase font-bold text-slate-400 block leading-none">
+                        Precio
+                      </span>
+                      <span className="price-tag font-mono text-base font-extrabold text-slate-900 leading-tight">
+                        S/ {p.salePrice.toFixed(2)}
+                      </span>
+                    </div>
+
+                    <span
+                      className={`badge text-[10px] ${
+                        isOutOfStock
+                          ? 'bg-red-50 text-critical'
+                          : isLowStock
+                          ? 'bg-amber-50 text-amber-700'
+                          : 'bg-emerald-50 text-success'
+                      }`}
+                    >
+                      {isOutOfStock ? 'Agotado' : `${p.quantity} un.`}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {filteredCatalog.length === 0 && (
+            <div className="flex h-64 flex-col items-center justify-center gap-2 text-center text-slate-400">
+              <ShoppingCart size={32} className="opacity-40" />
+              <p className="text-sm font-semibold">No hay productos en esta categoría</p>
+            </div>
+          )}
         </div>
       </section>
 
-      {/* Panel derecho: ticket */}
-      <aside className="flex w-full shrink-0 flex-col bg-slate-50 lg:w-[420px]">
-        {/* Selector de Comprobante y Cliente */}
-        <div className="border-b border-slate-200 bg-white p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <div className="flex rounded-lg border border-slate-200 p-0.5 bg-slate-100 text-xs font-semibold">
+      {/* ─── COLUMNA DERECHA: PANEL DEL TICKET / CARRITO ───────────────────────── */}
+      <aside className="flex w-full shrink-0 flex-col bg-slate-50/90 lg:w-[420px] xl:w-[460px] border-l border-slate-200 shadow-sm">
+        {/* Cabecera del Ticket */}
+        <div className="border-b border-slate-200 bg-white p-4 space-y-3">
+          {/* Segmented Control Boleta / Factura */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-1 rounded-xl border border-slate-200 bg-slate-100/80 p-1 text-xs font-bold">
               <button
                 type="button"
-                className={`rounded px-3 py-1 transition-colors ${!invoiceMode ? 'bg-slate-900 text-white' : 'text-slate-600 hover:text-slate-900'}`}
+                className={`flex-1 rounded-lg py-2 transition-all ${
+                  !invoiceMode
+                    ? 'bg-slate-900 text-white shadow-xs font-extrabold'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
                 onClick={() => {
                   setInvoiceMode(false);
                   if (clientDoc.tipo === 'RUC') setClientDoc({ tipo: '-', numero: '', nombre: '' });
                 }}
               >
-                Boleta
+                Boleta de Venta
               </button>
               <button
                 type="button"
-                className={`rounded px-3 py-1 transition-colors ${invoiceMode ? 'bg-primary text-white' : 'text-slate-600 hover:text-slate-900'}`}
+                className={`flex-1 rounded-lg py-2 transition-all ${
+                  invoiceMode
+                    ? 'bg-primary text-white shadow-xs font-extrabold'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
                 onClick={() => {
                   setInvoiceMode(true);
                   if (clientDoc.tipo !== 'RUC') setDniModal(true);
@@ -337,44 +505,51 @@ export function PosSale() {
             {cart.length > 0 && (
               <button
                 type="button"
-                onClick={() => {
-                  if (confirm('¿Vaciar todos los productos del carrito?')) {
-                    setCart([]);
-                  }
-                }}
-                className="flex items-center gap-1 text-xs font-semibold text-critical hover:opacity-75"
+                onClick={() => setCart([])}
+                className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-critical transition-colors"
                 title="Vaciar carrito"
               >
-                <Trash2 size={13} /> Vaciar
+                <Trash2 size={16} />
               </button>
             )}
           </div>
 
-          <div className="flex items-center justify-between text-xs pt-1">
+          {/* Badge de Cliente */}
+          <div className="rounded-xl border border-slate-200/80 bg-slate-50/80 p-2.5">
             {clientDoc.tipo === '-' ? (
-              <div className="flex items-center justify-between w-full">
-                <span className="text-slate-600 font-medium">Cliente: Consumidor Final</span>
+              <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2 text-slate-600">
+                  <User size={15} className="text-slate-400" />
+                  <span className="font-medium">Consumidor Final (Sin DNI)</span>
+                </div>
                 <button
                   type="button"
-                  className="text-blue-600 font-semibold hover:underline"
                   onClick={() => setDniModal(true)}
+                  className="font-bold text-primary hover:underline text-[11px]"
                 >
                   + Agregar DNI / RUC
                 </button>
               </div>
             ) : (
-              <div className="flex items-center justify-between w-full bg-slate-50 p-1.5 rounded border border-slate-200">
-                <span className="truncate">
-                  <b className="font-mono">{clientDoc.tipo}: {clientDoc.numero}</b> · {clientDoc.nombre}
-                </span>
+              <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  {clientDoc.tipo === 'RUC' ? (
+                    <Building2 size={15} className="text-indigo-600 shrink-0" />
+                  ) : (
+                    <User size={15} className="text-emerald-600 shrink-0" />
+                  )}
+                  <div className="truncate">
+                    <span className="font-mono font-bold text-slate-900">{clientDoc.tipo}: {clientDoc.numero}</span>
+                    <span className="text-slate-500 block truncate text-[11px]">{clientDoc.nombre}</span>
+                  </div>
+                </div>
                 <button
                   type="button"
-                  aria-label="Quitar cliente"
                   onClick={() => {
                     setClientDoc({ tipo: '-', numero: '', nombre: '' });
                     setInvoiceMode(false);
                   }}
-                  className="text-slate-400 hover:text-slate-700 ml-1"
+                  className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-200 hover:text-slate-800"
                 >
                   <X size={14} />
                 </button>
@@ -383,19 +558,40 @@ export function PosSale() {
           </div>
         </div>
 
-        <ul className="min-h-[120px] flex-1 divide-y divide-linea overflow-y-auto">
+        {/* Lista de Productos en el Carrito */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-2">
           {cart.length === 0 ? (
-            <li className="grid h-full place-items-center p-6 text-center text-sm text-slate-500">
-              Escanea o busca un producto para empezar.
-            </li>
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-slate-400 py-12">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-300">
+                <ShoppingCart size={28} />
+              </div>
+              <div>
+                <p className="text-sm font-bold text-slate-600">Carrito de venta vacío</p>
+                <p className="text-xs text-slate-400 max-w-[200px] mt-0.5">
+                  Escanea con la pistola o selecciona productos del catálogo.
+                </p>
+              </div>
+            </div>
           ) : (
             cart.map((l) => (
-              <li key={l.productId} className="flex items-center gap-2 px-3 py-2">
-                <span className="min-w-0 flex-1 truncate text-sm font-medium">{l.name}</span>
-                <div className="flex items-center gap-1">
+              <div
+                key={l.productId}
+                className="flex items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white p-3 shadow-xs animate-in fade-in"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-xs font-bold text-slate-800 leading-tight">
+                    {l.name}
+                  </p>
+                  <span className="text-[11px] font-mono text-slate-400">
+                    S/ {l.unitPrice.toFixed(2)} c/u
+                  </span>
+                </div>
+
+                {/* Stepper +/- */}
+                <div className="flex items-center gap-1.5">
                   <button
                     aria-label={`Restar ${l.name}`}
-                    className="rounded-lg border border-slate-200 p-1 hover:bg-slate-100"
+                    className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
                     onClick={() =>
                       setCart((prev) =>
                         prev
@@ -408,13 +604,17 @@ export function PosSale() {
                       )
                     }
                   >
-                    <Minus size={13} />
+                    <Minus size={12} />
                   </button>
-                  <span className="w-8 text-center font-mono text-sm">{l.qty}</span>
+
+                  <span className="w-7 text-center font-mono text-xs font-extrabold text-slate-900">
+                    {l.qty}
+                  </span>
+
                   <button
                     aria-label={`Sumar ${l.name}`}
-                    className="rounded-lg border border-slate-200 p-1 hover:bg-slate-100 disabled:opacity-30"
                     disabled={l.qty >= l.stock}
+                    className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-30 active:scale-95"
                     onClick={() =>
                       setCart((prev) =>
                         prev.map((x) =>
@@ -425,40 +625,49 @@ export function PosSale() {
                       )
                     }
                   >
-                    <Plus size={13} />
+                    <Plus size={12} />
                   </button>
                 </div>
-                <span className="w-16 text-right font-mono text-sm font-semibold">{l.total.toFixed(2)}</span>
-              </li>
+
+                <span className="w-18 text-right font-mono text-sm font-extrabold text-slate-900">
+                  S/ {l.total.toFixed(2)}
+                </span>
+              </div>
             ))
           )}
-        </ul>
+        </div>
 
-        <div className="space-y-3 border-t-2 border-dashed border-slate-200 p-4">
-          <div className="flex items-center justify-between gap-2">
-            {PAYMENTS.map((m) => (
-              <button
-                key={m}
-                onClick={() => setPayment(m)}
-                className={`flex-1 rounded-lg py-2 text-xs font-bold capitalize ${
-                  payment === m ? 'bg-slate-900 text-primary' : 'bg-white border border-slate-200'
-                }`}
-              >
-                {m}
-              </button>
-            ))}
-            <button
-              onClick={() => setPayment('otro')}
-              className={`flex-1 rounded-lg py-2 text-xs font-bold ${payment === 'otro' ? 'bg-slate-900 text-primary' : 'bg-white border border-slate-200'}`}
-            >
-              otro
-            </button>
+        {/* Footer / Panel de Cobro */}
+        <div className="border-t border-slate-200 bg-white p-4 space-y-3.5 shadow-lg">
+          {/* Selector de Método de Pago */}
+          <div className="grid grid-cols-4 gap-2">
+            {PAYMENTS.map(({ id, label, icon: Icon, colorClass }) => {
+              const active = payment === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setPayment(id)}
+                  className={`flex flex-col items-center justify-center gap-1 rounded-xl p-2 text-xs font-bold border transition-all active:scale-95 ${
+                    active
+                      ? `${colorClass} shadow-xs font-extrabold border-2`
+                      : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  <Icon size={16} />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
           </div>
 
+          {/* Calculadora de Vuelto para Efectivo */}
           {payment === 'efectivo' && (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-2.5 rounded-xl bg-slate-50 border border-slate-200/80 p-3">
               <div>
-                <label className="label !mb-0.5 text-xs">Con cuánto paga</label>
+                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block mb-1">
+                  Paga con (S/)
+                </label>
                 <input
                   type="number"
                   inputMode="decimal"
@@ -466,91 +675,142 @@ export function PosSale() {
                   value={paid}
                   onChange={(e) => setPaid(e.target.value)}
                   placeholder={(total || 0).toFixed(2)}
-                  className="field font-mono"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-mono font-bold text-slate-900 focus:border-primary focus:ring-2 focus:ring-primary/20 focus:outline-none"
                 />
               </div>
+
               <div>
-                <label className="label !mb-0.5 text-xs">Vuelto</label>
-                <div className="field flex items-center bg-slate-100 font-mono">{change.toFixed(2)}</div>
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block mb-1">
+                  Vuelto
+                </span>
+                <div className="flex h-10 items-center justify-between rounded-xl bg-emerald-50 border border-emerald-200 px-3 font-mono font-extrabold text-emerald-800 text-sm">
+                  <span>S/</span>
+                  <span>{change.toFixed(2)}</span>
+                </div>
               </div>
             </div>
           )}
 
-          <div className="flex items-end justify-between">
-            <span className="text-sm font-bold uppercase tracking-wide text-slate-500">
-              Total ({cart.length} ítems)
-            </span>
-            <span className="price-tag rounded-lg px-3 py-1 font-display text-4xl leading-none tracking-wide">
+          {/* Total Grande */}
+          <div className="flex items-center justify-between rounded-2xl bg-slate-950 p-4 text-white shadow-md">
+            <div>
+              <span className="text-xs uppercase font-bold text-slate-400 block tracking-wider">
+                Total a Pagar ({cart.length} {cart.length === 1 ? 'ítem' : 'ítems'})
+              </span>
+              <span className="text-[10px] text-slate-500 font-medium">IGV 18% incluido</span>
+            </div>
+            <span className="price-tag font-mono text-3xl font-extrabold text-emerald-400">
               S/ {total.toFixed(2)}
             </span>
           </div>
 
-          <button className="btn-brand w-full !py-4 text-lg" disabled={cart.length === 0 || busy} onClick={() => void checkout()}>
-            <Check size={20} /> Cobrar
+          {/* Botón Principal de Cobro */}
+          <button
+            disabled={cart.length === 0 || busy}
+            onClick={() => void checkout()}
+            className="group relative flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-primary via-indigo-600 to-indigo-500 py-4 text-base font-display font-extrabold text-white shadow-lg shadow-primary/30 transition-all duration-200 hover:shadow-primary/50 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <CheckCircle2 size={22} className="transition-transform group-hover:scale-110" />
+            <span>{busy ? 'Procesando venta…' : `Cobrar S/ ${total.toFixed(2)}`}</span>
           </button>
         </div>
       </aside>
 
-      {/* Modal cliente */}
-      <Modal open={dniModal} title="Cliente" onClose={() => setDniModal(false)}>
-        <div className="space-y-4">
-          <div>
-            <label className="label">Factura — RUC</label>
+      {/* ─── MODAL CONSULTA DNI / RUC ────────────────────────────────────────── */}
+      <Modal open={dniModal} title="Identificación del Cliente" onClose={() => setDniModal(false)}>
+        <div className="space-y-5">
+          {/* Factura con RUC */}
+          <div className="rounded-2xl border border-indigo-100 bg-indigo-50/40 p-4 space-y-3">
+            <label className="text-xs font-bold uppercase tracking-wider text-indigo-900 flex items-center gap-1.5">
+              <Building2 size={15} className="text-indigo-600" /> Factura Electrónica — RUC
+            </label>
             <div className="flex gap-2">
               <input
                 inputMode="numeric"
                 maxLength={11}
                 value={rucValue}
                 onChange={(e) => setRucValue(e.target.value.replace(/\D/g, ''))}
-                placeholder="11 dígitos"
-                className="field font-mono"
+                placeholder="11 dígitos (Ej. 2060...)"
+                className="field font-mono text-base font-bold"
               />
-              <button className="btn-primary shrink-0" disabled={lookupBusy} onClick={() => void doRucLookup()}>
-                Buscar
+              <button
+                className="btn-primary shrink-0 !px-5"
+                disabled={lookupBusy}
+                onClick={() => void doRucLookup()}
+              >
+                {lookupBusy ? 'Buscando…' : 'Buscar'}
               </button>
             </div>
-            <p className="mt-1 text-xs text-slate-500">
-              Consulta automática de razón social (APIS.net.pe vía servidor).
+            <p className="text-[11px] text-slate-500">
+              Consulta automática de Razón Social en SUNAT / APIS.net.pe.
             </p>
           </div>
-          <div className="border-t border-dashed border-slate-200 pt-3">
-            <label className="label">Boleta con DNI (opcional; obligatorio ≥ S/ {company?.minBoletaSinDni ?? 700})</label>
+
+          {/* Boleta con DNI */}
+          <div className="rounded-2xl border border-slate-200 bg-slate-50/60 p-4 space-y-3">
+            <label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
+              <User size={15} className="text-slate-500" /> Boleta con DNI (Opcional)
+            </label>
             <div className="flex gap-2">
               <input
                 inputMode="numeric"
                 maxLength={8}
                 value={dniValue}
                 onChange={(e) => setDniValue(e.target.value.replace(/\D/g, ''))}
-                placeholder="8 dígitos"
-                className="field font-mono"
+                placeholder="8 dígitos (DNI)"
+                className="field font-mono text-base font-bold"
               />
-              <button className="btn-sol shrink-0" disabled={lookupBusy} onClick={() => void doDniSave()}>
-                Usar
+              <button
+                className="btn-ghost shrink-0 !px-5"
+                disabled={lookupBusy}
+                onClick={() => void doDniSave()}
+              >
+                {lookupBusy ? 'Validando…' : 'Aplicar'}
               </button>
             </div>
+            <p className="text-[11px] text-slate-500">
+              Obligatorio para montos iguales o mayores a S/ {company?.minBoletaSinDni ?? 700}.
+            </p>
           </div>
         </div>
       </Modal>
 
-      {/* Venta exitosa */}
-      <Modal open={receiptDone !== null} title="Venta registrada" onClose={() => setReceiptDone(null)}>
+      {/* ─── MODAL VENTA REGISTRADA EXITOSAMENTE ──────────────────────────────── */}
+      <Modal open={receiptDone !== null} title="Venta Emitida con Éxito" onClose={() => setReceiptDone(null)}>
         {receiptDone && (
-          <div className="space-y-4 text-center">
-            <p className="font-mono text-lg">{receiptDone.code}</p>
-            <p className="price-tag mx-auto inline-block rounded-lg px-4 py-2 font-display text-4xl">
-              S/ {receiptDone.total.toFixed(2)}
-            </p>
-            {payment === 'efectivo' && receiptDone.change > 0 && (
-              <p className="text-lg font-semibold">
-                Vuelto: <span className="font-mono">S/ {receiptDone.change.toFixed(2)}</span>
+          <div className="space-y-6 text-center py-2">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 shadow-lg shadow-emerald-500/20">
+              <CheckCircle2 size={36} />
+            </div>
+
+            <div className="space-y-1">
+              <p className="font-mono text-sm font-bold text-slate-500 tracking-wider">
+                COMPROBANTE {receiptDone.code}
               </p>
+              <p className="price-tag font-display text-4xl font-extrabold text-slate-900">
+                S/ {receiptDone.total.toFixed(2)}
+              </p>
+            </div>
+
+            {payment === 'efectivo' && receiptDone.change > 0 && (
+              <div className="mx-auto inline-flex items-center gap-2 rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-2 text-sm font-bold text-emerald-800">
+                <span>Vuelto a entregar:</span>
+                <span className="font-mono text-base font-extrabold">S/ {receiptDone.change.toFixed(2)}</span>
+              </div>
             )}
-            <div className="flex justify-center gap-2">
-              <button className="btn-ghost" onClick={() => printTicket(receiptDone.html)}>
-                Imprimir ticket
+
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <button
+                className="btn-ghost !py-3 text-xs font-bold"
+                onClick={() => printTicket(receiptDone.html)}
+              >
+                <Printer size={16} /> Imprimir Ticket
               </button>
-              <button className="btn-brand" onClick={() => setReceiptDone(null)}>
-                Nueva venta
+              <button
+                className="btn-primary !py-3 text-xs font-bold"
+                onClick={() => setReceiptDone(null)}
+              >
+                <Sparkles size={16} /> Nueva Venta
               </button>
             </div>
           </div>
