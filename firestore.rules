@@ -113,14 +113,14 @@ service cloud.firestore {
       allow read: if signedIn();
 
       // Creación al recibir o inicializar producto en tienda o almacén
-      allow create: if (isAdmin() || isPos())
+      allow create: if signedIn()
         && str(request.resource.data.productId, 1, 64)
         && str(request.resource.data.locationId, 1, 64)
         && (request.resource.data.quantity is number || request.resource.data.quantity is int)
         && request.resource.data.quantity >= 0;
 
       // Actualizaciones controladas de existencias
-      allow update: if (isAdmin() || isPos())
+      allow update: if signedIn()
         && (request.resource.data.quantity is number || request.resource.data.quantity is int)
         && request.resource.data.quantity >= 0;
 
@@ -130,7 +130,7 @@ service cloud.firestore {
     // ─── 6. KÁRDEX Y MOVIMIENTOS (INMUTABLE / APPEND-ONLY) ─────
     match /stock_movements/{id} {
       allow read: if signedIn();
-      allow create: if (isAdmin() || isPos() || isWorker())
+      allow create: if signedIn()
         && str(request.resource.data.productId, 1, 64)
         && request.resource.data.type in ['venta', 'ingreso', 'transferencia', 'ajuste', 'merma', 'recepcion']
         && (request.resource.data.qty is number || request.resource.data.qty is int)
@@ -152,7 +152,7 @@ service cloud.firestore {
 
       allow read: if signedIn();
 
-      allow create: if (isAdmin() || isPos())
+      allow create: if signedIn()
         && str(request.resource.data.code, 3, 30)
         && str(request.resource.data.fromLocationId, 1, 64)
         && str(request.resource.data.toLocationId, 1, 64)
@@ -160,7 +160,7 @@ service cloud.firestore {
         && request.resource.data.status == 'pendiente'
         && validTransferItems(request.resource.data.items);
 
-      allow update: if (isAdmin() || isPos())
+      allow update: if signedIn()
         && request.resource.data.status in ['pendiente', 'en_transito', 'recibido', 'cancelado'];
 
       allow delete: if isAdmin();
@@ -170,7 +170,7 @@ service cloud.firestore {
     match /replenishment_requests/{id} {
       allow read: if signedIn();
 
-      allow create: if (isPos() || isAdmin())
+      allow create: if signedIn()
         && str(request.resource.data.storeId, 1, 64)
         && request.resource.data.status == 'pendiente'
         && request.resource.data.items is list
@@ -180,7 +180,7 @@ service cloud.firestore {
           && str(item.name, 1, 150)
           && (item.requestedQty is number || item.requestedQty is int) && item.requestedQty > 0);
 
-      allow update: if (isAdmin() || isPos())
+      allow update: if signedIn()
         && request.resource.data.status in ['pendiente', 'atendida', 'rechazada'];
 
       allow delete: if isAdmin();
@@ -216,10 +216,10 @@ service cloud.firestore {
 
       allow read: if signedIn();
 
-      allow create: if (isPos() || isAdmin())
+      allow create: if signedIn()
         && str(request.resource.data.code, 5, 30)
         && request.resource.data.type in ['boleta', 'factura']
-        && request.resource.data.paymentMethod in ['efectivo', 'tarjeta', 'yape', 'plin', 'otro']
+        && request.resource.data.paymentMethod in ['efectivo', 'transferencia', 'tarjeta', 'yape', 'plin', 'sip', 'otro']
         && request.resource.data.status == 'activa'
         && nonNegNum(request.resource.data.total)
         && nonNegNum(request.resource.data.subtotal)
@@ -227,7 +227,7 @@ service cloud.firestore {
         && request.resource.data.userId == request.auth.uid
         && validSaleItems(request.resource.data.items);
 
-      allow update: if (isAdmin() || isPos())
+      allow update: if signedIn()
         && request.resource.data.status in ['activa', 'anulada'];
 
       allow delete: if false; // Comprobantes fiscales nunca se eliminan
@@ -237,12 +237,12 @@ service cloud.firestore {
     match /cash_sessions/{id} {
       allow read: if signedIn();
 
-      allow create: if (isPos() || isAdmin())
+      allow create: if signedIn()
         && nonNegNum(request.resource.data.openingAmount)
         && request.resource.data.status == 'abierta'
         && request.resource.data.userId == request.auth.uid;
 
-      allow update: if (isPos() || isAdmin())
+      allow update: if signedIn()
         && request.resource.data.status in ['abierta', 'cerrada'];
 
       allow delete: if isAdmin();
@@ -251,7 +251,7 @@ service cloud.firestore {
     // ─── 12. CLIENTES (CACHÉ DNI / RUC) ────────────────────────
     match /clients/{docId} {
       allow read: if signedIn();
-      allow create, update: if (isPos() || isAdmin())
+      allow create, update: if signedIn()
         && request.resource.data.tipo in ['DNI', 'RUC']
         && str(request.resource.data.nombre, 1, 150);
       allow delete: if isAdmin();
@@ -260,10 +260,10 @@ service cloud.firestore {
     // ─── 13. CORRELATIVOS FISCALES (COUNTERS) ──────────────────
     match /counters/{serie} {
       allow read: if signedIn();
-      allow create: if (isPos() || isAdmin())
+      allow create: if signedIn()
         && (request.resource.data.current is number || request.resource.data.current is int)
         && request.resource.data.current >= 0;
-      allow update: if (isPos() || isAdmin())
+      allow update: if signedIn()
         && (request.resource.data.current is number || request.resource.data.current is int)
         && request.resource.data.current >= resource.data.current;
       allow delete: if false;

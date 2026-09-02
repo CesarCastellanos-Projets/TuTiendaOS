@@ -23,6 +23,8 @@ interface SaleInput {
   clientDoc: Sale['clientDoc'];
   items: SaleItem[];
   paymentMethod: Sale['paymentMethod'];
+  bankName?: string | null;
+  operationNumber?: string | null;
   paidAmount: number;
   consolidated: boolean;
   cashSessionId?: string;
@@ -37,10 +39,19 @@ export async function createSale(input: SaleInput): Promise<Sale> {
   const total = round2(input.items.reduce((s, i) => s + i.unitPrice * i.qty, 0));
   const subtotal = round2(total / (1 + igvRate));
   const igv = round2(total - subtotal);
-  const finalItems = input.items.map((i) => ({
-    ...i,
-    total: round2(i.unitPrice * i.qty)
-  }));
+  const finalItems: SaleItem[] = input.items.map((i) => {
+    const item: SaleItem = {
+      productId: i.productId,
+      name: i.name,
+      qty: i.qty,
+      unitPrice: i.unitPrice,
+      total: round2(i.unitPrice * i.qty),
+      factor: i.factor || 1
+    };
+    if (i.presentationUnit) item.presentationUnit = i.presentationUnit;
+    if (i.barcode) item.barcode = i.barcode;
+    return item;
+  });
 
   let correlativo = 0;
   await runTransaction(db, async (tx) => {
@@ -60,8 +71,9 @@ export async function createSale(input: SaleInput): Promise<Sale> {
       if (!snap.exists()) throw new Error(`Sin stock registrado: ${finalItems[i].name}`);
       const data = snap.data();
       const q = data ? (data.quantity as number) : 0;
-      if (q < finalItems[i].qty) {
-        throw new Error(`Stock insuficiente de ${finalItems[i].name} (quedan ${q})`);
+      const baseUnitsNeeded = finalItems[i].qty * (finalItems[i].factor || 1);
+      if (q < baseUnitsNeeded) {
+        throw new Error(`Stock insuficiente de ${finalItems[i].name} (quedan ${q} unidades base, requiere ${baseUnitsNeeded})`);
       }
     });
 
@@ -71,10 +83,11 @@ export async function createSale(input: SaleInput): Promise<Sale> {
     snaps.forEach((snap, i) => {
       const data = snap.data();
       const q = data ? (data.quantity as number) : 0;
-      tx.update(refs[i], { quantity: q - finalItems[i].qty, updatedAt: nowMs() });
+      const baseUnitsNeeded = finalItems[i].qty * (finalItems[i].factor || 1);
+      tx.update(refs[i], { quantity: q - baseUnitsNeeded, updatedAt: nowMs() });
     });
 
-    const saleDoc: Omit<Sale, 'createdAt'> & { createdAt: number } = {
+    const rawSaleDoc: Omit<Sale, 'createdAt'> & { createdAt: number } = {
       code: `${serie}-${pad(correlativo, 6)}`,
       serie,
       correlativo,
@@ -83,12 +96,18 @@ export async function createSale(input: SaleInput): Promise<Sale> {
       storeName: input.storeName,
       userId: input.uid,
       userName: input.profile.displayName,
-      clientDoc: input.clientDoc,
+      clientDoc: {
+        tipo: input.clientDoc.tipo || '-',
+        numero: input.clientDoc.numero || '',
+        nombre: input.clientDoc.nombre || ''
+      },
       items: finalItems,
       subtotal,
       igv,
       total,
       paymentMethod: input.paymentMethod,
+      bankName: input.bankName ?? null,
+      operationNumber: input.operationNumber ?? null,
       paidAmount: input.paidAmount,
       changeAmount: round2(Math.max(0, input.paidAmount - total)),
       consolidated: input.consolidated,
@@ -98,7 +117,10 @@ export async function createSale(input: SaleInput): Promise<Sale> {
       anulationRequest: null,
       createdAt: Date.now()
     };
-    tx.set(doc(collection(db, 'sales')), saleDoc);
+
+    // Sanitizar objeto para eliminar cualquier propiedad 'undefined' incompatible con Firestore
+    const cleanDoc = JSON.parse(JSON.stringify(rawSaleDoc));
+    tx.set(doc(collection(db, 'sales')), cleanDoc);
   });
 
   return {
@@ -116,12 +138,14 @@ export async function createSale(input: SaleInput): Promise<Sale> {
     igv,
     total,
     paymentMethod: input.paymentMethod,
+    bankName: input.bankName ?? null,
+    operationNumber: input.operationNumber ?? null,
     paidAmount: input.paidAmount,
     changeAmount: round2(Math.max(0, input.paidAmount - total)),
     consolidated: input.consolidated,
     sunatStatus: 'no_enviado',
     status: 'activa',
-    cashSessionId: input.cashSessionId,
+    cashSessionId: input.cashSessionId ?? null,
     anulationRequest: null,
     createdAt: Date.now()
   };

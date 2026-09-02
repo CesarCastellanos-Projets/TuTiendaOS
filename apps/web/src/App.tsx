@@ -53,6 +53,7 @@ const router = createBrowserRouter([
           { path: 'ajustes', element: <AdjustmentsPage /> },
           { path: 'kardex', element: <KardexPage /> },
           { path: 'reposiciones', element: <ReplenishmentAdminPage /> },
+          { path: 'reposicion', element: <ReplenishmentAdminPage /> },
           { path: 'incidencias', element: <IncidentsAdminPage /> },
           { path: 'usuarios', element: <UsersPage /> },
           { path: 'comprobantes', element: <ReceiptsPage /> },
@@ -71,9 +72,12 @@ const router = createBrowserRouter([
         children: [
           { index: true, element: <PosSale /> },
           { path: 'recepcion', element: <ReceivingPage /> },
+          { path: 'recepciones', element: <ReceivingPage /> },
           { path: 'caja', element: <CashPage /> },
           { path: 'mis-ventas', element: <MySales /> },
-          { path: 'reposicion', element: <RequestRestock /> }
+          { path: 'ventas', element: <MySales /> },
+          { path: 'reposicion', element: <RequestRestock /> },
+          { path: 'reposiciones', element: <RequestRestock /> }
         ]
       }
     ]

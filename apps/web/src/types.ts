@@ -13,9 +13,10 @@ export type Unit = 'UN' | 'KG' | 'LT' | 'PAQ' | 'CJA' | 'DOC' | string;
 
 export interface ProductPresentation {
   unit: string;
+  description?: string; // Ej: "Caja x12", "Caja x24", "Display x50"
+  factor?: number;      // Unidades base contenidas (default 1)
   barcode?: string;
   salePrice: number;
-  factor?: number;
 }
 
 export interface Product {
@@ -165,9 +166,12 @@ export interface SaleItem {
   qty: number;
   unitPrice: number;
   total: number;
+  presentationUnit?: string;
+  factor?: number;
+  barcode?: string;
 }
 
-export type PaymentMethod = 'efectivo' | 'tarjeta' | 'yape' | 'plin' | 'otro';
+export type PaymentMethod = 'efectivo' | 'transferencia' | 'tarjeta' | 'yape' | 'plin' | 'sip' | 'otro';
 export type SunatStatus = 'no_enviado' | 'pendiente' | 'aceptado' | 'rechazado' | 'observado';
 
 export interface AnulationRequest {
@@ -192,6 +196,8 @@ export interface Sale {
   igv: number;
   total: number;
   paymentMethod: PaymentMethod;
+  bankName?: string | null;
+  operationNumber?: string | null;
   paidAmount: number;
   changeAmount: number;
   consolidated: boolean;

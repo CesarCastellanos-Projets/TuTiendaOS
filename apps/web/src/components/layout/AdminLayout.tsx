@@ -30,7 +30,7 @@ const NAV = [
   { to: '/admin/ubicaciones', label: 'Tiendas y Almacenes', icon: Warehouse },
   { to: '/admin/ingresos', label: 'Ingresos de Mercadería', icon: ArrowDownToLine },
   { to: '/admin/transferencias', label: 'Transferencias', icon: ArrowLeftRight },
-  { to: '/admin/reposicion', label: 'Reposiciones', icon: ClipboardList },
+  { to: '/admin/reposiciones', label: 'Reposiciones', icon: ClipboardList },
   { to: '/admin/ajustes', label: 'Ajustes de Inventario', icon: SlidersHorizontal },
   { to: '/admin/kardex', label: 'Kárdex de Movimientos', icon: History },
   { to: '/admin/comprobantes', label: 'Comprobantes Emitidos', icon: Receipt },

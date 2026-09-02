@@ -45,34 +45,47 @@ export function useStoreCatalog(storeId: string | undefined): {
   return { items, offline };
 }
 
+let cachedProducts: any[] | null = null;
+let lastProductFetch = 0;
+
+async function getProductsCatalog() {
+  if (cachedProducts && Date.now() - lastProductFetch < 60000) {
+    return cachedProducts;
+  }
+  const snap = await getDocs(query(collection(db, 'products'), limit(500)));
+  cachedProducts = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  lastProductFetch = Date.now();
+  return cachedProducts;
+}
+
 export async function findInCatalog(
   _storeId: string,
   code: string,
   catalog: ProductStock[]
-): Promise<ProductStock | null> {
+): Promise<(ProductStock & { presentationUnit?: string; factor?: number }) | null> {
   const c = code.trim();
   const byBarcode = catalog.find((p) => p.barcode === c || p.productId === c);
-  if (byBarcode) return byBarcode;
+  if (byBarcode) return { ...byBarcode, factor: 1 };
 
   try {
-    // Buscar si corresponde a una presentación secundaria
-    const qProduct = query(collection(db, 'products'), limit(300));
-    const snapProd = await getDocs(qProduct);
-    for (const docP of snapProd.docs) {
-      const pData = docP.data();
-      const matchPres = (pData.presentations || []).find((pr: { barcode?: string }) => pr.barcode === c);
+    const prods = await getProductsCatalog();
+    for (const pData of prods) {
+      const matchPres = (pData.presentations || []).find((pr: any) => pr.barcode && pr.barcode.trim() === c);
       if (matchPres || pData.barcode === c || pData.internalCode === c) {
-        const foundStock = catalog.find((s) => s.productId === docP.id);
+        const foundStock = catalog.find((s) => s.productId === pData.id);
         if (foundStock) {
           if (matchPres) {
+            const label = matchPres.factor && matchPres.factor > 1 ? `${matchPres.unit} x${matchPres.factor}` : matchPres.unit;
             return {
               ...foundStock,
-              productName: `${foundStock.productName} (${matchPres.unit})`,
+              productName: `${foundStock.productName} (${label})`,
               salePrice: matchPres.salePrice,
-              barcode: matchPres.barcode
+              barcode: matchPres.barcode,
+              presentationUnit: matchPres.unit,
+              factor: matchPres.factor || 1
             };
           }
-          return foundStock;
+          return { ...foundStock, factor: 1 };
         }
       }
     }
@@ -83,12 +96,41 @@ export async function findInCatalog(
 }
 
 export function useCatalogSearch(items: ProductStock[]) {
+  const [extraItems, setExtraItems] = useState<(ProductStock & { presentationUnit?: string; factor?: number })[]>([]);
+
+  useEffect(() => {
+    void getProductsCatalog().then((prods) => {
+      const list: (ProductStock & { presentationUnit?: string; factor?: number })[] = [];
+      for (const p of prods) {
+        const inStock = items.find((s) => s.productId === p.id);
+        if (!inStock) continue;
+        for (const pres of (p.presentations || [])) {
+          if (!pres.salePrice) continue;
+          const label = pres.factor && pres.factor > 1 ? `${pres.unit} x${pres.factor}` : pres.unit;
+          list.push({
+            ...inStock,
+            productName: `${inStock.productName} (${label})`,
+            salePrice: pres.salePrice,
+            barcode: pres.barcode || inStock.barcode,
+            presentationUnit: pres.unit,
+            factor: pres.factor || 1
+          });
+        }
+      }
+      setExtraItems(list);
+    });
+  }, [items]);
+
+  const allSearchable = useMemo(() => [...items, ...extraItems], [items, extraItems]);
+
   return useMemo(
     () => (term: string) => {
       const s = term.trim().toLowerCase();
       if (!s) return [];
-      return items.filter((p) => p.productName.toLowerCase().includes(s)).slice(0, 12);
+      return allSearchable
+        .filter((p) => p.productName.toLowerCase().includes(s) || (p.barcode ?? '').includes(s))
+        .slice(0, 16);
     },
-    [items]
+    [allSearchable]
   );
 }

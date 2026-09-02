@@ -3,7 +3,6 @@ import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, wh
 import {
   Camera,
   CheckCircle2,
-  CreditCard,
   DollarSign,
   Minus,
   Plus,
@@ -19,7 +18,8 @@ import {
   AlertCircle,
   Vault,
   ScanLine,
-  Calculator
+  Calculator,
+  WalletCards
 } from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../lib/auth';
@@ -35,15 +35,19 @@ import { DNI_RE, money, RUC_RE } from '../../lib/utils';
 import { Modal } from '../../components/ui/Modal';
 
 interface CartLine extends SaleItem {
+  lineId: string;
   stock: number;
   promo?: boolean;
 }
 
-const PAYMENTS: { id: PaymentMethod; label: string; icon: typeof DollarSign; colorClass: string }[] = [
+const BANKS = ['BCP', 'BBVA', 'Interbank', 'Scotiabank', 'Caja Huancayo', 'Caja Arequipa', 'Banco de la Nación', 'Otro'];
+
+const PAYMENTS: { id: PaymentMethod; label: string; icon: any; colorClass: string }[] = [
   { id: 'efectivo', label: 'Efectivo', icon: DollarSign, colorClass: 'border-emerald-500 text-emerald-700 bg-emerald-50/70' },
-  { id: 'tarjeta', label: 'Tarjeta', icon: CreditCard, colorClass: 'border-indigo-500 text-indigo-700 bg-indigo-50/70' },
+  { id: 'transferencia', label: 'Transferencia', icon: Building2, colorClass: 'border-blue-500 text-blue-700 bg-blue-50/70' },
   { id: 'yape', label: 'Yape', icon: QrCode, colorClass: 'border-purple-600 text-purple-700 bg-purple-50/70' },
-  { id: 'plin', label: 'Plin', icon: QrCode, colorClass: 'border-cyan-500 text-cyan-700 bg-cyan-50/70' }
+  { id: 'plin', label: 'Plin', icon: QrCode, colorClass: 'border-cyan-500 text-cyan-700 bg-cyan-50/70' },
+  { id: 'sip', label: 'Sip', icon: WalletCards, colorClass: 'border-amber-500 text-amber-700 bg-amber-50/70' }
 ];
 
 export function PosSale() {
@@ -59,6 +63,7 @@ export function PosSale() {
   const [clientDoc, setClientDoc] = useState<ClientDoc>({ tipo: '-', numero: '', nombre: '' });
   const [payment, setPayment] = useState<PaymentMethod>('efectivo');
   const [paid, setPaid] = useState('');
+  const [bankName, setBankName] = useState('BCP');
   const [invoiceMode, setInvoiceMode] = useState(false);
   const [dniModal, setDniModal] = useState(false);
   const [rucValue, setRucValue] = useState('');
@@ -97,13 +102,18 @@ export function PosSale() {
       const inCat = catalog.find((c) => c.productId === item.productId);
       const stock = inCat ? inCat.quantity : item.availableQty;
       const effectiveQty = Math.max(1, item.qty);
+      const lineId = `${item.productId}_${item.barcode || 'base'}_${item.unitPrice}`;
       newCart.push({
+        lineId,
         productId: item.productId,
         name: item.name,
         qty: effectiveQty,
         unitPrice: item.unitPrice,
         total: round2(effectiveQty * item.unitPrice),
-        stock: stock
+        stock: stock,
+        presentationUnit: item.unit,
+        factor: 1,
+        barcode: item.barcode
       });
     }
     setCart(newCart);
@@ -144,34 +154,48 @@ export function PosSale() {
     return catalog.filter((p) => p.locationName === selectedCategory);
   }, [catalog, selectedCategory]);
 
-  function addToCart(p: ProductStock): void {
+  function addToCart(p: ProductStock & { presentationUnit?: string; factor?: number }): void {
     setError(null);
+    const factor = p.factor || 1;
+    const lineId = `${p.productId}_${p.barcode || 'base'}_${p.salePrice}`;
+
     setCart((prev) => {
-      const existing = prev.find((l) => l.productId === p.productId);
+      const currentAllocated = prev
+        .filter((l) => l.productId === p.productId)
+        .reduce((sum, l) => sum + l.qty * (l.factor || 1), 0);
+
+      if (currentAllocated + factor > p.quantity) {
+        setError(`Stock insuficiente: quedan ${p.quantity} unidades base de ${p.productName}`);
+        return prev;
+      }
+
+      const existing = prev.find((l) => l.lineId === lineId);
       if (existing) {
-        if (existing.qty + 1 > existing.stock) {
-          setError(`Solo quedan ${p.quantity} unidades de ${p.productName}`);
-          return prev;
-        }
         return prev.map((l) =>
-          l.productId === p.productId
+          l.lineId === lineId
             ? { ...l, qty: l.qty + 1, total: round2((l.qty + 1) * l.unitPrice) }
             : l
         );
       }
-      if (p.quantity < 1) {
+
+      if (p.quantity < factor) {
         setError(`${p.productName} sin stock disponible`);
         return prev;
       }
+
       return [
         ...prev,
         {
+          lineId,
           productId: p.productId,
           name: p.productName,
           qty: 1,
           unitPrice: p.salePrice,
           total: round2(p.salePrice),
-          stock: p.quantity
+          stock: p.quantity,
+          presentationUnit: p.presentationUnit,
+          factor,
+          barcode: p.barcode ?? undefined
         }
       ];
     });
@@ -270,14 +294,19 @@ export function PosSale() {
         profile,
         uid: user.uid,
         clientDoc,
-        items: cart.map(({ productId, name, qty, unitPrice, total }) => ({
+        items: cart.map(({ productId, name, qty, unitPrice, total, presentationUnit, factor, barcode }) => ({
           productId,
           name,
           qty,
           unitPrice,
-          total
+          total,
+          presentationUnit,
+          factor: factor || 1,
+          barcode
         })),
         paymentMethod: payment,
+        bankName: payment === 'transferencia' ? bankName : null,
+        operationNumber: null,
         paidAmount: payment === 'efectivo' ? Number(paid) || total : total,
         consolidated: !invoiceMode && total < umbralConsol,
         cashSessionId: sessionOpen?.id,
@@ -633,7 +662,7 @@ export function PosSale() {
           ) : (
             cart.map((l) => (
               <div
-                key={l.productId}
+                key={l.lineId}
                 className="flex items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white p-3 shadow-xs animate-in fade-in"
               >
                 <div className="min-w-0 flex-1">
@@ -654,7 +683,7 @@ export function PosSale() {
                       setCart((prev) =>
                         prev
                           .map((x) =>
-                            x.productId === l.productId
+                            x.lineId === l.lineId
                               ? { ...x, qty: x.qty - 1, total: round2((x.qty - 1) * x.unitPrice) }
                               : x
                           )
@@ -671,17 +700,23 @@ export function PosSale() {
 
                   <button
                     aria-label={`Sumar ${l.name}`}
-                    disabled={l.qty >= l.stock}
-                    className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 disabled:opacity-30 active:scale-95"
-                    onClick={() =>
+                    className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
+                    onClick={() => {
+                      const allocated = cart
+                        .filter((x) => x.productId === l.productId)
+                        .reduce((sum, x) => sum + x.qty * (x.factor || 1), 0);
+                      if (allocated + (l.factor || 1) > l.stock) {
+                        setError(`Stock máximo alcanzado para ${l.name} (quedan ${l.stock} unidades base)`);
+                        return;
+                      }
                       setCart((prev) =>
                         prev.map((x) =>
-                          x.productId === l.productId
+                          x.lineId === l.lineId
                             ? { ...x, qty: x.qty + 1, total: round2((x.qty + 1) * x.unitPrice) }
                             : x
                         )
-                      )
-                    }
+                      );
+                    }}
                   >
                     <Plus size={12} />
                   </button>
@@ -698,7 +733,7 @@ export function PosSale() {
         {/* Footer / Panel de Cobro */}
         <div className="border-t border-slate-200 bg-white p-4 space-y-3.5 shadow-lg">
           {/* Selector de Método de Pago */}
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-5 gap-1.5">
             {PAYMENTS.map(({ id, label, icon: Icon, colorClass }) => {
               const active = payment === id;
               return (
@@ -713,11 +748,36 @@ export function PosSale() {
                   }`}
                 >
                   <Icon size={16} />
-                  <span>{label}</span>
+                  <span className="truncate">{label}</span>
                 </button>
               );
             })}
           </div>
+
+          {/* Selector de Banco para Transferencia */}
+          {payment === 'transferencia' && (
+            <div className="rounded-xl bg-blue-50/60 border border-blue-200/80 p-3 space-y-2">
+              <label className="text-[10px] font-bold uppercase tracking-wider text-blue-900 block">
+                Selecciona la Entidad Bancaria
+              </label>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                {BANKS.map((b) => (
+                  <button
+                    key={b}
+                    type="button"
+                    onClick={() => setBankName(b)}
+                    className={`h-9 flex items-center justify-center rounded-xl px-2 text-xs font-bold transition-all truncate text-center ${
+                      bankName === b
+                        ? 'bg-blue-600 text-white shadow-xs font-extrabold ring-2 ring-blue-400/30'
+                        : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    {b}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Calculadora de Vuelto para Efectivo */}
           {payment === 'efectivo' && (

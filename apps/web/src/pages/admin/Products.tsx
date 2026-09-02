@@ -29,7 +29,8 @@ export function ProductsPage() {
   const [products, setProducts] = useState<(Product & { id: string })[]>([]);
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<(Partial<Product> & { id?: string }) | null>(null);
-  const [presentations, setPresentations] = useState<ProductPresentation[]>([]);
+  const [presentations, setPresentations] = useState<(ProductPresentation & { salePriceInput?: string; factorInput?: string })[]>([]);
+  const [basePriceInput, setBasePriceInput] = useState('');
   const [viewingStockProduct, setViewingStockProduct] = useState<(Product & { id: string }) | null>(null);
   const [productStocks, setProductStocks] = useState<ProductStock[]>([]);
   const [loadingStocks, setLoadingStocks] = useState(false);
@@ -50,7 +51,16 @@ export function ProductsPage() {
 
   const openEditModal = (p: Partial<Product> & { id?: string }) => {
     setEditing(p);
-    setPresentations(p.presentations ? [...p.presentations] : []);
+    setBasePriceInput(p.salePrice !== undefined ? String(p.salePrice) : '');
+    setPresentations(
+      p.presentations
+        ? p.presentations.map((pr) => ({
+            ...pr,
+            salePriceInput: pr.salePrice !== undefined ? String(pr.salePrice) : '',
+            factorInput: String(pr.factor || 1)
+          }))
+        : []
+    );
     setShowAddUnitInput(false);
     setCustomUnitInput('');
   };
@@ -95,18 +105,39 @@ export function ProductsPage() {
     setPresentations((prev) => [
       ...prev,
       {
-        unit: 'PAQ',
+        unit: 'CJA',
+        factor: 12,
+        factorInput: '12',
         barcode: '',
         salePrice: 0,
-        factor: 6
+        salePriceInput: ''
       }
     ]);
   };
 
-  const updatePresentationRow = (index: number, field: keyof ProductPresentation, value: string | number) => {
+  const updatePresentationRow = (index: number, field: string, value: string) => {
     setPresentations((prev) => {
       const updated = [...prev];
-      updated[index] = { ...updated[index], [field]: value };
+      const current = { ...updated[index] };
+      if (field === 'salePrice') {
+        const sanitized = value.replace(/[^0-9.,]/g, '');
+        current.salePriceInput = sanitized;
+        current.salePrice = parseFloat(sanitized.replace(',', '.')) || 0;
+      } else if (field === 'factor') {
+        const sanitized = value.replace(/[^0-9]/g, '');
+        current.factorInput = sanitized;
+        current.factor = Math.max(1, parseInt(sanitized) || 1);
+      } else if (field === 'unit') {
+        current.unit = value;
+        if (current.factorInput === '1' || current.factorInput === '12' || current.factorInput === '6' || !current.factorInput) {
+          const defFactor = value === 'DOC' || value === 'CJA' ? '12' : value === 'PAQ' ? '6' : '1';
+          current.factorInput = defFactor;
+          current.factor = parseInt(defFactor);
+        }
+      } else if (field === 'barcode') {
+        current.barcode = value;
+      }
+      updated[index] = current;
       return updated;
     });
   };
@@ -131,18 +162,24 @@ export function ProductsPage() {
   const save = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    const mainPrice = Math.round(num(fd.get('salePrice')) * 100) / 100;
+    const mainPrice = Math.round((parseFloat(basePriceInput.replace(',', '.')) || 0) * 100) / 100;
     const mainUnit = (clean(fd.get('unit')) || 'UN') as Unit;
 
     // Filter and sanitize presentations
     const validPresentations: ProductPresentation[] = presentations
-      .filter((p) => p.unit.trim() && p.salePrice > 0)
-      .map((p) => ({
-        unit: p.unit.trim().toUpperCase(),
-        barcode: (p.barcode || '').trim(),
-        salePrice: Math.round(Number(p.salePrice) * 100) / 100,
-        factor: Math.max(1, Math.trunc(Number(p.factor) || 1))
-      }));
+      .map((p) => {
+        const rawPrice = p.salePriceInput !== undefined ? p.salePriceInput : String(p.salePrice || '');
+        const priceNum = parseFloat(rawPrice.replace(',', '.')) || 0;
+        const rawFactor = p.factorInput !== undefined ? p.factorInput : String(p.factor || 1);
+        const factorNum = Math.max(1, parseInt(rawFactor) || 1);
+        return {
+          unit: p.unit.trim().toUpperCase(),
+          barcode: (p.barcode || '').trim() || undefined,
+          salePrice: Math.round(priceNum * 100) / 100,
+          factor: factorNum
+        };
+      })
+      .filter((p) => p.unit && p.salePrice > 0);
 
     const data: Product = {
       name: clean(fd.get('name')),
@@ -245,7 +282,7 @@ export function ProductsPage() {
                           </span>
                           {p.presentations.map((pr, idx) => (
                             <span key={idx} className="badge bg-slate-100 text-slate-700 border border-slate-200 text-[11px]">
-                              {pr.unit}: S/ {pr.salePrice.toFixed(2)}
+                              {pr.unit} {pr.factor && pr.factor > 1 ? `(x${pr.factor})` : ''}: S/ {pr.salePrice.toFixed(2)}
                             </span>
                           ))}
                         </div>
@@ -428,9 +465,9 @@ export function ProductsPage() {
                   Presentación Base (Por Defecto)
                 </span>
               </div>
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-                <div>
-                  <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Unidad *</label>
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-12">
+                <div className="sm:col-span-3">
+                  <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Unidad Base *</label>
                   <select name="unit" defaultValue={editing?.unit ?? 'UN'} className="field !h-10 text-xs font-bold">
                     {availableUnits.map((u) => (
                       <option key={u} value={u}>
@@ -439,7 +476,17 @@ export function ProductsPage() {
                     ))}
                   </select>
                 </div>
-                <div>
+                <div className="sm:col-span-2">
+                  <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Equivale a</label>
+                  <input
+                    type="text"
+                    disabled
+                    value="1 base"
+                    title="La presentación base equivale a 1 unidad fundamental"
+                    className="field !h-10 text-center font-mono font-bold text-xs bg-slate-100/80 text-slate-500 cursor-not-allowed"
+                  />
+                </div>
+                <div className="sm:col-span-4">
                   <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Código de Barras</label>
                   <div className="relative">
                     <Barcode size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -451,15 +498,18 @@ export function ProductsPage() {
                     />
                   </div>
                 </div>
-                <div>
+                <div className="sm:col-span-3">
                   <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Precio Venta S/ *</label>
                   <input
                     name="salePrice"
-                    type="number"
-                    step="0.10"
-                    min="0.10"
+                    type="text"
+                    inputMode="decimal"
                     required
-                    defaultValue={editing?.salePrice}
+                    value={basePriceInput}
+                    onChange={(e) => {
+                      const val = e.target.value.replace(/[^0-9.,]/g, '');
+                      setBasePriceInput(val);
+                    }}
                     placeholder="0.00"
                     className="field !h-10 font-mono font-bold text-xs"
                   />
@@ -493,40 +543,39 @@ export function ProductsPage() {
                       </select>
                     </div>
 
+                    <div className="w-full sm:w-28 shrink-0">
+                      <label className="text-[10px] font-bold uppercase text-slate-500 block sm:hidden mb-0.5">Equivale a (un)</label>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={pres.factorInput !== undefined ? pres.factorInput : (pres.factor ?? 12)}
+                        onChange={(e) => updatePresentationRow(index, 'factor', e.target.value)}
+                        placeholder="12"
+                        title="Cuántas unidades base contiene este empaque"
+                        className="field !h-9 font-mono font-bold text-xs text-center"
+                      />
+                    </div>
+
                     <div className="w-full sm:flex-1 relative">
-                      <label className="text-[10px] font-bold uppercase text-slate-500 block sm:hidden mb-0.5">Código de barras</label>
+                      <label className="text-[10px] font-bold uppercase text-slate-500 block sm:hidden mb-0.5">Código de barras / QR</label>
                       <Barcode size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                       <input
                         value={pres.barcode ?? ''}
                         onChange={(e) => updatePresentationRow(index, 'barcode', e.target.value)}
-                        placeholder="Código de barras de esta unidad…"
+                        placeholder="Escanea o escribe el código de barras de esta caja / pack…"
                         className="field !h-9 !pl-8 font-mono text-xs"
                       />
                     </div>
 
-                    <div className="w-full sm:w-32 shrink-0">
+                    <div className="w-full sm:w-28 shrink-0">
                       <label className="text-[10px] font-bold uppercase text-slate-500 block sm:hidden mb-0.5">Precio S/</label>
                       <input
-                        type="number"
-                        step="0.10"
-                        min="0.10"
-                        value={pres.salePrice || ''}
-                        onChange={(e) => updatePresentationRow(index, 'salePrice', num(e.target.value))}
-                        placeholder="Precio S/"
+                        type="text"
+                        inputMode="decimal"
+                        value={pres.salePriceInput !== undefined ? pres.salePriceInput : (pres.salePrice || '')}
+                        onChange={(e) => updatePresentationRow(index, 'salePrice', e.target.value)}
+                        placeholder="0.00"
                         className="field !h-9 font-mono font-bold text-xs"
-                      />
-                    </div>
-
-                    <div className="w-full sm:w-28 shrink-0">
-                      <label className="text-[10px] font-bold uppercase text-slate-500 block sm:hidden mb-0.5">Equivale a (un)</label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={pres.factor ?? 1}
-                        onChange={(e) => updatePresentationRow(index, 'factor', Math.max(1, parseInt(e.target.value) || 1))}
-                        placeholder="Factor (Ej. 6)"
-                        title="Cuántas unidades base contiene"
-                        className="field !h-9 font-mono text-xs"
                       />
                     </div>
 
