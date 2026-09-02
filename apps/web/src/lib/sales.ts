@@ -44,22 +44,33 @@ export async function createSale(input: SaleInput): Promise<Sale> {
 
   let correlativo = 0;
   await runTransaction(db, async (tx) => {
+    // 1. LECTURAS (Todas antes de cualquier escritura)
     const counterRef = doc(db, 'counters', serie);
     const counterSnap = await tx.get(counterRef);
     if (!counterSnap.exists()) throw new Error(`Serie ${serie} no inicializada`);
-    correlativo = (counterSnap.data().current as number) + 1;
-    tx.update(counterRef, { current: correlativo });
 
     const refs = finalItems.map((i) =>
       doc(db, 'product_stocks', stockId(i.productId, input.storeId))
     );
     const snaps = await Promise.all(refs.map((r) => tx.get(r)));
+
+    // 2. VALIDACIONES
+    correlativo = (counterSnap.data()?.current as number ?? 0) + 1;
     snaps.forEach((snap, i) => {
       if (!snap.exists()) throw new Error(`Sin stock registrado: ${finalItems[i].name}`);
-      const q = snap.data().quantity as number;
+      const data = snap.data();
+      const q = data ? (data.quantity as number) : 0;
       if (q < finalItems[i].qty) {
         throw new Error(`Stock insuficiente de ${finalItems[i].name} (quedan ${q})`);
       }
+    });
+
+    // 3. ESCRITURAS
+    tx.update(counterRef, { current: correlativo });
+
+    snaps.forEach((snap, i) => {
+      const data = snap.data();
+      const q = data ? (data.quantity as number) : 0;
       tx.update(refs[i], { quantity: q - finalItems[i].qty, updatedAt: nowMs() });
     });
 

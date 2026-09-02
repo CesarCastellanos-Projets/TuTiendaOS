@@ -24,17 +24,18 @@ export function RequestRestock() {
   const [busy, setBusy] = useState(false);
   const { msg, flash } = useFlash();
 
-  const storeId = profile.storeId!;
+  const effectiveStoreId = profile.storeId || catalog[0]?.locationId || 'tienda-principal';
 
   useEffect(() => {
-    void getDocs(query(collection(db, 'product_stocks'), where('locationId', '==', storeId), limit(300))).then(
+    if (!effectiveStoreId) return;
+    void getDocs(query(collection(db, 'product_stocks'), where('locationId', '==', effectiveStoreId), limit(300))).then(
       (s) => setCatalog(s.docs.map((d) => d.data() as ProductStock))
     );
     return onSnapshot(
-      query(collection(db, 'product_stocks'), where('locationId', '==', storeId), limit(300)),
+      query(collection(db, 'product_stocks'), where('locationId', '==', effectiveStoreId), limit(300)),
       (s) => setCatalog(s.docs.map((d) => d.data() as ProductStock))
     );
-  }, [storeId]);
+  }, [effectiveStoreId]);
 
   const suggestions = useMemo(
     () =>
@@ -65,9 +66,14 @@ export function RequestRestock() {
     try {
       const storeName = catalog[0]?.locationName ?? 'Mi tienda';
       await setDoc(doc(collection(db, 'replenishment_requests')), {
-        storeId,
+        storeId: effectiveStoreId,
         storeName,
-        items: lines,
+        items: lines.map((l) => ({
+          productId: l.productId,
+          name: l.name,
+          currentQty: Math.trunc(Number(l.currentQty) || 0),
+          requestedQty: Math.max(1, Math.trunc(Number(l.requestedQty) || 1))
+        })),
         status: 'pendiente',
         createdBy: user.uid,
         createdByName: profile.displayName,
@@ -77,8 +83,8 @@ export function RequestRestock() {
       setLines([]);
       setNote('');
       flash('Solicitud enviada al administrador');
-    } catch {
-      flash('Error al enviar la solicitud');
+    } catch (err) {
+      flash(err instanceof Error ? `Error: ${err.message}` : 'Error al enviar la solicitud');
     } finally {
       setBusy(false);
     }

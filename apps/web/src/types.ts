@@ -9,7 +9,14 @@ export interface UserProfile {
   createdAt?: number;
 }
 
-export type Unit = 'UN' | 'KG' | 'LT' | 'PAQ' | 'CJA' | 'DOC';
+export type Unit = 'UN' | 'KG' | 'LT' | 'PAQ' | 'CJA' | 'DOC' | string;
+
+export interface ProductPresentation {
+  unit: string;
+  barcode?: string;
+  salePrice: number;
+  factor?: number;
+}
 
 export interface Product {
   name: string;
@@ -25,6 +32,7 @@ export interface Product {
   promoActive?: boolean;
   sunatCode?: string;
   active: boolean;
+  presentations?: ProductPresentation[];
   updatedAt?: number;
 }
 
@@ -227,6 +235,13 @@ export interface CompanyConfig {
   isDemoMode?: boolean;
   apiFactUrl?: string;
   apiFactToken?: string;
+  // Personalización de Ticket
+  logoUrl?: string;
+  slogan?: string;
+  phone?: string;
+  footerText?: string;
+  ticketWidth?: '80mm' | '58mm';
+  customUnits?: string[];
   updatedAt?: number;
 }
 
@@ -243,6 +258,38 @@ export const DEFAULT_COMPANY: CompanyConfig = {
   solPassword: 'MODDATOS',
   apiFactUrl: 'https://denzoz-api-fact.onrender.com',
   apiFactToken: 'cambia-este-token-largo-y-seguro',
-  isDemoMode: true
+  isDemoMode: true,
+  slogan: 'Calidad y confianza en cada compra',
+  footerText: '¡Gracias por su preferencia!',
+  ticketWidth: '80mm',
+  customUnits: ['UN', 'KG', 'LT', 'PAQ', 'CJA', 'DOC', 'DISPLAY', 'TIRA', 'SACHET', 'BOLSA', 'LATA', 'BOTELLA', 'SOBRE']
 };
 
+export interface QuotationItem {
+  productId: string;
+  name: string;
+  barcode?: string;
+  unit?: string;
+  unitPrice: number;
+  qty: number;
+  total: number;
+  availableQty: number;
+  isAvailable: boolean;
+}
+
+export interface Quotation {
+  id: string;
+  code: string;
+  clientName?: string;
+  clientPhone?: string;
+  storeId: string;
+  storeName: string;
+  items: QuotationItem[];
+  totalAll: number;
+  totalAvailable: number;
+  note?: string | null;
+  createdBy: string;
+  createdByName: string;
+  status: 'pendiente' | 'facturada' | 'descartada';
+  createdAt: number;
+}

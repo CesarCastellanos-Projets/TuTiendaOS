@@ -11,6 +11,7 @@ import {
   Users,
   FileText,
   Receipt,
+  Printer,
   TriangleAlert,
   History,
   LogOut,
@@ -33,6 +34,7 @@ const NAV = [
   { to: '/admin/ajustes', label: 'Ajustes de Inventario', icon: SlidersHorizontal },
   { to: '/admin/kardex', label: 'Kárdex de Movimientos', icon: History },
   { to: '/admin/comprobantes', label: 'Comprobantes Emitidos', icon: Receipt },
+  { to: '/admin/tickets', label: 'Diseño de Tickets', icon: Printer },
   { to: '/admin/sunat', label: 'SUNAT y Facturación', icon: FileText },
   { to: '/admin/incidencias', label: 'Incidencias de Piso', icon: TriangleAlert },
   { to: '/admin/usuarios', label: 'Usuarios y Accesos', icon: Users }

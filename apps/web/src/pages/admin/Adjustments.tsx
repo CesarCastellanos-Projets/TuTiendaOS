@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { collection, getDocs, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
+import { collection, getDocs, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../lib/auth';
 import { adjustStock } from '../../lib/inventory';
@@ -34,13 +34,13 @@ export function AdjustmentsPage() {
     }
     void load();
     return onSnapshot(
-      query(
-        collection(db, 'stock_movements'),
-        where('type', 'in', ['ajuste', 'merma']),
-        orderBy('createdAt', 'desc'),
-        limit(20)
-      ),
-      (s) => setMovements(s.docs.map((d) => d.data() as StockMovement))
+      query(collection(db, 'stock_movements'), orderBy('createdAt', 'desc'), limit(100)),
+      (s) => {
+        const list = s.docs
+          .map((d) => d.data() as StockMovement)
+          .filter((m) => m.type === 'ajuste' || m.type === 'merma');
+        setMovements(list.slice(0, 20));
+      }
     );
   }, []);
 

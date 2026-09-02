@@ -19,6 +19,7 @@ import { KardexPage } from './pages/admin/Kardex';
 import { ReplenishmentAdminPage } from './pages/admin/Replenishment';
 import { UsersPage } from './pages/admin/Users';
 import { SunatConfigPage } from './pages/admin/SunatConfig';
+import { TicketDesignerPage } from './pages/admin/TicketDesigner';
 import { ReceiptsPage } from './pages/admin/Receipts';
 import { IncidentsAdminPage } from './pages/admin/Incidents';
 
@@ -30,6 +31,7 @@ import { RequestRestock } from './pages/pos/RequestRestock';
 
 import { WorkerLookup } from './pages/worker/Lookup';
 import { IncidentsWorkerPage } from './pages/worker/Incidents';
+import { WorkerQuotations } from './pages/worker/Quotations';
 
 const router = createBrowserRouter([
   {
@@ -50,39 +52,41 @@ const router = createBrowserRouter([
           { path: 'transferencias', element: <TransfersPage /> },
           { path: 'ajustes', element: <AdjustmentsPage /> },
           { path: 'kardex', element: <KardexPage /> },
-          { path: 'reposicion', element: <ReplenishmentAdminPage /> },
+          { path: 'reposiciones', element: <ReplenishmentAdminPage /> },
+          { path: 'incidencias', element: <IncidentsAdminPage /> },
           { path: 'usuarios', element: <UsersPage /> },
-          { path: 'sunat', element: <SunatConfigPage /> },
           { path: 'comprobantes', element: <ReceiptsPage /> },
-          { path: 'incidencias', element: <IncidentsAdminPage /> }
+          { path: 'tickets', element: <TicketDesignerPage /> },
+          { path: 'sunat', element: <SunatConfigPage /> }
         ]
       }
     ]
   },
   {
-    element: <RequireRole roles={['pos']} />,
+    element: <RequireRole roles={['pos', 'admin']} />,
     children: [
       {
         path: '/pos',
         element: <PosLayout />,
         children: [
           { index: true, element: <PosSale /> },
-          { path: 'recepciones', element: <ReceivingPage /> },
+          { path: 'recepcion', element: <ReceivingPage /> },
           { path: 'caja', element: <CashPage /> },
-          { path: 'ventas', element: <MySales /> },
+          { path: 'mis-ventas', element: <MySales /> },
           { path: 'reposicion', element: <RequestRestock /> }
         ]
       }
     ]
   },
   {
-    element: <RequireRole roles={['trabajador']} />,
+    element: <RequireRole roles={['trabajador', 'pos', 'admin']} />,
     children: [
       {
         path: '/w',
         element: <WorkerLayout />,
         children: [
           { index: true, element: <WorkerLookup /> },
+          { path: 'cotizaciones', element: <WorkerQuotations /> },
           { path: 'incidencias', element: <IncidentsWorkerPage /> }
         ]
       }

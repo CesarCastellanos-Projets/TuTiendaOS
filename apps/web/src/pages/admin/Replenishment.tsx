@@ -18,8 +18,13 @@ export function ReplenishmentAdminPage() {
 
   useEffect(() => {
     const un1 = onSnapshot(
-      query(collection(db, 'replenishment_requests'), where('status', '==', 'pendiente'), orderBy('createdAt', 'desc')),
-      (s) => setRequests(s.docs.map((d) => ({ ...(d.data() as ReplenishmentRequest), id: d.id })))
+      query(collection(db, 'replenishment_requests'), orderBy('createdAt', 'desc'), limit(100)),
+      (s) => {
+        const list = s.docs
+          .map((d) => ({ ...(d.data() as ReplenishmentRequest), id: d.id }))
+          .filter((r) => r.status === 'pendiente');
+        setRequests(list);
+      }
     );
     getDocs(query(collection(db, 'warehouses'), where('isCentral', '==', true), limit(1))).then((s) => {
       if (!s.empty) setCentralWhId(s.docs[0].id);

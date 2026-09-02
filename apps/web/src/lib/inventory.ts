@@ -83,11 +83,14 @@ export async function receiveTransferItems(params: {
       const ref = doc(fs, 'product_stocks', stockId(item.productId, toLocationId));
       const snap = await tx.get(ref);
       if (!snap.exists()) {
+        const prodRef = doc(fs, 'products', item.productId);
+        const prodSnap = await tx.get(prodRef);
+        const prodData = prodSnap.exists() ? prodSnap.data() : null;
         tx.set(ref, {
           productId: item.productId,
           productName: item.name,
-          barcode: item.barcode ?? null,
-          salePrice: item.salePrice,
+          barcode: item.barcode ?? prodData?.barcode ?? null,
+          salePrice: item.salePrice > 0 ? item.salePrice : (prodData?.salePrice ?? 0),
           locationType: 'store',
           locationId: toLocationId,
           locationName: params.locationName,

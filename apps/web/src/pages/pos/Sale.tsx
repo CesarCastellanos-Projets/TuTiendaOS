@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { collection, doc, getDoc, limit, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 import {
   Camera,
   CheckCircle2,
@@ -18,7 +18,8 @@ import {
   Sparkles,
   AlertCircle,
   Vault,
-  ScanLine
+  ScanLine,
+  Calculator
 } from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../lib/auth';
@@ -29,7 +30,7 @@ import { createSale } from '../../lib/sales';
 import { sendToSunat } from '../../services/sunat';
 import { lookupClient } from '../../services/ruc';
 import { ticketHtml, printTicket } from '../../lib/print';
-import type { CashSession, ClientDoc, PaymentMethod, ProductStock, SaleItem } from '../../types';
+import type { CashSession, ClientDoc, PaymentMethod, ProductStock, SaleItem, Quotation } from '../../types';
 import { DNI_RE, money, RUC_RE } from '../../lib/utils';
 import { Modal } from '../../components/ui/Modal';
 
@@ -69,6 +70,48 @@ export function PosSale() {
   const [busy, setBusy] = useState(false);
   const [storeName, setStoreName] = useState('Tienda');
   const [selectedCategory, setSelectedCategory] = useState<string>('todos');
+
+  // Cotizaciones
+  const [quoteModal, setQuoteModal] = useState(false);
+  const [quotesList, setQuotesList] = useState<Quotation[]>([]);
+  const [loadingQuotes, setLoadingQuotes] = useState(false);
+
+  const openQuoteModal = async () => {
+    setQuoteModal(true);
+    setLoadingQuotes(true);
+    try {
+      const snap = await getDocs(
+        query(collection(db, 'quotations'), orderBy('createdAt', 'desc'), limit(20))
+      );
+      setQuotesList(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Quotation)));
+    } catch {
+      // fallback
+    } finally {
+      setLoadingQuotes(false);
+    }
+  };
+
+  const loadQuoteIntoCart = (q: Quotation) => {
+    const newCart: CartLine[] = [];
+    for (const item of q.items) {
+      const inCat = catalog.find((c) => c.productId === item.productId);
+      const stock = inCat ? inCat.quantity : item.availableQty;
+      const effectiveQty = Math.max(1, item.qty);
+      newCart.push({
+        productId: item.productId,
+        name: item.name,
+        qty: effectiveQty,
+        unitPrice: item.unitPrice,
+        total: round2(effectiveQty * item.unitPrice),
+        stock: stock
+      });
+    }
+    setCart(newCart);
+    if (q.clientName && q.clientName !== 'Cliente Cotización') {
+      setClientDoc({ tipo: '-', numero: '', nombre: q.clientName });
+    }
+    setQuoteModal(false);
+  };
 
   useEffect(() => {
     void getDoc(doc(db, 'stores', storeId)).then((s) => {
@@ -160,7 +203,10 @@ export function PosSale() {
       setInvoiceMode(true);
       setDniModal(false);
     } catch {
-      setError('No se pudo consultar el RUC. Verifica tu conexión a internet.');
+      setClientDoc({ tipo: 'RUC', numero: rucValue, nombre: `CLIENTE RUC ${rucValue}` });
+      setInvoiceMode(true);
+      setDniModal(false);
+      setError('No se pudo autocompletar la razón social desde la API. Se asignó el RUC para la factura.');
     } finally {
       setLookupBusy(false);
     }
@@ -182,7 +228,7 @@ export function PosSale() {
       setClientDoc({
         tipo: 'DNI',
         numero: dniValue,
-        nombre: c?.nombre ?? `DNI ${dniValue}`
+        nombre: c?.nombre ?? `CLIENTE DNI ${dniValue}`
       });
       setInvoiceMode(false);
       setDniModal(false);
@@ -502,16 +548,28 @@ export function PosSale() {
               </button>
             </div>
 
-            {cart.length > 0 && (
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                onClick={() => setCart([])}
-                className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-critical transition-colors"
-                title="Vaciar carrito"
+                onClick={() => void openQuoteModal()}
+                className="flex h-9 items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50/70 px-2.5 text-xs font-bold text-primary hover:bg-indigo-100 transition-colors"
+                title="Cargar cotización guardada"
               >
-                <Trash2 size={16} />
+                <Calculator size={15} />
+                <span className="hidden sm:inline">Cotizaciones</span>
               </button>
-            )}
+
+              {cart.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setCart([])}
+                  className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-critical transition-colors"
+                  title="Vaciar carrito"
+                >
+                  <Trash2 size={16} />
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Badge de Cliente */}
@@ -815,6 +873,64 @@ export function PosSale() {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* ─── MODAL CARGAR COTIZACIÓN ────────────────────────────────────────── */}
+      <Modal open={quoteModal} title="Cargar Cotización de Útiles / Pedido" onClose={() => setQuoteModal(false)}>
+        <div className="space-y-4">
+          <p className="text-xs text-slate-500">
+            Selecciona una cotización generada por los trabajadores para importar los productos al carrito:
+          </p>
+
+          {loadingQuotes ? (
+            <div className="p-8 text-center text-sm text-slate-500">Cargando cotizaciones…</div>
+          ) : quotesList.length === 0 ? (
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center text-slate-400">
+              <Calculator size={32} className="mx-auto text-slate-300 mb-2" />
+              <p className="text-sm font-bold text-slate-600">No hay cotizaciones registradas</p>
+              <p className="text-xs text-slate-400 mt-0.5">Los trabajadores pueden crearlas desde su panel.</p>
+            </div>
+          ) : (
+            <div className="space-y-2 max-h-80 overflow-y-auto">
+              {quotesList.map((q) => (
+                <div
+                  key={q.id}
+                  className="flex items-center justify-between p-3.5 rounded-2xl border border-slate-200 bg-white hover:border-primary/50 hover:bg-indigo-50/20 transition-all shadow-xs"
+                >
+                  <div className="min-w-0 flex-1 pr-3">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono font-extrabold text-sm text-slate-900">{q.code}</span>
+                      <span className="text-[11px] text-slate-400">· {q.items.length} productos</span>
+                    </div>
+                    <p className="text-xs font-semibold text-slate-700 truncate mt-0.5">
+                      👤 {q.clientName || 'Cliente anónimo'}
+                    </p>
+                    <span className="text-[10px] text-slate-400">Creado por {q.createdByName}</span>
+                  </div>
+
+                  <div className="text-right shrink-0">
+                    <span className="font-mono font-extrabold text-sm text-emerald-600 block">
+                      S/ {q.totalAll.toFixed(2)}
+                    </span>
+                    <button
+                      onClick={() => loadQuoteIntoCart(q)}
+                      className="btn-primary !min-h-8 !px-3 !py-1 text-xs font-bold mt-1"
+                    >
+                      Cargar
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <button
+            onClick={() => setQuoteModal(false)}
+            className="btn-ghost w-full !min-h-10 text-xs font-bold"
+          >
+            Cerrar
+          </button>
+        </div>
       </Modal>
     </div>
   );

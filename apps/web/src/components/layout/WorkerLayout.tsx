@@ -8,12 +8,14 @@ import {
   Menu,
   X,
   Store,
-  ChevronRight
+  ChevronRight,
+  Calculator
 } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
 
 const WORKER_NAV = [
   { to: '/w', icon: ScanBarcode, label: 'Consultar Precio y Stock', shortLabel: 'Consultar', end: true },
+  { to: '/w/cotizaciones', icon: Calculator, label: 'Cotizar Pedidos', shortLabel: 'Cotizar' },
   { to: '/w/incidencias', icon: TriangleAlert, label: 'Reportar Incidencia', shortLabel: 'Incidencias' }
 ];
 
@@ -69,7 +71,7 @@ export function WorkerLayout() {
 
       {/* ─── BOTTOM NAVIGATION BAR FLOTANTE Y ELEGANTE ────────────────────────── */}
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200/80 bg-white/95 backdrop-blur-md px-3 py-2">
-        <div className="mx-auto grid max-w-md grid-cols-2 gap-2">
+        <div className="mx-auto grid max-w-md grid-cols-3 gap-1.5">
           {WORKER_NAV.map(({ to, icon: Icon, shortLabel, end }) => (
             <NavLink
               key={to}

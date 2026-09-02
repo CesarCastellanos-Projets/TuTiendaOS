@@ -10,24 +10,32 @@ export function ticketHtml(sale: Sale, cfg?: CompanyConfig): string {
         `<span class="mono r">${i.total.toFixed(2)}</span></div>`
     )
     .join('');
+
   return `
   <div class="head">
+    ${cfg?.logoUrl ? `<div style="text-align:center;margin-bottom:6px;"><img src="${esc(cfg.logoUrl)}" style="max-height:48px;max-width:140px;display:inline-block;filter:grayscale(100%);" alt="Logo" /></div>` : ''}
     <div class="brand">${esc(cfg?.razonSocial ?? "D'ENZOZ")}</div>
-    ${cfg?.ruc ? `<div>RUC ${esc(cfg.ruc)}</div>` : ''}
-    <div>${esc(sale.storeName)}</div>
-    <div>${sale.type.toUpperCase()} ${esc(sale.code)}${sale.consolidated ? ' (CONSOLIDADO)' : ''}</div>
-    <div>${fmtDateTime(sale.createdAt)}</div>
+    ${cfg?.slogan ? `<div style="font-size:10px;color:#555;margin-bottom:2px;">${esc(cfg.slogan)}</div>` : ''}
+    ${cfg?.ruc ? `<div>RUC: ${esc(cfg.ruc)}</div>` : ''}
+    ${cfg?.direccion ? `<div style="font-size:10px;">${esc(cfg.direccion)}</div>` : ''}
+    ${cfg?.phone ? `<div style="font-size:10px;">Tel: ${esc(cfg.phone)}</div>` : ''}
+    <div style="font-weight:bold;margin-top:3px;">${esc(sale.storeName)}</div>
+    <div style="font-weight:bold;font-size:13px;margin:2px 0;">${sale.type.toUpperCase()} ELECTRÓNICA: ${esc(sale.code)}${sale.consolidated ? ' (CONSOLIDADO)' : ''}</div>
+    <div>Fecha: ${fmtDateTime(sale.createdAt)}</div>
     <div>Cajero: ${esc(sale.userName)}</div>
     ${sale.clientDoc.tipo !== '-' ? `<div>Cliente: ${esc(sale.clientDoc.nombre)} (${esc(sale.clientDoc.numero)})</div>` : ''}
   </div>
   <hr />
   ${lines}
   <hr />
-  <div class="row"><span>SUBTOTAL</span><span class="mono r">${sale.subtotal.toFixed(2)}</span></div>
-  <div class="row"><span>IGV</span><span class="mono r">${sale.igv.toFixed(2)}</span></div>
-  <div class="row total"><span>TOTAL S/</span><span class="mono r">${sale.total.toFixed(2)}</span></div>
-  <div class="row"><span>Pago: ${esc(sale.paymentMethod)}</span><span class="mono r">Vuelto ${sale.changeAmount.toFixed(2)}</span></div>
-  <div class="foot">¡Gracias por su compra!</div>`;
+  <div class="row"><span>SUBTOTAL</span><span class="mono r">S/ ${sale.subtotal.toFixed(2)}</span></div>
+  <div class="row"><span>IGV (${((cfg?.igvRate ?? 0.18) * 100).toFixed(0)}%)</span><span class="mono r">S/ ${sale.igv.toFixed(2)}</span></div>
+  <div class="row total"><span>TOTAL A PAGAR</span><span class="mono r">S/ ${sale.total.toFixed(2)}</span></div>
+  <div class="row"><span>Pago: ${esc(sale.paymentMethod).toUpperCase()}</span><span class="mono r">Vuelto S/ ${sale.changeAmount.toFixed(2)}</span></div>
+  <hr />
+  <div class="foot" style="text-align:center;font-size:11px;margin-top:6px;line-height:1.4;">
+    ${esc(cfg?.footerText ?? '¡Gracias por su compra!')}
+  </div>`;
 }
 
 export function printTicket(html: string): void {

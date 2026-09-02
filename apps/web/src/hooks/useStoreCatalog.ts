@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { onSnapshot } from 'firebase/firestore';
-import { collection, getDocs, limit, query, where } from 'firebase/firestore';
+import { onSnapshot, collection, getDocs, limit, query } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { stocksByLocation } from '../lib/inventory';
 import { cacheCatalog, localDb } from '../lib/catalog-cache';
@@ -47,27 +46,40 @@ export function useStoreCatalog(storeId: string | undefined): {
 }
 
 export async function findInCatalog(
-  storeId: string,
+  _storeId: string,
   code: string,
   catalog: ProductStock[]
 ): Promise<ProductStock | null> {
   const c = code.trim();
   const byBarcode = catalog.find((p) => p.barcode === c || p.productId === c);
   if (byBarcode) return byBarcode;
-  // Fallback online por barcode exacto
+
   try {
-    const q = query(
-      collection(db, 'product_stocks'),
-      where('locationId', '==', storeId),
-      where('barcode', '==', c),
-      limit(1)
-    );
-    const snap = await getDocs(q);
-    if (!snap.empty) return snap.docs[0].data() as ProductStock;
+    // Buscar si corresponde a una presentación secundaria
+    const qProduct = query(collection(db, 'products'), limit(300));
+    const snapProd = await getDocs(qProduct);
+    for (const docP of snapProd.docs) {
+      const pData = docP.data();
+      const matchPres = (pData.presentations || []).find((pr: { barcode?: string }) => pr.barcode === c);
+      if (matchPres || pData.barcode === c || pData.internalCode === c) {
+        const foundStock = catalog.find((s) => s.productId === docP.id);
+        if (foundStock) {
+          if (matchPres) {
+            return {
+              ...foundStock,
+              productName: `${foundStock.productName} (${matchPres.unit})`,
+              salePrice: matchPres.salePrice,
+              barcode: matchPres.barcode
+            };
+          }
+          return foundStock;
+        }
+      }
+    }
   } catch {
     return null;
   }
-  return byBarcode ?? null;
+  return null;
 }
 
 export function useCatalogSearch(items: ProductStock[]) {
