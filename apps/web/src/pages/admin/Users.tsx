@@ -1,21 +1,12 @@
 import { useEffect, useState } from 'react';
 import { collection, doc, limit, onSnapshot, query, setDoc } from 'firebase/firestore';
-import { httpsCallable } from 'firebase/functions';
 import { Plus } from 'lucide-react';
-import { db, functions } from '../../lib/firebase';
-import type { Role, UserProfile } from '../../types';
+import { db } from '../../lib/firebase';
+import type { NewUserPayload, Role, Store, UserProfile } from '../../types';
+import { createSystemUser } from '../../lib/admin-users';
 import { clean } from '../../lib/utils';
-import type { Store } from '../../types';
 import { Modal } from '../../components/ui/Modal';
 import { FlashBar, useFlash } from '../../components/ui/Feedback';
-
-interface NewUserPayload {
-  email: string;
-  password: string;
-  displayName: string;
-  role: Role;
-  storeId: string | null;
-}
 
 const ROLE_LABEL: Record<Role, string> = {
   admin: 'Administrador',
@@ -63,7 +54,7 @@ export function UsersPage() {
     }
     setBusy(true);
     try {
-      await httpsCallable<NewUserPayload, { uid: string }>(functions, 'createUser')(payload);
+      await createSystemUser(payload);
       setCreating(false);
       flash('Usuario creado');
     } catch (err) {

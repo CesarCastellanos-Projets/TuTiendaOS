@@ -143,7 +143,8 @@ export function WorkerQuotations() {
         {
           productId: p.productId,
           name: p.productName,
-          barcode: p.barcode ?? undefined,
+          barcode: p.barcode || '',
+          unit: p.unit || 'UN',
           unitPrice: p.salePrice,
           qty: 1,
           total: round2(p.salePrice),
@@ -236,26 +237,45 @@ export function WorkerQuotations() {
 
   // Guardar cotización en Firestore
   const saveQuotation = async (): Promise<string | null> => {
-    if (!user || items.length === 0) return null;
+    if (!user) {
+      flash('Error: Sesión no válida');
+      return null;
+    }
+    if (items.length === 0) {
+      flash('Error: Agrega al menos un producto');
+      return null;
+    }
     setBusy(true);
     try {
       const quoteCode = `COT-${Date.now().toString().slice(-6)}`;
       const storeName = catalog[0]?.locationName ?? 'Tienda Principal';
       const quoteRef = doc(collection(db, 'quotations'));
 
+      const cleanItems: QuotationItem[] = items.map((i) => ({
+        productId: i.productId,
+        name: i.name,
+        barcode: i.barcode || '',
+        unit: i.unit || 'UN',
+        unitPrice: Number(i.unitPrice.toFixed(2)),
+        qty: Math.max(1, Math.trunc(i.qty)),
+        total: Number(i.total.toFixed(2)),
+        availableQty: i.availableQty,
+        isAvailable: Boolean(i.isAvailable)
+      }));
+
       const quoteData: Quotation = {
         id: quoteRef.id,
         code: quoteCode,
         clientName: clientName.trim() || 'Cliente Cotización',
-        clientPhone: clientPhone.trim() || undefined,
+        clientPhone: clientPhone.trim() || '',
         storeId,
         storeName,
-        items,
-        totalAll,
-        totalAvailable,
-        note: note.trim() || null,
+        items: cleanItems,
+        totalAll: Number(totalAll.toFixed(2)),
+        totalAvailable: Number(totalAvailable.toFixed(2)),
+        note: note.trim() || '',
         createdBy: user.uid,
-        createdByName: profile.displayName,
+        createdByName: profile?.displayName || user.displayName || user.email || 'Trabajador',
         status: 'pendiente',
         createdAt: Date.now()
       };
@@ -263,8 +283,10 @@ export function WorkerQuotations() {
       await setDoc(quoteRef, quoteData);
       flash(`Cotización ${quoteCode} guardada exitosamente`);
       return quoteCode;
-    } catch {
-      flash('Error al guardar la cotización');
+    } catch (err) {
+      console.error('Error al guardar la cotización:', err);
+      const errMsg = err instanceof Error ? err.message : 'Error desconocido';
+      flash(`Error al guardar la cotización: ${errMsg}`);
       return null;
     } finally {
       setBusy(false);

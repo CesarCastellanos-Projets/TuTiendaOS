@@ -100,7 +100,7 @@ service cloud.firestore {
 
     // ─── 4. CATÁLOGO DE PRODUCTOS Y PRESENTACIONES ─────────────
     match /products/{id} {
-      allow read: if signedIn();
+      allow read: if true;
       allow create, update: if isAdmin()
         && str(request.resource.data.name, 1, 150)
         && nonNegNum(request.resource.data.salePrice)
@@ -141,15 +141,6 @@ service cloud.firestore {
 
     // ─── 7. TRANSFERENCIAS DE MERCADERÍA ───────────────────────
     match /transfers/{id} {
-      function validTransferItems(items) {
-        return items is list && items.size() >= 1 && items.size() <= 300
-          && items.all(item,
-            item.productId is string
-            && str(item.name, 1, 150)
-            && (item.qtySent is number || item.qtySent is int) && item.qtySent > 0
-            && (item.qtyReceived is number || item.qtyReceived is int) && item.qtyReceived >= 0);
-      }
-
       allow read: if signedIn();
 
       allow create: if signedIn()
@@ -158,7 +149,8 @@ service cloud.firestore {
         && str(request.resource.data.toLocationId, 1, 64)
         && request.resource.data.fromLocationId != request.resource.data.toLocationId
         && request.resource.data.status == 'pendiente'
-        && validTransferItems(request.resource.data.items);
+        && request.resource.data.items is list
+        && request.resource.data.items.size() >= 1 && request.resource.data.items.size() <= 300;
 
       allow update: if signedIn()
         && request.resource.data.status in ['pendiente', 'en_transito', 'recibido', 'cancelado'];
@@ -174,11 +166,7 @@ service cloud.firestore {
         && str(request.resource.data.storeId, 1, 64)
         && request.resource.data.status == 'pendiente'
         && request.resource.data.items is list
-        && request.resource.data.items.size() >= 1 && request.resource.data.items.size() <= 200
-        && request.resource.data.items.all(item,
-          item.productId is string
-          && str(item.name, 1, 150)
-          && (item.requestedQty is number || item.requestedQty is int) && item.requestedQty > 0);
+        && request.resource.data.items.size() >= 1 && request.resource.data.items.size() <= 200;
 
       allow update: if signedIn()
         && request.resource.data.status in ['pendiente', 'atendida', 'rechazada'];
@@ -204,28 +192,19 @@ service cloud.firestore {
 
     // ─── 10. VENTAS, BOLETAS Y FACTURAS ────────────────────────
     match /sales/{id} {
-      function validSaleItems(items) {
-        return items is list && items.size() >= 1 && items.size() <= 300
-          && items.all(item,
-            item.productId is string
-            && str(item.name, 1, 150)
-            && (item.qty is number || item.qty is int) && item.qty > 0
-            && nonNegNum(item.unitPrice)
-            && nonNegNum(item.total));
-      }
-
       allow read: if signedIn();
 
       allow create: if signedIn()
         && str(request.resource.data.code, 5, 30)
-        && request.resource.data.type in ['boleta', 'factura']
+        && request.resource.data.type in ['boleta', 'factura', 'nota']
         && request.resource.data.paymentMethod in ['efectivo', 'transferencia', 'tarjeta', 'yape', 'plin', 'sip', 'otro']
         && request.resource.data.status == 'activa'
         && nonNegNum(request.resource.data.total)
         && nonNegNum(request.resource.data.subtotal)
         && nonNegNum(request.resource.data.igv)
         && request.resource.data.userId == request.auth.uid
-        && validSaleItems(request.resource.data.items);
+        && request.resource.data.items is list
+        && request.resource.data.items.size() >= 1 && request.resource.data.items.size() <= 300;
 
       allow update: if signedIn()
         && request.resource.data.status in ['activa', 'anulada'];

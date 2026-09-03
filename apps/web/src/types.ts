@@ -9,6 +9,14 @@ export interface UserProfile {
   createdAt?: number;
 }
 
+export interface NewUserPayload {
+  email: string;
+  password: string;
+  displayName: string;
+  role: Role;
+  storeId: string | null;
+}
+
 export type Unit = 'UN' | 'KG' | 'LT' | 'PAQ' | 'CJA' | 'DOC' | string;
 
 export interface ProductPresentation {
@@ -67,6 +75,7 @@ export interface ProductStock {
   locationId: string;
   locationName: string;
   quantity: number;
+  unit?: string | null;
   updatedAt?: number;
 }
 

@@ -28,6 +28,7 @@ export function ensureProductsSubscription() {
       }));
     },
     (err) => {
+      hasSubscribedProducts = false;
       console.warn('Error sincronizando productos en tiempo real:', err);
     }
   );
