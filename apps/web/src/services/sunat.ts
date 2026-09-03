@@ -47,6 +47,19 @@ export function getApiFactToken(cfg?: CompanyConfig | null): string {
  * Falla siempre soft: la venta nunca se bloquea; queda `pendiente`.
  */
 export async function sendToSunat(saleId: string, sale: Sale): Promise<void> {
+  // Las Notas de Venta son comprobantes internos; no se declaran a SUNAT
+  if (sale.type === 'nota') {
+    try {
+      await updateDoc(doc(db, 'sales', saleId), {
+        sunatStatus: 'no_aplica',
+        sunatMessage: 'Comprobante interno (Nota de Venta)'
+      });
+    } catch {
+      // ignore
+    }
+    return;
+  }
+
   try {
     const cfgSnap = await getDoc(doc(db, 'company', 'main'));
     const cfg = cfgSnap.exists() ? (cfgSnap.data() as CompanyConfig) : null;

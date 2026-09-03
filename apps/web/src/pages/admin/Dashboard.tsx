@@ -198,7 +198,8 @@ function StatusBadge({ status }: { status: Sale['sunatStatus'] }) {
     rechazado: 'bg-red-50 text-critical',
     observado: 'bg-amber-100 text-amber-800',
     pendiente: 'bg-blue-50 text-blue-600',
-    no_enviado: 'bg-slate-100 text-slate-500'
+    no_enviado: 'bg-slate-100 text-slate-500',
+    no_aplica: 'bg-slate-100 text-slate-600'
   };
   return <span className={`badge ${map[status]}`}>{status}</span>;
 }

@@ -20,7 +20,7 @@ export function ticketHtml(sale: Sale, cfg?: CompanyConfig): string {
     ${cfg?.direccion ? `<div style="font-size:10px;">${esc(cfg.direccion)}</div>` : ''}
     ${cfg?.phone ? `<div style="font-size:10px;">Tel: ${esc(cfg.phone)}</div>` : ''}
     <div style="font-weight:bold;margin-top:3px;">${esc(sale.storeName)}</div>
-    <div style="font-weight:bold;font-size:13px;margin:2px 0;">${sale.type.toUpperCase()} ELECTRÓNICA: ${esc(sale.code)}${sale.consolidated ? ' (CONSOLIDADO)' : ''}</div>
+    <div style="font-weight:bold;font-size:13px;margin:2px 0;">${sale.type === 'nota' ? 'NOTA DE VENTA' : `${sale.type.toUpperCase()} ELECTRÓNICA`}: ${esc(sale.code)}${sale.consolidated ? ' (CONSOLIDADO)' : ''}</div>
     <div>Fecha: ${fmtDateTime(sale.createdAt)}</div>
     <div>Cajero: ${esc(sale.userName)}</div>
     ${sale.clientDoc.tipo !== '-' ? `<div>Cliente: ${esc(sale.clientDoc.nombre)} (${esc(sale.clientDoc.numero)})</div>` : ''}

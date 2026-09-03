@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { RouteLoading } from '../RouteLoading';
 import {
   LayoutDashboard,
   Package,
@@ -217,9 +218,11 @@ export function AdminLayout() {
           </div>
         </header>
 
-        {/* Contenido de la página */}
+        {/* Contenido de la página con carga perezosa */}
         <main className="mx-auto w-full max-w-7xl flex-1 p-4 pb-20 lg:p-8">
-          <Outlet />
+          <Suspense fallback={<RouteLoading />}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
 

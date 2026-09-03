@@ -172,7 +172,7 @@ export interface SaleItem {
 }
 
 export type PaymentMethod = 'efectivo' | 'transferencia' | 'tarjeta' | 'yape' | 'plin' | 'sip' | 'otro';
-export type SunatStatus = 'no_enviado' | 'pendiente' | 'aceptado' | 'rechazado' | 'observado';
+export type SunatStatus = 'no_enviado' | 'pendiente' | 'aceptado' | 'rechazado' | 'observado' | 'no_aplica';
 
 export interface AnulationRequest {
   reason: string;
@@ -185,7 +185,7 @@ export interface Sale {
   code: string;
   serie: string;
   correlativo: number;
-  type: 'boleta' | 'factura';
+  type: 'boleta' | 'factura' | 'nota';
   storeId: string;
   storeName: string;
   userId: string;
@@ -229,6 +229,7 @@ export interface CompanyConfig {
   regimen?: string;
   serieFactura: string;
   serieBoleta: string;
+  serieNota?: string;
   entornoSunat: 'beta' | 'produccion';
   igvRate: number;
   minBoletaSinDni: number;
@@ -256,6 +257,7 @@ export const DEFAULT_COMPANY: CompanyConfig = {
   razonSocial: "D'ENZOZ",
   serieFactura: 'F001',
   serieBoleta: 'B001',
+  serieNota: 'NV01',
   entornoSunat: 'beta',
   igvRate: 0.18,
   minBoletaSinDni: 700,

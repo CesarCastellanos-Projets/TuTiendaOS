@@ -29,12 +29,14 @@ import {
   Phone,
   User,
   History,
-  ScanLine
+  ScanLine,
+  X,
+  AlertCircle
 } from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../lib/auth';
 import { useStoreCatalog, useCatalogSearch, findInCatalog } from '../../hooks/useStoreCatalog';
-import { useScanner, WedgeInput } from '../../hooks/useScanner';
+import { useScanner } from '../../hooks/useScanner';
 import { useCompany } from '../../hooks/useCompany';
 import { fmtDateTime } from '../../lib/utils';
 import { FlashBar, useFlash } from '../../components/ui/Feedback';
@@ -116,7 +118,7 @@ export function WorkerQuotations() {
   }, []);
 
   // Búsqueda de productos
-  const searchResults = term.trim().length >= 2 ? searchIn(term) : [];
+  const searchResults = term.trim().length >= 1 ? searchIn(term) : [];
 
   // Agregar producto a la lista
   const addItem = (p: ProductStock) => {
@@ -528,14 +530,45 @@ export function WorkerQuotations() {
           {/* Buscador y Escáner de Productos */}
           <div className="space-y-2">
             <div className="flex gap-2">
-              <div className="relative flex-1">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const q = term.trim();
+                  if (!q) return;
+                  void findInCatalog(storeId, q, catalog).then((found) => {
+                    if (found) {
+                      addItem(found);
+                      setTerm('');
+                    } else if (searchResults.length === 1) {
+                      addItem(searchResults[0]);
+                      setTerm('');
+                    } else if (searchResults.length === 0) {
+                      flash(`Producto no encontrado: ${q}`);
+                    }
+                  });
+                }}
+                className="relative flex-1"
+              >
                 <Search size={18} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                <WedgeInput
-                  onSubmit={onScan}
-                  placeholder="Escanea o busca producto…"
-                  className="field !pl-10 !h-12 !text-sm shadow-xs"
+                <input
+                  type="text"
+                  value={term}
+                  onChange={(e) => setTerm(e.target.value)}
+                  placeholder="Escribe el nombre o escanea código…"
+                  className="field !pl-10 !pr-10 !h-12 !text-sm shadow-xs"
+                  autoComplete="off"
                 />
-              </div>
+                {term && (
+                  <button
+                    type="button"
+                    onClick={() => setTerm('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"
+                    title="Borrar búsqueda"
+                  >
+                    <X size={16} />
+                  </button>
+                )}
+              </form>
               <button
                 className={`btn shrink-0 !h-12 !px-4 ${scanner.cameraOpen ? 'btn-brand' : 'btn-ghost'}`}
                 title="Escanear con cámara del celular"
@@ -550,7 +583,13 @@ export function WorkerQuotations() {
             {scanner.cameraOpen && (
               <div className="relative overflow-hidden rounded-2xl border-2 border-primary bg-slate-950 shadow-xl">
                 <div className="absolute inset-x-0 z-10 h-0.5 bg-primary shadow-lg shadow-primary animate-laser" />
-                <div className="p-2" id={scanner.videoId} />
+                <video
+                  id={scanner.videoId}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-64 object-cover bg-black"
+                />
                 <div className="absolute bottom-3 inset-x-0 flex justify-center z-10">
                   <span className="rounded-full bg-slate-900/80 backdrop-blur-md px-3 py-1 text-xs font-medium text-white flex items-center gap-1.5">
                     <ScanLine size={14} className="text-primary" /> Apunta al código de barras
@@ -559,29 +598,53 @@ export function WorkerQuotations() {
               </div>
             )}
 
+            {scanner.error && (
+              <div className="flex items-start gap-2.5 rounded-2xl bg-amber-50 border border-amber-200 p-3.5 text-xs text-amber-950 shadow-xs">
+                <AlertCircle size={18} className="text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-bold">{scanner.error}</p>
+                  <p className="text-amber-800 text-[11px]">
+                    Puedes agregar el producto escribiendo su nombre en el buscador de arriba.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Resultados de Búsqueda */}
-            {searchResults.length > 0 && (
-              <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-lg max-h-56 overflow-y-auto divide-y divide-slate-100">
-                {searchResults.map((p) => (
-                  <button
-                    key={p.productId}
-                    onClick={() => addItem(p)}
-                    className="w-full flex items-center justify-between p-2.5 text-left hover:bg-slate-50 rounded-xl transition-colors"
-                  >
-                    <div>
-                      <p className="font-bold text-xs text-slate-900">{p.productName}</p>
-                      <span className="text-[11px] text-slate-400 font-mono">
-                        Stock en tienda: {p.quantity} {p.quantity <= 0 ? '(Agotado)' : ''}
-                      </span>
-                    </div>
-                    <div className="text-right">
-                      <span className="font-mono font-extrabold text-sm text-primary">
-                        S/ {p.salePrice.toFixed(2)}
-                      </span>
-                      <span className="block text-[10px] text-emerald-600 font-bold">+ Agregar</span>
-                    </div>
-                  </button>
-                ))}
+            {term.trim().length >= 1 && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-lg max-h-60 overflow-y-auto divide-y divide-slate-100">
+                <div className="px-3 py-1.5 text-[11px] font-bold text-slate-400 flex items-center justify-between">
+                  <span>Coincidencias encontradas ({searchResults.length})</span>
+                  <span>Toca para agregar a la cotización</span>
+                </div>
+                {searchResults.length === 0 ? (
+                  <div className="p-4 text-center text-xs text-slate-500">
+                    No hay productos coincidentes con “{term}”.
+                  </div>
+                ) : (
+                  searchResults.map((p) => (
+                    <button
+                      key={p.productId}
+                      onClick={() => addItem(p)}
+                      className="w-full flex items-center justify-between p-2.5 text-left hover:bg-indigo-50/50 rounded-xl transition-colors group"
+                    >
+                      <div className="min-w-0 flex-1 pr-3">
+                        <p className="font-bold text-xs text-slate-900 group-hover:text-primary truncate">
+                          {p.productName}
+                        </p>
+                        <span className="text-[11px] text-slate-400 font-mono block mt-0.5">
+                          Stock en tienda: {p.quantity} {p.quantity <= 0 ? '(Agotado)' : ''}
+                        </span>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="font-mono font-extrabold text-sm text-slate-900 block">
+                          S/ {p.salePrice.toFixed(2)}
+                        </span>
+                        <span className="text-[10px] text-primary font-bold block mt-0.5">+ Agregar</span>
+                      </div>
+                    </button>
+                  ))
+                )}
               </div>
             )}
           </div>

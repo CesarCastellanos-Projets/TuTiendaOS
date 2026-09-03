@@ -19,7 +19,8 @@ import {
   Vault,
   ScanLine,
   Calculator,
-  WalletCards
+  WalletCards,
+  FileText
 } from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../lib/auth';
@@ -55,16 +56,49 @@ export function PosSale() {
   const user = useAuth((s) => s.user);
   const company = useCompany();
   const storeId = profile.storeId!;
-  const { items: catalog } = useStoreCatalog(storeId);
+  const { items: catalog, products } = useStoreCatalog(storeId);
   const searchIn = useCatalogSearch(catalog);
 
-  const [cart, setCart] = useState<CartLine[]>([]);
+  const [cart, setCart] = useState<CartLine[]>(() => {
+    try {
+      const saved = localStorage.getItem(`denzoz_pos_cart_${storeId}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed.cart)) return parsed.cart;
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
   const [term, setTerm] = useState('');
-  const [clientDoc, setClientDoc] = useState<ClientDoc>({ tipo: '-', numero: '', nombre: '' });
+  const [clientDoc, setClientDoc] = useState<ClientDoc>(() => {
+    try {
+      const saved = localStorage.getItem(`denzoz_pos_cart_${storeId}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.clientDoc) return parsed.clientDoc;
+      }
+    } catch {
+      // ignore
+    }
+    return { tipo: '-', numero: '', nombre: '' };
+  });
   const [payment, setPayment] = useState<PaymentMethod>('efectivo');
   const [paid, setPaid] = useState('');
   const [bankName, setBankName] = useState('BCP');
-  const [invoiceMode, setInvoiceMode] = useState(false);
+  const [docType, setDocType] = useState<'boleta' | 'factura' | 'nota'>(() => {
+    try {
+      const saved = localStorage.getItem(`denzoz_pos_cart_${storeId}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.docType) return parsed.docType;
+      }
+    } catch {
+      // ignore
+    }
+    return 'boleta';
+  });
   const [dniModal, setDniModal] = useState(false);
   const [rucValue, setRucValue] = useState('');
   const [dniValue, setDniValue] = useState('');
@@ -136,6 +170,34 @@ export function PosSale() {
       (s) => setSessionOpen(s.empty ? null : ({ ...(s.docs[0].data() as CashSession), id: s.docs[0].id }))
     );
   }, [user?.uid]);
+
+  // Guardar automáticamente el carrito y datos de venta en localStorage para protección ante apagones o cierres
+  useEffect(() => {
+    if (!storeId) return;
+    try {
+      if (cart.length > 0 || clientDoc.tipo !== '-' || docType !== 'boleta') {
+        localStorage.setItem(
+          `denzoz_pos_cart_${storeId}`,
+          JSON.stringify({ cart, clientDoc, docType, savedAt: Date.now() })
+        );
+      } else {
+        localStorage.removeItem(`denzoz_pos_cart_${storeId}`);
+      }
+    } catch {
+      // ignore
+    }
+  }, [cart, clientDoc, docType, storeId]);
+
+  // Sincronizar stock del catálogo en los ítems del carrito recuperados
+  useEffect(() => {
+    if (cart.length === 0 || catalog.length === 0) return;
+    setCart((prev) =>
+      prev.map((line) => {
+        const found = catalog.find((c) => c.productId === line.productId);
+        return found && found.quantity !== line.stock ? { ...line, stock: found.quantity } : line;
+      })
+    );
+  }, [catalog]);
 
   const total = useMemo(() => cart.reduce((s, l) => s + l.total, 0), [cart]);
   const change = Math.max(0, (Number(paid) || 0) - total);
@@ -224,11 +286,11 @@ export function PosSale() {
     try {
       const c = await lookupClient('RUC', rucValue);
       setClientDoc({ tipo: 'RUC', numero: c.numero, nombre: c.nombre });
-      setInvoiceMode(true);
+      setDocType('factura');
       setDniModal(false);
     } catch {
       setClientDoc({ tipo: 'RUC', numero: rucValue, nombre: `CLIENTE RUC ${rucValue}` });
-      setInvoiceMode(true);
+      setDocType('factura');
       setDniModal(false);
       setError('No se pudo autocompletar la razón social desde la API. Se asignó el RUC para la factura.');
     } finally {
@@ -254,7 +316,7 @@ export function PosSale() {
         numero: dniValue,
         nombre: c?.nombre ?? `CLIENTE DNI ${dniValue}`
       });
-      setInvoiceMode(false);
+      if (docType === 'factura') setDocType('boleta');
       setDniModal(false);
     } finally {
       setLookupBusy(false);
@@ -274,11 +336,12 @@ export function PosSale() {
       setError('El monto pagado en efectivo no puede ser menor al total.');
       return;
     }
-    if (invoiceMode && clientDoc.tipo !== 'RUC') {
+    if (docType === 'factura' && clientDoc.tipo !== 'RUC') {
       setError('Para emitir Factura Electrónica se requiere RUC y Razón Social.');
+      setDniModal(true);
       return;
     }
-    if (!invoiceMode && total >= minSinDni && clientDoc.tipo !== 'DNI') {
+    if (docType === 'boleta' && total >= minSinDni && clientDoc.tipo !== 'DNI') {
       setError(`Ventas desde S/ ${minSinDni.toFixed(2)} exigen DNI en Boleta.`);
       return;
     }
@@ -308,9 +371,9 @@ export function PosSale() {
         bankName: payment === 'transferencia' ? bankName : null,
         operationNumber: null,
         paidAmount: payment === 'efectivo' ? Number(paid) || total : total,
-        consolidated: !invoiceMode && total < umbralConsol,
+        consolidated: docType === 'boleta' && total < umbralConsol,
         cashSessionId: sessionOpen?.id,
-        type: invoiceMode ? 'factura' : 'boleta'
+        type: docType
       });
 
       setReceiptDone({
@@ -323,9 +386,16 @@ export function PosSale() {
       setCart([]);
       setPaid('');
       setClientDoc({ tipo: '-', numero: '', nombre: '' });
-      setInvoiceMode(false);
+      setDocType('boleta');
+      try {
+        localStorage.removeItem(`denzoz_pos_cart_${storeId}`);
+      } catch {
+        // ignore
+      }
 
-      void sendToSunat(sale.code, sale);
+      if (docType !== 'nota') {
+        void sendToSunat(sale.code, sale);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error al registrar la venta.');
     } finally {
@@ -380,7 +450,13 @@ export function PosSale() {
           {scanner.cameraOpen && (
             <div className="relative overflow-hidden rounded-2xl border-2 border-primary bg-slate-950 shadow-xl">
               <div className="absolute inset-x-0 z-10 h-0.5 bg-primary shadow-lg shadow-primary animate-laser" />
-              <div className="p-2" id={scanner.videoId} />
+              <video
+                id={scanner.videoId}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-64 object-cover bg-black"
+              />
               <div className="absolute bottom-3 inset-x-0 flex justify-center z-10">
                 <span className="rounded-full bg-slate-900/80 backdrop-blur-md px-3 py-1 text-xs font-medium text-white flex items-center gap-1.5">
                   <ScanLine size={14} className="text-primary" /> Apunta al código de barras
@@ -396,19 +472,26 @@ export function PosSale() {
             </div>
           )}
 
-          {/* Buscador Rápido por Nombre */}
+          {/* Buscador Rápido por Nombre o Código */}
           <div className="relative">
             <input
               className="field !h-10 text-sm bg-slate-50/70"
-              placeholder="Buscar producto por nombre…"
+              placeholder="Buscar por nombre o código de barras (Enter)…"
               value={term}
               onChange={(e) => setTerm(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && term.trim()) {
+                  e.preventDefault();
+                  scanCode(term.trim());
+                  setTerm('');
+                }
+              }}
               autoComplete="off"
             />
             {results.length > 0 && (
               <ul className="absolute inset-x-0 top-full z-30 mt-1 max-h-72 overflow-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl animate-in fade-in">
                 {results.map((p) => (
-                  <li key={p.productId}>
+                  <li key={p.searchKey}>
                     <button
                       onClick={() => {
                         addToCart(p);
@@ -416,7 +499,14 @@ export function PosSale() {
                       }}
                       className="flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm hover:bg-indigo-50/60 transition-colors"
                     >
-                      <span className="truncate font-medium text-slate-800">{p.productName}</span>
+                      <div className="min-w-0 flex-1">
+                        <span className="truncate font-medium text-slate-800 block">{p.productName}</span>
+                        {p.barcode && (
+                          <span className="text-[10px] font-mono text-slate-400 block">
+                            Código: {p.barcode}
+                          </span>
+                        )}
+                      </div>
                       <div className="ml-3 flex shrink-0 items-center gap-2">
                         <span className={`badge ${p.quantity <= 5 ? 'bg-red-50 text-critical' : 'bg-emerald-50 text-success'}`}>
                           {p.quantity} en stock
@@ -483,18 +573,18 @@ export function PosSale() {
             {filteredCatalog.map((p) => {
               const isOutOfStock = p.quantity < 1;
               const isLowStock = p.quantity > 0 && p.quantity <= 5;
+              const prodDef = products.find((pr) => pr.id === p.productId);
+              const extraPres = prodDef?.presentations?.filter((pr) => pr.salePrice > 0) || [];
 
               return (
-                <button
+                <div
                   key={p.productId}
-                  onClick={() => addToCart(p)}
-                  disabled={isOutOfStock}
-                  className={`card-interactive group flex flex-col justify-between p-3.5 text-left transition-all ${
-                    isOutOfStock ? 'opacity-45 cursor-not-allowed !border-dashed' : ''
+                  className={`card flex flex-col justify-between p-3 text-left transition-all ${
+                    isOutOfStock ? 'opacity-50 !border-dashed' : 'hover:border-primary/50 shadow-xs'
                   }`}
                 >
-                  <div className="space-y-1.5">
-                    <span className="line-clamp-2 text-xs font-bold text-slate-800 group-hover:text-primary transition-colors leading-snug">
+                  <div className="space-y-1">
+                    <span className="line-clamp-2 text-xs font-bold text-slate-800 leading-snug">
                       {p.productName}
                     </span>
                     {p.locationName && (
@@ -504,29 +594,69 @@ export function PosSale() {
                     )}
                   </div>
 
-                  <div className="mt-3 flex items-end justify-between gap-1 pt-2 border-t border-slate-100">
-                    <div>
-                      <span className="text-[10px] uppercase font-bold text-slate-400 block leading-none">
-                        Precio
-                      </span>
-                      <span className="price-tag font-mono text-base font-extrabold text-slate-900 leading-tight">
-                        S/ {p.salePrice.toFixed(2)}
+                  <div className="mt-2.5 space-y-2 pt-2 border-t border-slate-100">
+                    <div className="flex items-end justify-between gap-1">
+                      <div>
+                        <span className="text-[10px] uppercase font-bold text-slate-400 block leading-none">
+                          Precio base
+                        </span>
+                        <span className="price-tag font-mono text-base font-extrabold text-slate-900 leading-tight">
+                          S/ {p.salePrice.toFixed(2)}
+                        </span>
+                      </div>
+
+                      <span
+                        className={`badge text-[10px] ${
+                          isOutOfStock
+                            ? 'bg-red-50 text-critical'
+                            : isLowStock
+                            ? 'bg-amber-50 text-amber-700'
+                            : 'bg-emerald-50 text-success'
+                        }`}
+                      >
+                        {isOutOfStock ? 'Agotado' : `${p.quantity} un.`}
                       </span>
                     </div>
 
-                    <span
-                      className={`badge text-[10px] ${
-                        isOutOfStock
-                          ? 'bg-red-50 text-critical'
-                          : isLowStock
-                          ? 'bg-amber-50 text-amber-700'
-                          : 'bg-emerald-50 text-success'
-                      }`}
-                    >
-                      {isOutOfStock ? 'Agotado' : `${p.quantity} un.`}
-                    </span>
+                    {/* Botones de acción rápida por unidad */}
+                    <div className="flex flex-wrap gap-1 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => addToCart(p)}
+                        disabled={isOutOfStock}
+                        className="flex-1 min-w-[70px] rounded-lg bg-slate-100 hover:bg-primary hover:text-white px-1.5 py-1 text-[10px] font-bold text-slate-700 transition-colors disabled:opacity-40 truncate text-center"
+                        title="Agregar unidad base"
+                      >
+                        + {prodDef?.unit || 'UN'} (S/ {p.salePrice.toFixed(2)})
+                      </button>
+
+                      {extraPres.map((pr, idx) => {
+                        const label = pr.factor && pr.factor > 1 ? `${pr.unit} x${pr.factor}` : pr.unit;
+                        return (
+                          <button
+                            key={idx}
+                            type="button"
+                            disabled={isOutOfStock}
+                            onClick={() =>
+                              addToCart({
+                                ...p,
+                                productName: `${p.productName} (${label})`,
+                                salePrice: pr.salePrice,
+                                barcode: pr.barcode ?? undefined,
+                                presentationUnit: pr.unit,
+                                factor: pr.factor || 1
+                              })
+                            }
+                            className="flex-1 min-w-[70px] rounded-lg bg-indigo-50 border border-indigo-200 hover:bg-primary hover:text-white px-1.5 py-1 text-[10px] font-bold text-primary transition-colors disabled:opacity-40 truncate text-center"
+                            title={`Agregar ${label}`}
+                          >
+                            + {label} (S/ {pr.salePrice.toFixed(2)})
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -544,18 +674,18 @@ export function PosSale() {
       <aside className="flex w-full shrink-0 flex-col bg-slate-50/90 lg:w-[420px] xl:w-[460px] border-l border-slate-200 shadow-sm">
         {/* Cabecera del Ticket */}
         <div className="border-b border-slate-200 bg-white p-4 space-y-3">
-          {/* Segmented Control Boleta / Factura */}
+          {/* Segmented Control Boleta / Factura / Nota de Venta */}
           <div className="flex items-center justify-between gap-2">
-            <div className="flex flex-1 rounded-xl border border-slate-200 bg-slate-100/80 p-1 text-xs font-bold">
+            <div className="flex flex-1 rounded-xl border border-slate-200 bg-slate-100/80 p-1 text-xs font-bold gap-1">
               <button
                 type="button"
-                className={`flex-1 rounded-lg py-2 transition-all ${
-                  !invoiceMode
+                className={`flex-1 rounded-lg py-1.5 transition-all text-center ${
+                  docType === 'boleta'
                     ? 'bg-slate-900 text-white shadow-xs font-extrabold'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
                 onClick={() => {
-                  setInvoiceMode(false);
+                  setDocType('boleta');
                   if (clientDoc.tipo === 'RUC') setClientDoc({ tipo: '-', numero: '', nombre: '' });
                 }}
               >
@@ -563,21 +693,34 @@ export function PosSale() {
               </button>
               <button
                 type="button"
-                className={`flex-1 rounded-lg py-2 transition-all ${
-                  invoiceMode
+                className={`flex-1 rounded-lg py-1.5 transition-all text-center ${
+                  docType === 'factura'
                     ? 'bg-primary text-white shadow-xs font-extrabold'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
                 onClick={() => {
-                  setInvoiceMode(true);
+                  setDocType('factura');
                   if (clientDoc.tipo !== 'RUC') setDniModal(true);
                 }}
               >
                 Factura (RUC)
               </button>
+              <button
+                type="button"
+                className={`flex-1 rounded-lg py-1.5 transition-all text-center ${
+                  docType === 'nota'
+                    ? 'bg-amber-600 text-white shadow-xs font-extrabold'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+                onClick={() => {
+                  setDocType('nota');
+                }}
+              >
+                Nota de Venta
+              </button>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-1.5 shrink-0">
               <button
                 type="button"
                 onClick={() => void openQuoteModal()}
@@ -591,7 +734,15 @@ export function PosSale() {
               {cart.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => setCart([])}
+                  onClick={() => {
+                    setCart([]);
+                    setClientDoc({ tipo: '-', numero: '', nombre: '' });
+                    try {
+                      localStorage.removeItem(`denzoz_pos_cart_${storeId}`);
+                    } catch {
+                      // ignore
+                    }
+                  }}
                   className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-critical transition-colors"
                   title="Vaciar carrito"
                 >
@@ -603,7 +754,23 @@ export function PosSale() {
 
           {/* Badge de Cliente */}
           <div className="rounded-xl border border-slate-200/80 bg-slate-50/80 p-2.5">
-            {clientDoc.tipo === '-' ? (
+            {docType === 'nota' ? (
+              <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2 min-w-0">
+                  <FileText size={15} className="text-amber-600 shrink-0" />
+                  <span className="font-semibold text-amber-900 truncate">
+                    {clientDoc.tipo !== '-' ? `${clientDoc.nombre} (${clientDoc.numero})` : 'Nota de Venta (Comprobante Interno)'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDniModal(true)}
+                  className="font-bold text-primary hover:underline text-[11px] shrink-0"
+                >
+                  {clientDoc.tipo !== '-' ? 'Cambiar' : '+ Asignar cliente'}
+                </button>
+              </div>
+            ) : clientDoc.tipo === '-' ? (
               <div className="flex items-center justify-between text-xs">
                 <div className="flex items-center gap-2 text-slate-600">
                   <User size={15} className="text-slate-400" />
@@ -634,7 +801,7 @@ export function PosSale() {
                   type="button"
                   onClick={() => {
                     setClientDoc({ tipo: '-', numero: '', nombre: '' });
-                    setInvoiceMode(false);
+                    setDocType('boleta');
                   }}
                   className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-200 hover:text-slate-800"
                 >
@@ -722,9 +889,20 @@ export function PosSale() {
                   </button>
                 </div>
 
-                <span className="w-18 text-right font-mono text-sm font-extrabold text-slate-900">
-                  S/ {l.total.toFixed(2)}
-                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="min-w-16 text-right font-mono text-sm font-extrabold text-slate-900">
+                    S/ {l.total.toFixed(2)}
+                  </span>
+                  <button
+                    type="button"
+                    title={`Quitar ${l.name} del carrito`}
+                    aria-label={`Eliminar ${l.name}`}
+                    className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-critical transition-colors"
+                    onClick={() => setCart((prev) => prev.filter((x) => x.lineId !== l.lineId))}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               </div>
             ))
           )}
@@ -756,7 +934,7 @@ export function PosSale() {
 
           {/* Selector de Banco para Transferencia */}
           {payment === 'transferencia' && (
-            <div className="rounded-xl bg-blue-50/60 border border-blue-200/80 p-3 space-y-2">
+            <div className="rounded-xl bg-blue-50/60 border border-blue-200/80 p-3 space-y-2 min-h-[68px] animate-in fade-in">
               <label className="text-[10px] font-bold uppercase tracking-wider text-blue-900 block">
                 Selecciona la Entidad Bancaria
               </label>
@@ -781,7 +959,7 @@ export function PosSale() {
 
           {/* Calculadora de Vuelto para Efectivo */}
           {payment === 'efectivo' && (
-            <div className="grid grid-cols-2 gap-2.5 rounded-xl bg-slate-50 border border-slate-200/80 p-3">
+            <div className="grid grid-cols-2 gap-2.5 rounded-xl bg-slate-50 border border-slate-200/80 p-3 min-h-[68px] animate-in fade-in">
               <div>
                 <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block mb-1">
                   Paga con (S/)
@@ -805,6 +983,75 @@ export function PosSale() {
                   <span>S/</span>
                   <span>{change.toFixed(2)}</span>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Tarjeta Informativa Yape */}
+          {payment === 'yape' && (
+            <div className="flex items-center justify-between rounded-xl bg-purple-50/70 border border-purple-200/80 p-3 min-h-[68px] animate-in fade-in">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-purple-600 text-white shadow-xs shrink-0">
+                  <QrCode size={20} />
+                </div>
+                <div>
+                  <span className="text-xs font-extrabold text-purple-950 block leading-tight">
+                    Cobro con Yape
+                  </span>
+                  <span className="text-[11px] text-purple-700/90 font-medium block mt-0.5">
+                    Verifica la notificación en el celular de caja
+                  </span>
+                </div>
+              </div>
+              <div className="text-right font-mono shrink-0 pl-2">
+                <span className="text-[10px] uppercase font-bold text-purple-700 block">Monto Yape</span>
+                <span className="text-base font-extrabold text-purple-950">S/ {total.toFixed(2)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Tarjeta Informativa Plin */}
+          {payment === 'plin' && (
+            <div className="flex items-center justify-between rounded-xl bg-cyan-50/70 border border-cyan-200/80 p-3 min-h-[68px] animate-in fade-in">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-cyan-600 text-white shadow-xs shrink-0">
+                  <QrCode size={20} />
+                </div>
+                <div>
+                  <span className="text-xs font-extrabold text-cyan-950 block leading-tight">
+                    Cobro con Plin
+                  </span>
+                  <span className="text-[11px] text-cyan-700/90 font-medium block mt-0.5">
+                    Verifica la notificación en el celular de caja
+                  </span>
+                </div>
+              </div>
+              <div className="text-right font-mono shrink-0 pl-2">
+                <span className="text-[10px] uppercase font-bold text-cyan-700 block">Monto Plin</span>
+                <span className="text-base font-extrabold text-cyan-950">S/ {total.toFixed(2)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Tarjeta Informativa Sip */}
+          {payment === 'sip' && (
+            <div className="flex items-center justify-between rounded-xl bg-amber-50/70 border border-amber-200/80 p-3 min-h-[68px] animate-in fade-in">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-600 text-white shadow-xs shrink-0">
+                  <WalletCards size={20} />
+                </div>
+                <div>
+                  <span className="text-xs font-extrabold text-amber-950 block leading-tight">
+                    Cobro con Sip
+                  </span>
+                  <span className="text-[11px] text-amber-700/90 font-medium block mt-0.5">
+                    Pago registrado vía billetera/terminal Sip
+                  </span>
+                </div>
+              </div>
+              <div className="text-right font-mono shrink-0 pl-2">
+                <span className="text-[10px] uppercase font-bold text-amber-700 block">Monto Sip</span>
+                <span className="text-base font-extrabold text-amber-950">S/ {total.toFixed(2)}</span>
               </div>
             </div>
           )}

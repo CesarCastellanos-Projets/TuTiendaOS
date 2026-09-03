@@ -1,16 +1,19 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\SunatDocument;
 use App\Services\Sunat\GreenterFactory;
 use App\Services\Sunat\SunatSender;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class InvoiceController extends Controller
 {
-    public function store(Request $request)
+    public function store(Request $request): JsonResponse
     {
         $data = $request->validate([
             'ref' => 'required|string|max:64',
@@ -18,7 +21,7 @@ class InvoiceController extends Controller
             'serie' => 'required|string|max:4',
             'correlativo' => 'required|integer|min:1',
             'fecha' => 'nullable|date',
-            'cliente.tipo' => 'nullable|in:-,DNI,RUC',
+            'cliente.tipo' => 'nullable|in:-,DNI,RUC,1,6',
             'cliente.numero' => 'nullable|string|max:15',
             'cliente.nombre' => 'nullable|string|max:120',
             'items' => 'required|array|min:1|max:200',

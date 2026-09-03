@@ -36,6 +36,7 @@ export function ProductsPage() {
   const [loadingStocks, setLoadingStocks] = useState(false);
   const [customUnitInput, setCustomUnitInput] = useState('');
   const [showAddUnitInput, setShowAddUnitInput] = useState(false);
+  const [baseFactorInput, setBaseFactorInput] = useState('1');
   const { msg, flash } = useFlash();
 
   // Combine default units with company custom units
@@ -52,6 +53,7 @@ export function ProductsPage() {
   const openEditModal = (p: Partial<Product> & { id?: string }) => {
     setEditing(p);
     setBasePriceInput(p.salePrice !== undefined ? String(p.salePrice) : '');
+    setBaseFactorInput('1');
     setPresentations(
       p.presentations
         ? p.presentations.map((pr) => ({
@@ -186,14 +188,10 @@ export function ProductsPage() {
       category: clean(fd.get('category')) || 'General',
       brand: clean(fd.get('brand')),
       unit: mainUnit,
-      internalCode: clean(fd.get('internalCode')),
       barcode: clean(fd.get('barcode')),
       salePrice: mainPrice,
-      minStock: Math.trunc(num(fd.get('minStock'))),
+      minStock: Math.max(0, Math.trunc(num(fd.get('minStock')))),
       locationHint: clean(fd.get('locationHint')),
-      promoLabel: clean(fd.get('promoLabel')),
-      promoActive: fd.get('promoActive') === 'on',
-      sunatCode: clean(fd.get('sunatCode')),
       active: fd.get('active') === 'on',
       presentations: validPresentations,
       updatedAt: Date.now()
@@ -255,10 +253,10 @@ export function ProductsPage() {
               <tr>
                 <th className="th">Producto</th>
                 <th className="th">Categoría</th>
-                <th className="th">Código Base</th>
+                <th className="th">Código de Barras</th>
                 <th className="th text-right">Precio Base</th>
                 <th className="th">Presentaciones / Unidades</th>
-                <th className="th">Promo</th>
+                <th className="th">Ubicación / Mín.</th>
                 <th className="th text-right">Acciones</th>
               </tr>
             </thead>
@@ -270,7 +268,7 @@ export function ProductsPage() {
                       {p.brand && <span className="text-xs text-slate-400 font-medium">{p.brand}</span>}
                     </td>
                     <td className="td text-xs font-semibold text-slate-600">{p.category}</td>
-                    <td className="td font-mono text-xs text-slate-700">{p.barcode || p.internalCode || '—'}</td>
+                    <td className="td font-mono text-xs text-slate-700">{p.barcode || '—'}</td>
                     <td className="td text-right font-mono font-bold text-slate-900">
                       S/ {p.salePrice.toFixed(2)} <span className="text-xs text-slate-400 font-normal">/{p.unit}</span>
                     </td>
@@ -291,13 +289,14 @@ export function ProductsPage() {
                       )}
                     </td>
                     <td className="td">
-                      {p.promoActive ? (
-                        <span className="badge bg-amber-50 text-amber-800 border border-amber-200 font-bold">
-                          {p.promoLabel || 'Promo'}
+                      {p.locationHint && (
+                        <span className="text-xs font-medium text-slate-700 block truncate max-w-[140px]">
+                          {p.locationHint}
                         </span>
-                      ) : (
-                        '—'
                       )}
+                      <span className="text-[11px] font-mono text-slate-400 block">
+                        Mín: {p.minStock ?? 5} un.
+                      </span>
                     </td>
                     <td className="td text-right">
                       <div className="flex items-center justify-end gap-2">
@@ -418,16 +417,11 @@ export function ProductsPage() {
           </div>
 
           {/* 2. Unidad Base y Presentaciones de Venta */}
-          <div className="rounded-2xl border border-indigo-100 bg-indigo-50/30 p-4 space-y-4">
+          <div className="rounded-2xl border border-indigo-100 bg-indigo-50/30 p-4 space-y-3.5">
             <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-xs font-bold uppercase tracking-wider text-indigo-900 font-display flex items-center gap-1.5">
-                  <Boxes size={15} className="text-primary" /> Unidades, Códigos de Barra y Precios
-                </h3>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Define la unidad base y agrega otras presentaciones (ej. Six Pack, Caja) con sus propios códigos y precios.
-                </p>
-              </div>
+              <span className="text-xs font-bold uppercase tracking-wider text-indigo-950 font-display flex items-center gap-1.5">
+                <Boxes size={16} className="text-primary" /> Presentaciones y Precios
+              </span>
 
               {/* Botón para agregar unidad personalizada al catálogo */}
               <button
@@ -480,10 +474,12 @@ export function ProductsPage() {
                   <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Equivale a</label>
                   <input
                     type="text"
-                    disabled
-                    value="1 base"
-                    title="La presentación base equivale a 1 unidad fundamental"
-                    className="field !h-10 text-center font-mono font-bold text-xs bg-slate-100/80 text-slate-500 cursor-not-allowed"
+                    inputMode="numeric"
+                    value={baseFactorInput}
+                    onChange={(e) => setBaseFactorInput(e.target.value.replace(/[^0-9]/g, ''))}
+                    placeholder="1"
+                    title="Cuántas unidades base representa (por defecto 1)"
+                    className="field !h-10 text-center font-mono font-bold text-xs"
                   />
                 </div>
                 <div className="sm:col-span-4">
@@ -602,76 +598,50 @@ export function ProductsPage() {
             </button>
           </div>
 
-          {/* 3. Datos de Inventario y Control */}
+          {/* 3. Control de Stock y Ubicación Física */}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <label className="label">Código Interno</label>
-              <input
-                name="internalCode"
-                defaultValue={editing?.internalCode}
-                placeholder="Ej.: PROD-001"
-                className="field font-mono"
-              />
-            </div>
-            <div>
-              <label className="label">Stock Mínimo (Alerta)</label>
+              <label className="label">Stock Mínimo (Alerta de Reposición)</label>
               <input
                 name="minStock"
                 type="number"
                 min="0"
                 defaultValue={editing?.minStock ?? 5}
+                placeholder="Ej.: 5"
                 className="field font-mono"
               />
+              <span className="text-[10px] text-slate-400 mt-1 block">
+                Avisa cuando el stock baje de este umbral
+              </span>
             </div>
             <div>
-              <label className="label">Ubicación física (Góndola)</label>
+              <label className="label">Ubicación física (Góndola / Pasillo)</label>
               <input
                 name="locationHint"
                 defaultValue={editing?.locationHint}
                 placeholder="Ej.: Pasillo 3, estante B"
                 className="field"
               />
-            </div>
-            <div>
-              <label className="label">Código Producto SUNAT</label>
-              <input
-                name="sunatCode"
-                defaultValue={editing?.sunatCode}
-                placeholder="Código estándar SUNAT (opcional)"
-                className="field font-mono"
-              />
-            </div>
-            <div className="sm:col-span-2">
-              <label className="label">Etiqueta de Promo (Opcional)</label>
-              <input
-                name="promoLabel"
-                defaultValue={editing?.promoLabel}
-                placeholder="Ej.: 2x1 este mes, 20% descuento"
-                className="field"
-              />
+              <span className="text-[10px] text-slate-400 mt-1 block">
+                Ayuda al personal a ubicar el producto en tienda
+              </span>
             </div>
           </div>
 
-          {/* 4. Checkboxes de Estado */}
-          <div className="flex items-center gap-6 rounded-2xl border border-slate-200 bg-slate-50/60 p-3.5">
-            <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
-              <input
-                type="checkbox"
-                name="promoActive"
-                defaultChecked={editing?.promoActive}
-                className="rounded border-slate-300 text-primary focus:ring-primary h-4 w-4"
-              />
-              <span>Activar promoción en POS</span>
-            </label>
-            <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
+          {/* 4. Estado del Producto */}
+          <div className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50/60 p-3.5">
+            <label className="flex items-center gap-2.5 text-xs font-bold text-slate-700 cursor-pointer">
               <input
                 type="checkbox"
                 name="active"
                 defaultChecked={editing ? editing.active : true}
                 className="rounded border-slate-300 text-primary focus:ring-primary h-4 w-4"
               />
-              <span>Producto Activo (Habilitado para venta)</span>
+              <span>Producto Activo (Habilitado para venta en POS)</span>
             </label>
+            <span className="text-[11px] text-slate-400 hidden sm:inline">
+              Desmarca para pausar su venta sin borrarlo
+            </span>
           </div>
 
           {/* Botones de Acción */}

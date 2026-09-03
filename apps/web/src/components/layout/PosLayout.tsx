@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { RouteLoading } from '../RouteLoading';
 import {
   ShoppingCart,
   Vault,
@@ -103,7 +104,9 @@ export function PosLayout() {
 
       {/* ─── CONTENIDO PRINCIPAL (Ocupa el 100% de la pantalla sin barras que estorben) ─── */}
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <Outlet />
+        <Suspense fallback={<RouteLoading />}>
+          <Outlet />
+        </Suspense>
       </main>
 
       {/* ─── DRAWER LATERAL FLUIDO (Se abre al presionar las 3 líneas) ───────── */}

@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useState, Suspense } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { RouteLoading } from '../RouteLoading';
 import {
   ScanBarcode,
   TriangleAlert,
@@ -66,7 +67,9 @@ export function WorkerLayout() {
 
       {/* ─── CONTENIDO PRINCIPAL (Optimizado para pantalla móvil/PWA) ───────── */}
       <main className="mx-auto w-full max-w-lg flex-1 p-4 pb-28">
-        <Outlet />
+        <Suspense fallback={<RouteLoading />}>
+          <Outlet />
+        </Suspense>
       </main>
 
       {/* ─── BOTTOM NAVIGATION BAR FLOTANTE Y ELEGANTE ────────────────────────── */}

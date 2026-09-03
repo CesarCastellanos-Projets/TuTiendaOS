@@ -1,4 +1,4 @@
-import { Component, useEffect, type ReactNode } from 'react';
+import { Component, useEffect, lazy, type ReactNode } from 'react';
 import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom';
 import { useAuth, homeFor } from './lib/auth';
 import { firebaseReady, initAnalytics } from './lib/firebase';
@@ -9,29 +9,29 @@ import { AdminLayout } from './components/layout/AdminLayout';
 import { PosLayout } from './components/layout/PosLayout';
 import { WorkerLayout } from './components/layout/WorkerLayout';
 
-import { AdminDashboard } from './pages/admin/Dashboard';
-import { ProductsPage } from './pages/admin/Products';
-import { LocationsPage } from './pages/admin/Locations';
-import { IngressPage } from './pages/admin/Ingress';
-import { TransfersPage } from './pages/admin/Transfers';
-import { AdjustmentsPage } from './pages/admin/Adjustments';
-import { KardexPage } from './pages/admin/Kardex';
-import { ReplenishmentAdminPage } from './pages/admin/Replenishment';
-import { UsersPage } from './pages/admin/Users';
-import { SunatConfigPage } from './pages/admin/SunatConfig';
-import { TicketDesignerPage } from './pages/admin/TicketDesigner';
-import { ReceiptsPage } from './pages/admin/Receipts';
-import { IncidentsAdminPage } from './pages/admin/Incidents';
+const AdminDashboard = lazy(() => import('./pages/admin/Dashboard').then((m) => ({ default: m.AdminDashboard })));
+const ProductsPage = lazy(() => import('./pages/admin/Products').then((m) => ({ default: m.ProductsPage })));
+const LocationsPage = lazy(() => import('./pages/admin/Locations').then((m) => ({ default: m.LocationsPage })));
+const IngressPage = lazy(() => import('./pages/admin/Ingress').then((m) => ({ default: m.IngressPage })));
+const TransfersPage = lazy(() => import('./pages/admin/Transfers').then((m) => ({ default: m.TransfersPage })));
+const AdjustmentsPage = lazy(() => import('./pages/admin/Adjustments').then((m) => ({ default: m.AdjustmentsPage })));
+const KardexPage = lazy(() => import('./pages/admin/Kardex').then((m) => ({ default: m.KardexPage })));
+const ReplenishmentAdminPage = lazy(() => import('./pages/admin/Replenishment').then((m) => ({ default: m.ReplenishmentAdminPage })));
+const UsersPage = lazy(() => import('./pages/admin/Users').then((m) => ({ default: m.UsersPage })));
+const SunatConfigPage = lazy(() => import('./pages/admin/SunatConfig').then((m) => ({ default: m.SunatConfigPage })));
+const TicketDesignerPage = lazy(() => import('./pages/admin/TicketDesigner').then((m) => ({ default: m.TicketDesignerPage })));
+const ReceiptsPage = lazy(() => import('./pages/admin/Receipts').then((m) => ({ default: m.ReceiptsPage })));
+const IncidentsAdminPage = lazy(() => import('./pages/admin/Incidents').then((m) => ({ default: m.IncidentsAdminPage })));
 
-import { PosSale } from './pages/pos/Sale';
-import { ReceivingPage } from './pages/pos/Receiving';
-import { CashPage } from './pages/pos/Cash';
-import { MySales } from './pages/pos/MySales';
-import { RequestRestock } from './pages/pos/RequestRestock';
+const PosSale = lazy(() => import('./pages/pos/Sale').then((m) => ({ default: m.PosSale })));
+const ReceivingPage = lazy(() => import('./pages/pos/Receiving').then((m) => ({ default: m.ReceivingPage })));
+const CashPage = lazy(() => import('./pages/pos/Cash').then((m) => ({ default: m.CashPage })));
+const MySales = lazy(() => import('./pages/pos/MySales').then((m) => ({ default: m.MySales })));
+const RequestRestock = lazy(() => import('./pages/pos/RequestRestock').then((m) => ({ default: m.RequestRestock })));
 
-import { WorkerLookup } from './pages/worker/Lookup';
-import { IncidentsWorkerPage } from './pages/worker/Incidents';
-import { WorkerQuotations } from './pages/worker/Quotations';
+const WorkerLookup = lazy(() => import('./pages/worker/Lookup').then((m) => ({ default: m.WorkerLookup })));
+const IncidentsWorkerPage = lazy(() => import('./pages/worker/Incidents').then((m) => ({ default: m.IncidentsWorkerPage })));
+const WorkerQuotations = lazy(() => import('./pages/worker/Quotations').then((m) => ({ default: m.WorkerQuotations })));
 
 const router = createBrowserRouter([
   {

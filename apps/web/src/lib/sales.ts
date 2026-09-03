@@ -28,12 +28,17 @@ interface SaleInput {
   paidAmount: number;
   consolidated: boolean;
   cashSessionId?: string;
-  type: 'boleta' | 'factura';
+  type: 'boleta' | 'factura' | 'nota';
 }
 
 /** Correlativo transaccional por serie. Los contadores se crean en el seed. */
 export async function createSale(input: SaleInput): Promise<Sale> {
-  const serie = input.type === 'factura' ? input.company.serieFactura : input.company.serieBoleta;
+  const serie =
+    input.type === 'factura'
+      ? input.company.serieFactura
+      : input.type === 'nota'
+      ? (input.company.serieNota || 'NV01')
+      : input.company.serieBoleta;
   const igvRate = input.company.igvRate || 0.18;
 
   const total = round2(input.items.reduce((s, i) => s + i.unitPrice * i.qty, 0));
@@ -58,7 +63,7 @@ export async function createSale(input: SaleInput): Promise<Sale> {
     // 1. LECTURAS (Todas antes de cualquier escritura)
     const counterRef = doc(db, 'counters', serie);
     const counterSnap = await tx.get(counterRef);
-    if (!counterSnap.exists()) throw new Error(`Serie ${serie} no inicializada`);
+    const counterExists = counterSnap.exists();
 
     const refs = finalItems.map((i) =>
       doc(db, 'product_stocks', stockId(i.productId, input.storeId))
@@ -66,7 +71,7 @@ export async function createSale(input: SaleInput): Promise<Sale> {
     const snaps = await Promise.all(refs.map((r) => tx.get(r)));
 
     // 2. VALIDACIONES
-    correlativo = (counterSnap.data()?.current as number ?? 0) + 1;
+    correlativo = counterExists ? ((counterSnap.data()?.current as number ?? 0) + 1) : 1;
     snaps.forEach((snap, i) => {
       if (!snap.exists()) throw new Error(`Sin stock registrado: ${finalItems[i].name}`);
       const data = snap.data();
@@ -78,7 +83,11 @@ export async function createSale(input: SaleInput): Promise<Sale> {
     });
 
     // 3. ESCRITURAS
-    tx.update(counterRef, { current: correlativo });
+    if (counterExists) {
+      tx.update(counterRef, { current: correlativo });
+    } else {
+      tx.set(counterRef, { current: correlativo });
+    }
 
     snaps.forEach((snap, i) => {
       const data = snap.data();
@@ -111,7 +120,7 @@ export async function createSale(input: SaleInput): Promise<Sale> {
       paidAmount: input.paidAmount,
       changeAmount: round2(Math.max(0, input.paidAmount - total)),
       consolidated: input.consolidated,
-      sunatStatus: 'no_enviado',
+      sunatStatus: input.type === 'nota' ? 'no_aplica' : 'no_enviado',
       status: 'activa',
       cashSessionId: input.cashSessionId ?? null,
       anulationRequest: null,
