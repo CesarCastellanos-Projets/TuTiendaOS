@@ -1,11 +1,14 @@
 export type Role = 'admin' | 'pos' | 'trabajador';
+export type PosStoreAccess = 'assigned' | 'all';
 
 export interface UserProfile {
   tenantId: string;
   displayName: string;
   email: string;
   role: Role;
-  storeId?: string;
+  storeId?: string | null;
+  storeAccess?: PosStoreAccess;
+  canOverridePrices?: boolean;
   active: boolean;
   createdAt?: number;
 }
@@ -16,6 +19,7 @@ export interface NewUserPayload {
   displayName: string;
   role: Role;
   storeId: string | null;
+  storeAccess?: PosStoreAccess;
 }
 
 export type Unit = 'UN' | 'KG' | 'LT' | 'PAQ' | 'CJA' | 'DOC' | string;
@@ -185,6 +189,8 @@ export interface SaleItem {
   presentationUnit?: string;
   factor?: number;
   barcode?: string;
+  catalogUnitPrice?: number;
+  priceOverridden?: boolean;
 }
 
 export type PaymentMethod = 'efectivo' | 'transferencia' | 'tarjeta' | 'yape' | 'plin' | 'sip' | 'otro';

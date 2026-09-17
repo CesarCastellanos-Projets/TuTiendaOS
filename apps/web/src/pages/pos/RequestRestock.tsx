@@ -4,6 +4,7 @@ import { onSnapshot } from '../../lib/firestore-listener';
 import { PackageOpen } from 'lucide-react';
 import { tenantCollection } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
+import { useProductsCatalog } from '../../hooks/useProductsCatalog';
 import type { ProductStock } from '../../types';
 import { money } from '../../lib/utils';
 import { FlashBar, useFlash } from '../../components/ui/Feedback';
@@ -23,6 +24,7 @@ export function RequestRestock() {
   const [term, setTerm] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+  const products = useProductsCatalog();
   const { msg, flash } = useFlash();
 
   const effectiveStoreId = profile.storeId || catalog[0]?.locationId || 'tienda-principal';
@@ -46,8 +48,20 @@ export function RequestRestock() {
   const results = useMemo(() => {
     const s = term.trim().toLowerCase();
     if (s.length < 2) return [];
-    return catalog.filter((p) => p.productName.toLowerCase().includes(s)).slice(0, 8);
-  }, [term, catalog]);
+    const productById = new Map(products.map((product) => [product.id, product]));
+    return catalog.filter((stock) => {
+      const product = productById.get(stock.productId);
+      return stock.productName.toLowerCase().includes(s)
+        || String(stock.barcode ?? '').toLowerCase().includes(s)
+        || String(product?.barcode ?? '').toLowerCase().includes(s)
+        || String(product?.internalCode ?? '').toLowerCase().includes(s)
+        || (product?.presentations ?? []).some((presentation) =>
+          String(presentation.barcode ?? '').toLowerCase().includes(s)
+          || presentation.unit.toLowerCase().includes(s)
+          || String(presentation.description ?? '').toLowerCase().includes(s)
+        );
+    }).slice(0, 8);
+  }, [term, catalog, products]);
 
   const add = (p: ProductStock) => {
     setTerm('');
@@ -110,9 +124,15 @@ export function RequestRestock() {
 
       <input
         className="field"
-        placeholder="Buscar producto…"
+        placeholder="Buscar por nombre o código de cualquier presentación…"
         value={term}
         onChange={(e) => setTerm(e.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && results.length === 1) {
+            event.preventDefault();
+            add(results[0]);
+          }
+        }}
         autoComplete="off"
       />
       {results.length > 0 && (

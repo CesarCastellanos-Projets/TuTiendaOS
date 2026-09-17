@@ -10,6 +10,8 @@ export interface ActiveProfile {
   role: AppRole;
   tenantId: string;
   storeId: string | null;
+  storeAccess: 'assigned' | 'all';
+  canOverridePrices: boolean;
 }
 
 export async function requireActiveProfile(request: CallableRequest): Promise<ActiveProfile> {
@@ -36,12 +38,18 @@ export async function requireActiveProfile(request: CallableRequest): Promise<Ac
     throw new HttpsError('permission-denied', 'La sesión no corresponde a la empresa asignada.');
   }
 
+  const storeAccess = data.role === 'pos' && request.auth.token.posStoreAccess === 'all'
+    ? 'all'
+    : 'assigned';
+
   return {
     uid: request.auth.uid,
     displayName: String(data.displayName ?? ''),
     role: data.role as AppRole,
     tenantId,
-    storeId: typeof data.storeId === 'string' ? data.storeId : null
+    storeId: typeof data.storeId === 'string' ? data.storeId : null,
+    storeAccess,
+    canOverridePrices: storeAccess === 'all' && request.auth.token.canOverridePrices === true
   };
 }
 

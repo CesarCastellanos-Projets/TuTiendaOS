@@ -12,14 +12,26 @@ interface AuthState {
   init: () => () => void;
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  setProfileStoreId: (storeId: string) => void;
 }
 
 let pendingProfile: { uid: string; promise: Promise<UserProfile | null> } | null = null;
 
 function readProfile(user: User): Promise<UserProfile | null> {
   if (pendingProfile?.uid === user.uid) return pendingProfile.promise;
-  const promise = getDoc(doc(db, 'users', user.uid))
-    .then((snapshot) => snapshot.exists() ? (snapshot.data() as UserProfile) : null)
+  const promise = Promise.all([
+    getDoc(doc(db, 'users', user.uid)),
+    user.getIdTokenResult()
+  ])
+    .then(([snapshot, token]) => {
+      if (!snapshot.exists()) return null;
+      const profile = snapshot.data() as UserProfile;
+      return {
+        ...profile,
+        storeAccess: token.claims.posStoreAccess === 'all' ? 'all' : 'assigned',
+        canOverridePrices: token.claims.canOverridePrices === true
+      } satisfies UserProfile;
+    })
     .finally(() => {
       if (pendingProfile?.promise === promise) pendingProfile = null;
     });
@@ -94,7 +106,10 @@ export const useAuth = create<AuthState>((set) => {
     logout: async () => {
       await signOut(auth);
       set({ user: null, profile: null, loading: false, error: null });
-    }
+    },
+    setProfileStoreId: (storeId) => set((state) => ({
+      profile: state.profile ? { ...state.profile, storeId } : null
+    }))
   };
 });
 

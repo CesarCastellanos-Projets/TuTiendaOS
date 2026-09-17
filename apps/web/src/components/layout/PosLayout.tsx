@@ -1,5 +1,6 @@
-import { useState, Suspense } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { getDocs, limit, query } from 'firebase/firestore';
 import { RouteLoading } from '../RouteLoading';
 import {
   ShoppingCart,
@@ -15,6 +16,9 @@ import {
   ChevronRight
 } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
+import { tenantCollection } from '../../lib/tenant-firestore';
+import { selectActivePosStore } from '../../lib/admin-users';
+import type { Store as StoreType } from '../../types';
 
 const POS_NAV = [
   { to: '/pos', icon: ShoppingCart, label: 'Punto de Venta (Vender)', shortLabel: 'Vender', desc: 'Emisión de boletas y facturas', end: true },
@@ -27,8 +31,40 @@ const POS_NAV = [
 export function PosLayout() {
   const profile = useAuth((s) => s.profile)!;
   const logout = useAuth((s) => s.logout);
+  const setProfileStoreId = useAuth((s) => s.setProfileStoreId);
   const navigate = useNavigate();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [stores, setStores] = useState<StoreType[]>([]);
+  const [selectingStore, setSelectingStore] = useState(false);
+  const [storeError, setStoreError] = useState<string | null>(null);
+  const canChooseStore = profile.role === 'pos' && profile.storeAccess === 'all';
+
+  useEffect(() => {
+    if (!canChooseStore) return;
+    let active = true;
+    void getDocs(query(tenantCollection('stores'), limit(50))).then((snapshot) => {
+      if (active) setStores(snapshot.docs.map((document) => ({ ...document.data(), id: document.id } as StoreType)));
+    }).catch(() => {
+      if (active) setStoreError('No se pudieron cargar las tiendas.');
+    });
+    return () => {
+      active = false;
+    };
+  }, [canChooseStore]);
+
+  const chooseStore = async (storeId: string) => {
+    if (!storeId || storeId === profile.storeId || selectingStore) return;
+    setSelectingStore(true);
+    setStoreError(null);
+    try {
+      const selected = await selectActivePosStore(storeId);
+      setProfileStoreId(selected.storeId);
+    } catch (error) {
+      setStoreError(error instanceof Error ? error.message : 'No se pudo seleccionar la tienda.');
+    } finally {
+      setSelectingStore(false);
+    }
+  };
 
   const handleLogout = async () => {
     await logout();
@@ -85,6 +121,20 @@ export function PosLayout() {
 
         {/* Lado Derecho: Info del Cajero & Botón Salir */}
         <div className="flex items-center gap-2.5">
+          {canChooseStore && (
+            <label className="relative hidden min-w-0 sm:block">
+              <span className="sr-only">Tienda activa</span>
+              <select
+                value={profile.storeId ?? ''}
+                disabled={selectingStore}
+                onChange={(event) => void chooseStore(event.target.value)}
+                className="h-11 max-w-52 rounded-xl border border-indigo-200 bg-indigo-50 pl-3 pr-8 text-xs font-bold text-indigo-950 outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+              >
+                <option value="" disabled>Elegir tienda…</option>
+                {stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+              </select>
+            </label>
+          )}
           <div className="hidden sm:flex items-center gap-2 rounded-full bg-slate-50 border border-slate-200 px-3 py-1 text-xs">
             <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
             <span className="font-bold text-slate-700 truncate max-w-[140px]">
@@ -104,9 +154,33 @@ export function PosLayout() {
 
       {/* ─── CONTENIDO PRINCIPAL (Ocupa el 100% de la pantalla sin barras que estorben) ─── */}
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <Suspense fallback={<RouteLoading />}>
-          <Outlet />
-        </Suspense>
+        {canChooseStore && !profile.storeId ? (
+          <div className="grid flex-1 place-items-center p-4">
+            <section className="card w-full max-w-md space-y-4 p-5 text-center">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-100 text-primary">
+                <Store size={24} />
+              </div>
+              <div>
+                <h1 className="font-display text-xl font-extrabold">Selecciona la tienda de este turno</h1>
+                <p className="mt-1 text-sm text-slate-500">Las ventas, caja y movimientos se registrarán únicamente en la tienda elegida.</p>
+              </div>
+              <select
+                value=""
+                disabled={selectingStore}
+                onChange={(event) => void chooseStore(event.target.value)}
+                className="field !min-h-12 text-base font-bold"
+              >
+                <option value="" disabled>Elegir tienda…</option>
+                {stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+              </select>
+              {storeError && <p className="text-sm font-semibold text-critical">{storeError}</p>}
+            </section>
+          </div>
+        ) : (
+          <Suspense key={profile.storeId} fallback={<RouteLoading />}>
+            <Outlet />
+          </Suspense>
+        )}
       </main>
 
       {/* ─── DRAWER LATERAL FLUIDO (Se abre al presionar las 3 líneas) ───────── */}
@@ -158,6 +232,21 @@ export function PosLayout() {
                   </p>
                 </div>
               </div>
+              {canChooseStore && (
+                <div className="mt-3 sm:hidden">
+                  <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">Tienda activa</label>
+                  <select
+                    value={profile.storeId ?? ''}
+                    disabled={selectingStore}
+                    onChange={(event) => void chooseStore(event.target.value)}
+                    className="field !min-h-11 text-sm font-bold"
+                  >
+                    <option value="" disabled>Elegir tienda…</option>
+                    {stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+                  </select>
+                  {storeError && <p className="mt-1 text-xs font-semibold text-critical">{storeError}</p>}
+                </div>
+              )}
             </div>
 
             {/* Links de Navegación Completos */}

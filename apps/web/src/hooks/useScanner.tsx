@@ -103,8 +103,8 @@ export function useScanner(onDetected: (code: string) => void) {
           buffer = '';
           if (!isInput) {
             e.preventDefault();
+            handlerRef.current(code);
           }
-          handlerRef.current(code);
         }
         buffer = '';
         return;

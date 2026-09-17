@@ -28,7 +28,7 @@ import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import { useCompany } from '../../hooks/useCompany';
 import { findInCatalog, useCatalogSearch, useStoreCatalog } from '../../hooks/useStoreCatalog';
-import { useScanner, WedgeInput } from '../../hooks/useScanner';
+import { useScanner } from '../../hooks/useScanner';
 import { createSale } from '../../lib/sales';
 import { lookupClient } from '../../services/ruc';
 import { ticketHtml, printTicket } from '../../lib/print';
@@ -111,6 +111,9 @@ export function PosSale() {
   const [busy, setBusy] = useState(false);
   const [storeName, setStoreName] = useState('Tienda');
   const [selectedCategory, setSelectedCategory] = useState<string>('todos');
+  const [editingPriceLineId, setEditingPriceLineId] = useState<string | null>(null);
+  const [priceDraft, setPriceDraft] = useState('');
+  const canOverridePrices = profile.role === 'admin' || profile.canOverridePrices === true;
 
   // Cotizaciones
   const [quoteModal, setQuoteModal] = useState(false);
@@ -212,7 +215,7 @@ export function PosSale() {
     );
   }, [catalog, cart.length]);
 
-  const total = useMemo(() => cart.reduce((s, l) => s + l.total, 0), [cart]);
+  const total = useMemo(() => round2(cart.reduce((s, l) => s + l.total, 0)), [cart]);
   const change = Math.max(0, (Number(paid) || 0) - total);
 
   // Extract categories for fast filter chips
@@ -239,41 +242,71 @@ export function PosSale() {
         .filter((l) => l.productId === p.productId)
         .reduce((sum, l) => sum + l.qty * (l.factor || 1), 0);
 
-      if (currentAllocated + factor > p.quantity) {
+      const remainingPresentations = round3((p.quantity - currentAllocated) / factor);
+      if (remainingPresentations <= 0) {
         setError(`Stock insuficiente: quedan ${p.quantity} unidades base de ${p.productName}`);
         return prev;
       }
+      const quantityToAdd = Math.min(1, remainingPresentations);
 
       const existing = prev.find((l) => l.lineId === lineId);
       if (existing) {
-        return prev.map((l) =>
-          l.lineId === lineId
-            ? { ...l, qty: l.qty + 1, total: round2((l.qty + 1) * l.unitPrice) }
-            : l
-        );
-      }
-
-      if (p.quantity < factor) {
-        setError(`${p.productName} sin stock disponible`);
-        return prev;
+        const nextQty = round3(existing.qty + quantityToAdd);
+        const updated = { ...existing, qty: nextQty, total: round2(nextQty * existing.unitPrice) };
+        return [updated, ...prev.filter((line) => line.lineId !== lineId)];
       }
 
       return [
-        ...prev,
         {
           lineId,
           productId: p.productId,
           name: p.productName,
-          qty: 1,
+          qty: quantityToAdd,
           unitPrice: p.salePrice,
-          total: round2(p.salePrice),
+          total: round2(quantityToAdd * p.salePrice),
           stock: p.quantity,
           presentationUnit: p.presentationUnit,
           factor,
           barcode: p.barcode ?? undefined
-        }
+        },
+        ...prev
       ];
     });
+  }
+
+  function updateCartQuantity(lineId: string, requestedQty: number): void {
+    if (!Number.isFinite(requestedQty) || requestedQty <= 0 || requestedQty > 1_000_000) return;
+    const quantity = round3(requestedQty);
+    setCart((prev) => {
+      const line = prev.find((item) => item.lineId === lineId);
+      if (!line) return prev;
+      const allocatedByOthers = prev
+        .filter((item) => item.productId === line.productId && item.lineId !== lineId)
+        .reduce((sum, item) => sum + item.qty * (item.factor || 1), 0);
+      const required = round3(allocatedByOthers + quantity * (line.factor || 1));
+      if (required > line.stock + 0.0001) {
+        setError(`Stock máximo alcanzado para ${line.name} (quedan ${line.stock} unidades base)`);
+        return prev;
+      }
+      setError(null);
+      return prev.map((item) => item.lineId === lineId
+        ? { ...item, qty: quantity, total: round2(quantity * item.unitPrice) }
+        : item);
+    });
+  }
+
+  function commitPrice(lineId: string): void {
+    const price = round2(Number(priceDraft));
+    if (!Number.isFinite(price) || price <= 0 || price > 1_000_000) {
+      setError('El precio debe ser mayor que cero y tener un importe válido.');
+      return;
+    }
+    setCart((prev) => prev.map((line) => line.lineId === lineId
+      ? { ...line, unitPrice: price, total: round2(line.qty * price) }
+      : line));
+    setEditingPriceLineId(null);
+    setPriceDraft('');
+    setError(null);
   }
 
   const scanCode = (code: string) => {
@@ -287,7 +320,10 @@ export function PosSale() {
     });
   };
 
-  const scanner = useScanner(scanCode);
+  const scanner = useScanner((code) => {
+    setTerm(code);
+    scanCode(code);
+  });
   const results = term.trim().length >= 2 ? searchIn(term) : [];
 
   async function doRucLookup(): Promise<void> {
@@ -436,14 +472,55 @@ export function PosSale() {
           <div className="flex gap-2">
             <div className="relative flex-1">
               <Search size={18} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <WedgeInput
-                onSubmit={scanCode}
-                placeholder="Escanea con pistola o escribe código (Enter)…"
-                className="field !pl-10 !h-12 !text-base font-medium shadow-xs"
-              />
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const value = term.trim();
+                  if (!value) return;
+                  scanCode(value);
+                  setTerm('');
+                }}
+              >
+                <input
+                  value={term}
+                  onChange={(event) => setTerm(event.target.value)}
+                  placeholder="Busca por nombre o escanea cualquier presentación…"
+                  className="field !pl-10 !h-12 !text-base font-medium shadow-xs"
+                  autoComplete="off"
+                  inputMode="search"
+                  autoFocus
+                />
+              </form>
               <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded-md bg-slate-100 border border-slate-200 px-2 py-0.5 text-[11px] font-bold text-slate-500 hidden sm:inline">
                 Pistola USB
               </span>
+              {results.length > 0 && (
+                <ul className="absolute inset-x-0 top-full z-30 mt-1 max-h-72 overflow-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl animate-in fade-in">
+                  {results.map((p) => (
+                    <li key={p.searchKey}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          addToCart(p);
+                          setTerm('');
+                        }}
+                        className="flex min-h-11 w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm hover:bg-indigo-50/60 transition-colors"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <span className="truncate font-medium text-slate-800 block">{p.productName}</span>
+                          {p.barcode && <span className="text-[10px] font-mono text-slate-400 block">Código: {p.barcode}</span>}
+                        </div>
+                        <div className="ml-3 flex shrink-0 items-center gap-2">
+                          <span className={`badge ${p.quantity <= 5 ? 'bg-red-50 text-critical' : 'bg-emerald-50 text-success'}`}>
+                            {p.quantity} en stock
+                          </span>
+                          <span className="price-tag text-base font-mono font-bold text-primary">{money(p.salePrice)}</span>
+                        </div>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             <button
@@ -481,56 +558,6 @@ export function PosSale() {
               <span>{scanner.error}</span>
             </div>
           )}
-
-          {/* Buscador Rápido por Nombre o Código */}
-          <div className="relative">
-            <input
-              className="field !h-10 text-sm bg-slate-50/70"
-              placeholder="Buscar por nombre o código de barras (Enter)…"
-              value={term}
-              onChange={(e) => setTerm(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && term.trim()) {
-                  e.preventDefault();
-                  scanCode(term.trim());
-                  setTerm('');
-                }
-              }}
-              autoComplete="off"
-            />
-            {results.length > 0 && (
-              <ul className="absolute inset-x-0 top-full z-30 mt-1 max-h-72 overflow-auto rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl animate-in fade-in">
-                {results.map((p) => (
-                  <li key={p.searchKey}>
-                    <button
-                      onClick={() => {
-                        addToCart(p);
-                        setTerm('');
-                      }}
-                      className="flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm hover:bg-indigo-50/60 transition-colors"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <span className="truncate font-medium text-slate-800 block">{p.productName}</span>
-                        {p.barcode && (
-                          <span className="text-[10px] font-mono text-slate-400 block">
-                            Código: {p.barcode}
-                          </span>
-                        )}
-                      </div>
-                      <div className="ml-3 flex shrink-0 items-center gap-2">
-                        <span className={`badge ${p.quantity <= 5 ? 'bg-red-50 text-critical' : 'bg-emerald-50 text-success'}`}>
-                          {p.quantity} en stock
-                        </span>
-                        <span className="price-tag text-base font-mono font-bold text-primary">
-                          {money(p.salePrice)}
-                        </span>
-                      </div>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
 
           {/* Filtros por Categoría */}
           {categories.length > 0 && (
@@ -581,7 +608,7 @@ export function PosSale() {
         <div className="flex-1 overflow-y-auto p-4">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
             {filteredCatalog.map((p) => {
-              const isOutOfStock = p.quantity < 1;
+              const isOutOfStock = p.quantity <= 0;
               const isLowStock = p.quantity > 0 && p.quantity <= 5;
               const prodDef = products.find((pr) => pr.id === p.productId);
               const extraPres = prodDef?.presentations?.filter((pr) => pr.salePrice > 0) || [];
@@ -634,7 +661,7 @@ export function PosSale() {
                         type="button"
                         onClick={() => addToCart(p)}
                         disabled={isOutOfStock}
-                        className="flex-1 min-w-[70px] rounded-lg bg-slate-100 hover:bg-primary hover:text-white px-1.5 py-1 text-[10px] font-bold text-slate-700 transition-colors disabled:opacity-40 truncate text-center"
+                        className="flex min-h-11 flex-1 min-w-[70px] items-center justify-center rounded-lg bg-slate-100 hover:bg-primary hover:text-white px-1.5 py-2 text-[10px] font-bold text-slate-700 transition-colors disabled:opacity-40 text-center"
                         title="Agregar unidad base"
                       >
                         + {prodDef?.unit || 'UN'} (S/ {p.salePrice.toFixed(2)})
@@ -657,7 +684,7 @@ export function PosSale() {
                                 factor: pr.factor || 1
                               })
                             }
-                            className="flex-1 min-w-[70px] rounded-lg bg-indigo-50 border border-indigo-200 hover:bg-primary hover:text-white px-1.5 py-1 text-[10px] font-bold text-primary transition-colors disabled:opacity-40 truncate text-center"
+                            className="flex min-h-11 flex-1 min-w-[70px] items-center justify-center rounded-lg bg-indigo-50 border border-indigo-200 hover:bg-primary hover:text-white px-1.5 py-2 text-[10px] font-bold text-primary transition-colors disabled:opacity-40 text-center"
                             title={`Agregar ${label}`}
                           >
                             + {label} (S/ {pr.salePrice.toFixed(2)})
@@ -840,60 +867,91 @@ export function PosSale() {
             cart.map((l) => (
               <div
                 key={l.lineId}
-                className="flex items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white p-3 shadow-xs animate-in fade-in"
+                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white p-3 shadow-xs animate-in fade-in"
               >
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-xs font-bold text-slate-800 leading-tight">
                     {l.name}
                   </p>
-                  <span className="text-[11px] font-mono text-slate-400">
-                    S/ {l.unitPrice.toFixed(2)} c/u
-                  </span>
+                  {canOverridePrices ? (
+                    editingPriceLineId === l.lineId ? (
+                      <form
+                        className="mt-1 flex items-center gap-1"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          commitPrice(l.lineId);
+                        }}
+                      >
+                        <span className="text-xs font-bold text-primary">S/</span>
+                        <input
+                          autoFocus
+                          type="number"
+                          inputMode="decimal"
+                          min="0.01"
+                          max="1000000"
+                          step="0.01"
+                          value={priceDraft}
+                          onChange={(event) => setPriceDraft(event.target.value)}
+                          onBlur={() => commitPrice(l.lineId)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Escape') {
+                              setEditingPriceLineId(null);
+                              setPriceDraft('');
+                            }
+                          }}
+                          className="h-9 w-24 rounded-lg border border-primary/40 px-2 font-mono text-sm font-bold outline-none focus:ring-2 focus:ring-primary/20"
+                          aria-label={`Precio de ${l.name}`}
+                        />
+                      </form>
+                    ) : (
+                      <button
+                        type="button"
+                        className="mt-1 min-h-8 rounded-lg bg-indigo-50 px-2 font-mono text-[11px] font-bold text-primary hover:bg-indigo-100"
+                        onClick={() => {
+                          setEditingPriceLineId(l.lineId);
+                          setPriceDraft(l.unitPrice.toFixed(2));
+                        }}
+                        title="Editar el precio solo para esta venta"
+                      >
+                        S/ {l.unitPrice.toFixed(2)} c/u · editar
+                      </button>
+                    )
+                  ) : (
+                    <span className="text-[11px] font-mono text-slate-400">S/ {l.unitPrice.toFixed(2)} c/u</span>
+                  )}
                 </div>
 
                 {/* Stepper +/- */}
                 <div className="flex items-center gap-1.5">
                   <button
                     aria-label={`Restar ${l.name}`}
-                    className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
-                    onClick={() =>
-                      setCart((prev) =>
-                        prev
-                          .map((x) =>
-                            x.lineId === l.lineId
-                              ? { ...x, qty: x.qty - 1, total: round2((x.qty - 1) * x.unitPrice) }
-                              : x
-                          )
-                          .filter((x) => x.qty > 0)
-                      )
-                    }
+                    className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
+                    onClick={() => {
+                      const next = round3(l.qty - 1);
+                      if (next <= 0) setCart((prev) => prev.filter((item) => item.lineId !== l.lineId));
+                      else updateCartQuantity(l.lineId, next);
+                    }}
                   >
                     <Minus size={12} />
                   </button>
 
-                  <span className="w-7 text-center font-mono text-xs font-extrabold text-slate-900">
-                    {l.qty}
-                  </span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0.001"
+                    max="1000000"
+                    step="0.001"
+                    value={l.qty}
+                    onChange={(event) => updateCartQuantity(l.lineId, event.currentTarget.valueAsNumber)}
+                    onFocus={(event) => event.currentTarget.select()}
+                    className="h-11 w-16 rounded-xl border border-slate-200 bg-white px-1 text-center font-mono text-sm font-extrabold text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                    aria-label={`Cantidad de ${l.name}`}
+                  />
 
                   <button
                     aria-label={`Sumar ${l.name}`}
-                    className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
-                    onClick={() => {
-                      const allocated = cart
-                        .filter((x) => x.productId === l.productId)
-                        .reduce((sum, x) => sum + x.qty * (x.factor || 1), 0);
-                      if (allocated + (l.factor || 1) > l.stock) {
-                        setError(`Stock máximo alcanzado para ${l.name} (quedan ${l.stock} unidades base)`);
-                        return;
-                      }
-                      setCart((prev) =>
-                        prev.map((x) =>
-                          x.lineId === l.lineId
-                            ? { ...x, qty: x.qty + 1, total: round2((x.qty + 1) * x.unitPrice) }
-                            : x
-                        )
-                      );
-                    }}
+                    className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
+                    onClick={() => updateCartQuantity(l.lineId, round3(l.qty + 1))}
                   >
                     <Plus size={12} />
                   </button>
@@ -907,7 +965,7 @@ export function PosSale() {
                     type="button"
                     title={`Quitar ${l.name} del carrito`}
                     aria-label={`Eliminar ${l.name}`}
-                    className="flex h-7 w-7 items-center justify-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-critical transition-colors"
+                    className="flex h-11 w-11 items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-critical transition-colors"
                     onClick={() => setCart((prev) => prev.filter((x) => x.lineId !== l.lineId))}
                   >
                     <Trash2 size={14} />
@@ -1255,4 +1313,8 @@ export function PosSale() {
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+function round3(n: number): number {
+  return Math.round((n + Number.EPSILON) * 1000) / 1000;
 }

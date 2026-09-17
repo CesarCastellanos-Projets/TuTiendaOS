@@ -9,7 +9,10 @@ export function RequireRole({ roles }: { roles: Role[] }): ReactElement {
   if (loading) return <FullPageLoader />;
   if (!user || !profile) return <Navigate to="/login" replace />;
   if (!roles.includes(profile.role)) return <Navigate to={homeFor(profile.role)} replace />;
-  if ((profile.role === 'pos' || profile.role === 'trabajador') && !profile.storeId) {
+  if (
+    (profile.role === 'trabajador' && !profile.storeId)
+    || (profile.role === 'pos' && !profile.storeId && profile.storeAccess !== 'all')
+  ) {
     return (
       <Notice
         title="Sin tienda asignada"

@@ -5,7 +5,7 @@ import { Plus } from 'lucide-react';
 import { db } from '../../lib/firebase';
 import { useAuth } from '../../lib/auth';
 import { tenantCollection } from '../../lib/tenant-firestore';
-import type { NewUserPayload, Role, Store, UserProfile } from '../../types';
+import type { NewUserPayload, PosStoreAccess, Role, Store, UserProfile } from '../../types';
 import { createSystemUser } from '../../lib/admin-users';
 import { clean } from '../../lib/utils';
 import { Modal } from '../../components/ui/Modal';
@@ -22,6 +22,8 @@ export function UsersPage() {
   const [stores, setStores] = useState<Store[]>([]);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [newRole, setNewRole] = useState<Role | ''>('');
+  const [posStoreAccess, setPosStoreAccess] = useState<PosStoreAccess>('assigned');
   const { msg, flash } = useFlash();
   const tenantId = useAuth((state) => state.profile?.tenantId);
 
@@ -42,18 +44,20 @@ export function UsersPage() {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
     const role = clean(fd.get('role')) as Role;
+    const storeAccess: PosStoreAccess = role === 'pos' && posStoreAccess === 'all' ? 'all' : 'assigned';
     const payload: NewUserPayload = {
       email: clean(fd.get('email')).toLowerCase(),
       password: clean(fd.get('password')),
       displayName: clean(fd.get('displayName')),
       role,
-      storeId: role === 'admin' ? null : clean(fd.get('storeId')) || null
+      storeId: role === 'admin' || storeAccess === 'all' ? null : clean(fd.get('storeId')) || null,
+      storeAccess
     };
     if (payload.password.length < 6) {
       flash('Error: la clave debe tener al menos 6 caracteres');
       return;
     }
-    if ((role === 'pos' || role === 'trabajador') && !payload.storeId) {
+    if (((role === 'pos' && storeAccess === 'assigned') || role === 'trabajador') && !payload.storeId) {
       flash('Error: asigna una tienda al usuario');
       return;
     }
@@ -61,6 +65,8 @@ export function UsersPage() {
     try {
       await createSystemUser(payload);
       setCreating(false);
+      setNewRole('');
+      setPosStoreAccess('assigned');
       flash('Usuario creado');
     } catch (err) {
       flash(`Error: ${err instanceof Error ? err.message : 'no se pudo crear'}`);
@@ -103,8 +109,8 @@ export function UsersPage() {
               <tr key={u.id}>
                 <td className="td font-medium">{u.displayName}</td>
                 <td className="td text-sm">{u.email}</td>
-                <td className="td">{ROLE_LABEL[u.role]}</td>
-                <td className="td">{stores.find((s) => s.id === u.storeId)?.name ?? '—'}</td>
+                <td className="td">{u.role === 'pos' && u.storeAccess === 'all' ? 'Cajero POS multi-tienda' : ROLE_LABEL[u.role]}</td>
+                <td className="td">{u.role === 'pos' && u.storeAccess === 'all' ? 'Elige dentro del POS' : stores.find((s) => s.id === u.storeId)?.name ?? '—'}</td>
                 <td className="td text-right">
                   <button onClick={() => void toggleActive(u)} className={`badge ${u.active ? 'bg-emerald-50 text-success' : 'bg-slate-100 text-slate-500'}`}>
                     {u.active ? 'activo' : 'inactivo'}
@@ -116,7 +122,15 @@ export function UsersPage() {
         </table>
       </div>
 
-      <Modal open={creating} title="Nuevo usuario" onClose={() => setCreating(false)}>
+      <Modal
+        open={creating}
+        title="Nuevo usuario"
+        onClose={() => {
+          setCreating(false);
+          setNewRole('');
+          setPosStoreAccess('assigned');
+        }}
+      >
         <form onSubmit={create} className="space-y-3">
           <div>
             <label className="label">Nombre completo *</label>
@@ -132,22 +146,51 @@ export function UsersPage() {
           </div>
           <div>
             <label className="label">Rol *</label>
-            <select name="role" required defaultValue="" className="field">
+            <select
+              name="role"
+              required
+              value={newRole}
+              onChange={(event) => {
+                setNewRole(event.target.value as Role | '');
+                setPosStoreAccess('assigned');
+              }}
+              className="field"
+            >
               <option value="" disabled>Elegir…</option>
               <option value="admin">{ROLE_LABEL.admin}</option>
               <option value="pos">{ROLE_LABEL.pos}</option>
               <option value="trabajador">{ROLE_LABEL.trabajador}</option>
             </select>
           </div>
-          <div>
-            <label className="label">Tienda (POS y Trabajador)</label>
-            <select name="storeId" defaultValue="" className="field">
-              <option value="">—</option>
-              {stores.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-          </div>
+          {newRole === 'pos' && (
+            <div>
+              <label className="label">Tipo de acceso POS *</label>
+              <select
+                value={posStoreAccess}
+                onChange={(event) => setPosStoreAccess(event.target.value as PosStoreAccess)}
+                className="field"
+              >
+                <option value="assigned">POS fijo — trabaja en una sola tienda</option>
+                <option value="all">POS multi-tienda — elige tienda al ingresar y puede cambiar precios</option>
+              </select>
+            </div>
+          )}
+          {(newRole === 'trabajador' || (newRole === 'pos' && posStoreAccess === 'assigned')) && (
+            <div>
+              <label className="label">Tienda asignada *</label>
+              <select name="storeId" defaultValue="" required className="field">
+                <option value="">Elegir tienda…</option>
+                {stores.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {newRole === 'pos' && posStoreAccess === 'all' && (
+            <p className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-900">
+              Esta cuenta podrá escoger la tienda dentro del POS y modificar el precio únicamente para la venta actual. Los precios del catálogo no cambiarán.
+            </p>
+          )}
           <button disabled={busy} className="btn-primary w-full">
             {busy ? 'Creando…' : 'Crear usuario'}
           </button>

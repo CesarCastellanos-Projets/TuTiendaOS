@@ -8,6 +8,7 @@ interface RequestedSaleItem {
   qty?: unknown;
   presentationUnit?: unknown;
   barcode?: unknown;
+  unitPrice?: unknown;
 }
 
 interface ProductPresentation {
@@ -26,10 +27,16 @@ interface TrustedSaleItem {
   factor: number;
   presentationUnit?: string;
   barcode?: string;
+  catalogUnitPrice: number;
+  priceOverridden: boolean;
 }
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function round3(value: number): number {
+  return Math.round((value + Number.EPSILON) * 1000) / 1000;
 }
 
 function positiveNumber(value: unknown, field: string): number {
@@ -38,6 +45,24 @@ function positiveNumber(value: unknown, field: string): number {
     throw new HttpsError('invalid-argument', `${field} debe ser mayor que cero.`);
   }
   return parsed;
+}
+
+function saleQuantity(value: unknown): number {
+  const parsed = positiveNumber(value, 'La cantidad');
+  const rounded = round3(parsed);
+  if (parsed > 1_000_000 || Math.abs(parsed - rounded) > 0.0000001) {
+    throw new HttpsError('invalid-argument', 'La cantidad admite como máximo 3 decimales.');
+  }
+  return rounded;
+}
+
+function salePrice(value: unknown): number {
+  const parsed = positiveNumber(value, 'El precio');
+  const rounded = round2(parsed);
+  if (parsed > 1_000_000 || Math.abs(parsed - rounded) > 0.0000001) {
+    throw new HttpsError('invalid-argument', 'El precio admite como máximo 2 decimales.');
+  }
+  return rounded;
 }
 
 function shortText(value: unknown, maxLength: number): string {
@@ -166,7 +191,7 @@ export const createSaleRecord = onCall(async (request) => {
         throw new HttpsError('failed-precondition', `${String(product.name)} ya no está activo.`);
       }
 
-      const qty = positiveNumber(requested.qty, 'La cantidad');
+      const qty = saleQuantity(requested.qty);
       const presentationUnit = shortText(requested.presentationUnit, 40);
       const barcode = shortText(requested.barcode, 80);
       const presentations = Array.isArray(product.presentations)
@@ -178,11 +203,15 @@ export const createSaleRecord = onCall(async (request) => {
       );
       const factor = presentation ? positiveNumber(presentation.factor ?? 1, 'El factor') : 1;
       const stock = stockSnap.data()!;
-      const unitPrice = presentation
+      const catalogPrice = presentation
         ? positiveNumber(presentation.salePrice, 'El precio')
         : positiveNumber(stock.salePrice ?? product.salePrice, 'El precio');
-      const baseUnits = qty * factor;
-      requiredByProduct.set(productId, (requiredByProduct.get(productId) ?? 0) + baseUnits);
+      const mayOverridePrice = profile.role === 'admin' || profile.canOverridePrices;
+      const unitPrice = mayOverridePrice && requested.unitPrice !== undefined
+        ? salePrice(requested.unitPrice)
+        : round2(catalogPrice);
+      const baseUnits = round3(qty * factor);
+      requiredByProduct.set(productId, round3((requiredByProduct.get(productId) ?? 0) + baseUnits));
 
       return {
         productId,
@@ -191,6 +220,8 @@ export const createSaleRecord = onCall(async (request) => {
         unitPrice,
         total: round2(qty * unitPrice),
         factor,
+        catalogUnitPrice: round2(catalogPrice),
+        priceOverridden: Math.abs(unitPrice - catalogPrice) >= 0.005,
         ...(presentationUnit ? { presentationUnit } : {}),
         ...(barcode ? { barcode } : {})
       };
@@ -199,7 +230,7 @@ export const createSaleRecord = onCall(async (request) => {
     for (const [productId, required] of requiredByProduct) {
       const stockSnap = stocks.get(productId);
       const current = Number(stockSnap?.data()?.quantity ?? 0);
-      if (current < required) {
+      if (current + 0.0001 < required) {
         throw new HttpsError('failed-precondition', `Stock insuficiente de ${String(products.get(productId)?.data()?.name ?? 'producto')}.`);
       }
     }
@@ -252,7 +283,7 @@ export const createSaleRecord = onCall(async (request) => {
     for (const [productId, required] of requiredByProduct) {
       const stockSnap = stocks.get(productId)!;
       tx.update(stockSnap.ref, {
-        quantity: Number(stockSnap.data()?.quantity ?? 0) - required,
+        quantity: round3(Number(stockSnap.data()?.quantity ?? 0) - required),
         updatedAt: now
       });
       tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {

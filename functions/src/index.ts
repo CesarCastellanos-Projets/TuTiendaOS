@@ -34,12 +34,13 @@ export {
 export const createUser = onCall(async (request) => {
   const profile = await requireAdmin(request);
 
-  const { email, password, displayName, role, storeId } = request.data as {
+  const { email, password, displayName, role, storeId, storeAccess } = request.data as {
     email?: string;
     password?: string;
     displayName?: string;
     role?: string;
     storeId?: string | null;
+    storeAccess?: string;
   };
 
   if (!email || !password || password.length < 6 || !displayName || !role) {
@@ -48,7 +49,8 @@ export const createUser = onCall(async (request) => {
   if (!['admin', 'pos', 'trabajador'].includes(role)) {
     throw new HttpsError('invalid-argument', 'Rol inválido.');
   }
-  if ((role === 'pos' || role === 'trabajador') && !storeId) {
+  const isMultiStorePos = role === 'pos' && storeAccess === 'all';
+  if (((role === 'pos' && !isMultiStorePos) || role === 'trabajador') && !storeId) {
     throw new HttpsError('invalid-argument', 'POS y Trabajador requieren tienda.');
   }
 
@@ -65,16 +67,35 @@ export const createUser = onCall(async (request) => {
     displayName,
     email,
     role,
-    storeId: storeId ?? null,
+    storeId: isMultiStorePos ? null : storeId ?? null,
+    storeAccess: isMultiStorePos ? 'all' : 'assigned',
     active: true,
     createdAt: Date.now()
   });
   await admin.auth().setCustomUserClaims(userRecord.uid, {
     tenantId: profile.tenantId,
-    role
+    role,
+    posStoreAccess: isMultiStorePos ? 'all' : 'assigned',
+    canOverridePrices: isMultiStorePos
   });
 
   return { uid: userRecord.uid };
+});
+
+/** Selecciona la tienda operativa de un POS multi-tienda. */
+export const selectPosStore = onCall(async (request) => {
+  const profile = await requireActiveProfile(request);
+  if (profile.role !== 'pos' || profile.storeAccess !== 'all') {
+    throw new HttpsError('permission-denied', 'Tu cuenta no puede cambiar de tienda.');
+  }
+  const storeId = typeof request.data?.storeId === 'string'
+    ? request.data.storeId.trim().slice(0, 128)
+    : '';
+  if (!storeId) throw new HttpsError('invalid-argument', 'Selecciona una tienda válida.');
+  const store = await db.doc(`tenants/${profile.tenantId}/stores/${storeId}`).get();
+  if (!store.exists) throw new HttpsError('not-found', 'La tienda seleccionada no existe.');
+  await db.doc(`users/${profile.uid}`).update({ storeId });
+  return { storeId, storeName: String(store.data()?.name ?? 'Tienda') };
 });
 
 /** Consulta DNI/RUC desde el servidor y cachea en Firestore. */

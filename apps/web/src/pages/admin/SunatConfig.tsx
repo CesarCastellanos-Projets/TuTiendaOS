@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { setDoc } from 'firebase/firestore';
 import {
   Activity,
@@ -55,7 +55,8 @@ function publicCompanyConfig(current: CompanyConfig | null, patch: Partial<Compa
 }
 
 export function SunatConfigPage() {
-  const cfg = useCompany();
+  const loadedConfig = useCompany();
+  const [cfg, setCfg] = useState<CompanyConfig | null>(null);
   const [activeTab, setActiveTab] = useState<'estado' | 'empresa' | 'sol'>('estado');
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -66,6 +67,10 @@ export function SunatConfigPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const { msg, flash } = useFlash();
+
+  useEffect(() => {
+    if (loadedConfig) setCfg(loadedConfig);
+  }, [loadedConfig]);
 
   const isDemo = cfg?.isDemoMode ?? (cfg?.entornoSunat === 'beta');
 
@@ -102,6 +107,7 @@ export function SunatConfigPage() {
           certIssuer: 'SUNAT Demo CA (Autofirmado)'
         });
         await setDoc(tenantDoc('config', 'company'), demoData);
+        setCfg(demoData);
         flash('Modo de prueba (BETA SUNAT) activado.');
       } else {
         const prodData = publicCompanyConfig(cfg, {
@@ -109,6 +115,7 @@ export function SunatConfigPage() {
           entornoSunat: 'produccion'
         });
         await setDoc(tenantDoc('config', 'company'), prodData);
+        setCfg(prodData);
         flash('Modo Producción (EN VIVO CON SUNAT) activado. Ingresa tu RUC y claves SOL reales.');
       }
       void runTest();
@@ -145,6 +152,11 @@ export function SunatConfigPage() {
           certIssuer: res.certificate?.issuer ?? undefined
         })
       );
+      setCfg(publicCompanyConfig(cfg, {
+        certFileName: certFile.name,
+        certExpiresAt: res.certificate?.expires_at ?? undefined,
+        certIssuer: res.certificate?.issuer ?? undefined
+      }));
 
       flash('Certificado digital instalado y verificado exitosamente');
       setCertFile(null);
@@ -183,6 +195,7 @@ export function SunatConfigPage() {
     setBusy(true);
     try {
       await setDoc(tenantDoc('config', 'company'), data);
+      setCfg(data);
       flash('Configuración de la empresa guardada exitosamente');
     } catch {
       flash('Error al guardar la configuración');

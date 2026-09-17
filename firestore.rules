@@ -40,11 +40,14 @@ service cloud.firestore {
 
     function validUser(data) {
       return data.keys().hasAll(['displayName', 'email', 'role', 'active', 'tenantId'])
-        && data.keys().hasOnly(['displayName', 'email', 'role', 'active', 'tenantId', 'storeId', 'warehouseId', 'createdAt'])
+        && data.keys().hasOnly(['displayName', 'email', 'role', 'active', 'tenantId', 'storeId', 'storeAccess', 'warehouseId', 'createdAt'])
         && shortString(data.displayName, 120) && shortString(data.email, 160)
         && shortString(data.tenantId, 63) && data.role in ['admin', 'pos', 'trabajador']
         && data.active is bool
         && (!('storeId' in data) || data.storeId == null || shortString(data.storeId, 128))
+        && (!('storeAccess' in data)
+          || (data.role == 'pos' && data.storeAccess in ['assigned', 'all'])
+          || (data.role != 'pos' && data.storeAccess == 'assigned'))
         && (!('warehouseId' in data) || data.warehouseId == null || shortString(data.warehouseId, 128));
     }
 

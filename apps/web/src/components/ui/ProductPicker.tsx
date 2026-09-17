@@ -21,7 +21,16 @@ export function useProductSearch() {
       .filter(
         (p) =>
           p.active &&
-          (p.name.toLowerCase().includes(s) || p.barcode?.includes(s) || p.internalCode?.toLowerCase().includes(s))
+          (
+            p.name.toLowerCase().includes(s)
+            || p.barcode?.toLowerCase().includes(s)
+            || p.internalCode?.toLowerCase().includes(s)
+            || (p.presentations ?? []).some((presentation) =>
+              presentation.barcode?.toLowerCase().includes(s)
+              || presentation.unit.toLowerCase().includes(s)
+              || presentation.description?.toLowerCase().includes(s)
+            )
+          )
       )
       .slice(0, 8);
   };
