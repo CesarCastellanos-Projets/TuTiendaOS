@@ -43,6 +43,10 @@ RUN composer install --no-dev --optimize-autoloader --no-interaction
 # Variables de entorno por defecto
 ENV APP_ENV=production
 ENV APP_DEBUG=false
+ENV DB_CONNECTION=sqlite
+ENV DB_DATABASE=/var/www/database/database.sqlite
+ENV CACHE_STORE=file
+ENV SESSION_DRIVER=file
 ENV PORT=8000
 EXPOSE 8000
 

@@ -518,15 +518,15 @@ function limaDate(timestamp: number): string {
   return new Date(timestamp - 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-export const taxHealthCheck = onCall({ secrets: [API_FACT_TOKEN] }, async (request) => {
+export const taxHealthCheck = onCall({ secrets: [API_FACT_TOKEN], timeoutSeconds: 75 }, async (request) => {
   const profile = await requireAdmin(request);
-  return taxRequest('/api/health-check', { method: 'POST' }, 10000, profile.tenantId);
+  return taxRequest('/api/health-check', { method: 'POST' }, 60_000, profile.tenantId);
 });
 
-export const activateSunatDemoMode = onCall({ secrets: [API_FACT_TOKEN] }, async (request) => {
+export const activateSunatDemoMode = onCall({ secrets: [API_FACT_TOKEN], timeoutSeconds: 75 }, async (request) => {
   const profile = await requireAdmin(request);
   await registerSunatMaintenanceTenant(profile.tenantId);
-  return taxRequest('/api/config/demo-mode', { method: 'POST' }, 10000, profile.tenantId);
+  return taxRequest('/api/config/demo-mode', { method: 'POST' }, 60_000, profile.tenantId);
 });
 
 export const saveSunatCredentials = onCall({ secrets: [API_FACT_TOKEN] }, async (request) => {
