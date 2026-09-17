@@ -1,12 +1,12 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { setGlobalOptions } from 'firebase-functions/v2';
-import { defineSecret } from 'firebase-functions/params';
+import { defineString } from 'firebase-functions/params';
 import { admin, db } from './firebase';
 import { requireActiveProfile, requireAdmin } from './authz';
 import { tenantCollection } from './tenant';
 
 setGlobalOptions({ region: 'us-central1', maxInstances: 10 });
-const APISPERU_TOKEN = defineSecret('APISPERU_TOKEN');
+const APISPERU_TOKEN = defineString('APISPERU_TOKEN', { default: 'disabled' });
 
 export { createSaleRecord, getCompanyConfig, receiveTransfer } from './operations';
 export {
@@ -78,9 +78,7 @@ export const createUser = onCall(async (request) => {
 });
 
 /** Consulta DNI/RUC desde el servidor y cachea en Firestore. */
-export const lookupClient = onCall(
-  { secrets: [APISPERU_TOKEN] },
-  async (request) => {
+export const lookupClient = onCall(async (request) => {
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
     }
@@ -100,6 +98,14 @@ export const lookupClient = onCall(
       return cached.data();
     }
 
+    const apiToken = APISPERU_TOKEN.value().trim();
+    if (!apiToken || apiToken === 'disabled') {
+      throw new HttpsError(
+        'failed-precondition',
+        'La consulta automática de DNI/RUC aún no está configurada.'
+      );
+    }
+
     const endpoint =
       type === 'dni'
         ? `https://api.apis.net.pe/v2/reniec/dni?numero=${number}`
@@ -107,7 +113,7 @@ export const lookupClient = onCall(
 
     const res = await fetch(endpoint, {
       headers: {
-        Authorization: `Bearer ${APISPERU_TOKEN.value()}`,
+        Authorization: `Bearer ${apiToken}`,
         Referer: 'https://denzoz.pe'
       },
       signal: AbortSignal.timeout(10000)
@@ -136,5 +142,4 @@ export const lookupClient = onCall(
     };
     await clients.doc(cacheId).set({ ...result, tenantId: profile.tenantId });
     return result;
-  }
-);
+});
