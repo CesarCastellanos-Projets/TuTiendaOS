@@ -6,6 +6,20 @@ class SunatConfigHelper
 {
     protected static ?array $cachedConfig = null;
 
+    protected static ?string $cachedTenant = null;
+
+    public static function setTenant(string $tenantId): void
+    {
+        if (! preg_match('/^[a-z0-9][a-z0-9_-]{1,62}$/', $tenantId)) {
+            throw new \InvalidArgumentException('Tenant inválido.');
+        }
+        if (self::$cachedTenant !== $tenantId) {
+            self::$cachedConfig = null;
+            self::$cachedTenant = $tenantId;
+        }
+        config(['sunat.tenant_id' => $tenantId]);
+    }
+
     public static function get(string $key, mixed $default = null): mixed
     {
         $cfg = self::load();
@@ -19,7 +33,7 @@ class SunatConfigHelper
             return self::$cachedConfig;
         }
 
-        $path = storage_path('app/sunat/config.json');
+        $path = self::configDirectory().'/config.json';
         if (file_exists($path)) {
             $json = json_decode((string) file_get_contents($path), true);
             if (is_array($json)) {
@@ -39,18 +53,20 @@ class SunatConfigHelper
         $current = self::load();
         $merged = array_merge($current, $data);
 
-        $dir = storage_path('app/sunat');
+        $dir = self::configDirectory();
         if (! is_dir($dir)) {
             mkdir($dir, 0755, true);
         }
 
-        file_put_contents($dir.'/config.json', json_encode($merged, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+        $path = $dir.'/config.json';
+        file_put_contents($path, json_encode($merged, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), LOCK_EX);
+        chmod($path, 0600);
         self::$cachedConfig = $merged;
     }
 
     public static function generateDemoCertificate(): array
     {
-        $dir = storage_path('app/sunat');
+        $dir = self::configDirectory();
         if (! is_dir($dir)) {
             mkdir($dir, 0755, true);
         }
@@ -112,5 +128,13 @@ class SunatConfigHelper
             'message' => 'Certificado Demo SUNAT generado exitosamente.',
             'cert_password' => $certPassword,
         ];
+    }
+
+    public static function configDirectory(): string
+    {
+        $base = rtrim((string) config('sunat.config_dir', storage_path('app/sunat')), '/\\');
+        $tenantId = (string) config('sunat.tenant_id', 'denzoz');
+
+        return $base.DIRECTORY_SEPARATOR.$tenantId;
     }
 }

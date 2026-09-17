@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { collection, doc, onSnapshot, query, updateDoc, where, limit } from 'firebase/firestore';
+import { query, updateDoc, where, limit } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import { Printer, X, Calendar, CreditCard, ChevronRight } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import { useCompany } from '../../hooks/useCompany';
 import type { Sale, SunatStatus } from '../../types';
@@ -19,11 +20,12 @@ export function MySales() {
   const { msg, flash } = useFlash();
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !profile?.storeId) return;
     return onSnapshot(
       query(
-        collection(db, 'sales'),
+        tenantCollection('sales'),
         where('userId', '==', user.uid),
+        where('storeId', '==', profile.storeId),
         limit(50)
       ),
       (snap) => {
@@ -35,18 +37,19 @@ export function MySales() {
         console.error('Error al escuchar ventas de caja:', err);
       }
     );
-  }, [user]);
+  }, [profile?.storeId, user]);
 
   const requestAnulation = async (reason: string) => {
     if (!user || !profile || !requesting || !reason.trim()) return;
     try {
-      await updateDoc(doc(db, 'sales', requesting.id), {
+      await updateDoc(tenantDoc('sales', requesting.id), {
         anulationRequest: {
           reason: reason.trim(),
           byUserId: user.uid,
           byUserName: profile.displayName,
           requestedAt: Date.now()
-        }
+        },
+        anulationStatus: 'solicitada'
       });
       flash(`Anulación de ${requesting.code} enviada al administrador`);
       setRequesting(null);
@@ -177,6 +180,7 @@ function SunatBadge({ status }: { status: SunatStatus }) {
     rechazado: 'bg-red-50 text-critical',
     observado: 'bg-amber-100 text-amber-800',
     pendiente: 'bg-blue-50 text-blue-600',
+    error: 'bg-red-50 text-critical',
     no_enviado: 'bg-slate-100 text-slate-500',
     no_aplica: 'bg-slate-100 text-slate-600'
   };
@@ -392,9 +396,17 @@ function SaleDetailModal({
           {/* Mensaje de anulación si aplica */}
           {sale.anulationRequest && (
             <div className="rounded-2xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-900">
-              <span className="font-bold block">Solicitud de anulación pendiente</span>
+              <span className="font-bold block">
+                {sale.anulationStatus === 'anulada'
+                  ? 'Venta anulada mediante nota de crédito'
+                  : sale.anulationStatus === 'nc_pendiente'
+                    ? 'Nota de crédito en proceso'
+                    : sale.anulationStatus === 'error'
+                      ? 'La nota de crédito requiere revisión'
+                      : 'Solicitud de anulación pendiente'}
+              </span>
               <p className="text-[11px] mt-0.5 text-amber-800">
-                Motivo: “{sale.anulationRequest.reason}” (Esperando respuesta del admin)
+                Motivo: “{sale.anulationRequest.reason}”
               </p>
             </div>
           )}

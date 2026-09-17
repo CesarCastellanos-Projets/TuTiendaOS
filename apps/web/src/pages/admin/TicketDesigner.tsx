@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo } from 'react';
-import { doc, setDoc } from 'firebase/firestore';
+import { setDoc } from 'firebase/firestore';
 import {
   Printer,
   Upload,
@@ -10,7 +10,7 @@ import {
   Building2,
   FileText
 } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { tenantDoc } from '../../lib/tenant-firestore';
 import { useCompany } from '../../hooks/useCompany';
 import { clean } from '../../lib/utils';
 import { DEFAULT_COMPANY, type CompanyConfig, type Sale } from '../../types';
@@ -120,7 +120,7 @@ export function TicketDesignerPage() {
     setBusy(true);
     try {
       await setDoc(
-        doc(db, 'company', 'main'),
+        tenantDoc('config', 'company'),
         {
           ...(cfg ?? DEFAULT_COMPANY),
           logoUrl: logoUrl.trim() || null,

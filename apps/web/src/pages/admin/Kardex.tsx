@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
+import { limit, orderBy, query, where } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import { Download, History, Search } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { tenantCollection } from '../../lib/tenant-firestore';
 import type { MovementType, StockMovement } from '../../types';
 import { fmtDateTime } from '../../lib/utils';
 import { EmptyState, FlashBar, useFlash } from '../../components/ui/Feedback';
@@ -23,9 +24,9 @@ export function KardexPage() {
 
   useEffect(() => {
     const q = typeFilter === 'todos'
-      ? query(collection(db, 'stock_movements'), orderBy('createdAt', 'desc'), limit(150))
+      ? query(tenantCollection('stock_movements'), orderBy('createdAt', 'desc'), limit(150))
       : query(
-          collection(db, 'stock_movements'),
+          tenantCollection('stock_movements'),
           where('type', '==', typeFilter),
           orderBy('createdAt', 'desc'),
           limit(150)

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, getDocs, limit, onSnapshot, query, setDoc, where } from 'firebase/firestore';
+import { doc, limit, query, setDoc, where } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import { PackageOpen } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { tenantCollection } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import type { ProductStock } from '../../types';
 import { money } from '../../lib/utils';
@@ -28,11 +29,8 @@ export function RequestRestock() {
 
   useEffect(() => {
     if (!effectiveStoreId) return;
-    void getDocs(query(collection(db, 'product_stocks'), where('locationId', '==', effectiveStoreId), limit(300))).then(
-      (s) => setCatalog(s.docs.map((d) => d.data() as ProductStock))
-    );
     return onSnapshot(
-      query(collection(db, 'product_stocks'), where('locationId', '==', effectiveStoreId), limit(300)),
+      query(tenantCollection('product_stocks'), where('locationId', '==', effectiveStoreId), limit(300)),
       (s) => setCatalog(s.docs.map((d) => d.data() as ProductStock))
     );
   }, [effectiveStoreId]);
@@ -65,7 +63,8 @@ export function RequestRestock() {
     setBusy(true);
     try {
       const storeName = catalog[0]?.locationName ?? 'Mi tienda';
-      await setDoc(doc(collection(db, 'replenishment_requests')), {
+      await setDoc(doc(tenantCollection('replenishment_requests')), {
+        tenantId: profile.tenantId,
         storeId: effectiveStoreId,
         storeName,
         items: lines.map((l) => ({

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Camera, PackageX, Search, TriangleAlert, WifiOff, ScanLine, X, AlertCircle, Layers } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
-import { useStoreCatalog, useCatalogSearch, findInCatalog, type ProductWithId } from '../../hooks/useStoreCatalog';
+import { useStoreCatalog, useCatalogSearch, findInCatalog } from '../../hooks/useStoreCatalog';
+import type { ProductWithId } from '../../lib/catalog-repository';
 import { useScanner } from '../../hooks/useScanner';
 import { IncidentFormModal } from './Incidents';
 import type { ProductStock } from '../../types';

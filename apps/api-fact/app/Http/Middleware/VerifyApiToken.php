@@ -12,12 +12,7 @@ class VerifyApiToken
     {
         $token = (string) $request->header('X-API-TOKEN');
         $configured = (string) config('sunat.api_token');
-        $default = 'cambia-este-token-largo-y-seguro';
-
-        $isValid = ($token !== '') && (
-            ($configured !== '' && hash_equals($configured, $token)) ||
-            hash_equals($default, $token)
-        );
+        $isValid = $configured !== '' && $token !== '' && hash_equals($configured, $token);
 
         if (! $isValid) {
             return response()->json([

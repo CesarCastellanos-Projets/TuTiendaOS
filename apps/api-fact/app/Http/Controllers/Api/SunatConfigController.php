@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Services\Sunat\SunatConfigHelper;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class SunatConfigController extends Controller
@@ -11,7 +12,7 @@ class SunatConfigController extends Controller
     /**
      * Sube y valida el archivo de Certificado Digital (.pfx o .p12) y credenciales SOL.
      */
-    public function uploadCertificate(Request $request)
+    public function uploadCertificate(Request $request): JsonResponse
     {
         $request->validate([
             'certificate' => 'required|file|max:5120', // máx 5MB
@@ -101,20 +102,31 @@ class SunatConfigController extends Controller
      * Habilita el modo demo con el usuario oficial de pruebas SUNAT (MODDATOS)
      * y genera automáticamente un certificado autofirmado para desarrollo.
      */
-    public function useDemoMode()
+    public function useDemoMode(): JsonResponse
     {
         $res = SunatConfigHelper::generateDemoCertificate();
 
         return response()->json([
             'ok' => true,
             'message' => 'Modo Demo SUNAT activado con usuario oficial MODDATOS.',
-            'credentials' => [
-                'ruc' => '20000000001',
-                'razon_social' => 'EMPRESA DEMO S.A.C.',
-                'sol_user' => 'MODDATOS',
-                'sol_password' => 'MODDATOS',
-                'entorno' => 'beta',
-            ],
+        ]);
+    }
+
+    public function saveCredentials(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'ruc' => ['required', 'string', 'digits:11'],
+            'razon_social' => ['required', 'string', 'max:180'],
+            'sol_user' => ['required', 'string', 'max:80'],
+            'sol_password' => ['required', 'string', 'max:180'],
+            'entorno' => ['required', 'in:beta,produccion'],
+        ]);
+
+        SunatConfigHelper::save($validated);
+
+        return response()->json([
+            'ok' => true,
+            'message' => 'Credenciales SUNAT actualizadas.',
         ]);
     }
 }

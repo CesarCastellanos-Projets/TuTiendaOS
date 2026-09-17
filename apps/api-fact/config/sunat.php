@@ -1,6 +1,7 @@
 <?php
 
 return [
+    'tenant_id' => 'denzoz',
 
     /*
     |--------------------------------------------------------------------------
@@ -8,7 +9,7 @@ return [
     |--------------------------------------------------------------------------
     */
     'ruc' => env('SUNAT_RUC', '20000000001'),
-    'razon_social' => env('SUNAT_RAZON_SOCIAL', "DENZOZ SAC"),
+    'razon_social' => env('SUNAT_RAZON_SOCIAL', 'DENZOZ SAC'),
     'direccion' => env('SUNAT_DIRECCION', 'Av. Real 123, Huancayo'),
     'ubigeo' => env('SUNAT_UBIGEO', '120101'),
 
@@ -35,16 +36,19 @@ return [
     */
     'cert_path' => env('SUNAT_CERT_PATH', storage_path('app/sunat/certificate.pfx')),
     'cert_password' => env('SUNAT_CERT_PASSWORD', 'demo'),
+    'config_dir' => env('SUNAT_CONFIG_DIR', storage_path('app/sunat')),
 
     /*
     |--------------------------------------------------------------------------
-    | Token compartido con la PWA (header X-API-TOKEN)
+    | Token compartido exclusivamente con Cloud Functions
     |--------------------------------------------------------------------------
     */
-    'api_token' => env('API_FACT_TOKEN', 'cambia-este-token-largo-y-seguro'),
+    'api_token' => env('API_FACT_TOKEN', ''),
 
     'serie_nc_factura' => env('SUNAT_SERIE_NC_FACTURA', 'FC01'),
     'serie_nc_boleta' => env('SUNAT_SERIE_NC_BOLETA', 'BC01'),
+    'min_boleta_dni' => (float) env('SUNAT_MIN_BOLETA_DNI', 700),
+    'retry_max_attempts' => (int) env('SUNAT_RETRY_MAX_ATTEMPTS', 6),
 
     // Endpoints oficiales según entorno
     'endpoints' => [

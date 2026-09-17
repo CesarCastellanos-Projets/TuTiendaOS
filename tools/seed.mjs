@@ -7,7 +7,7 @@
  *   3. npm install && npm run seed
  */
 import { readFileSync } from 'node:fs';
-import { initializeApp, cert, applicationDefault } from 'firebase-admin/app';
+import { initializeApp, cert } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 
@@ -22,6 +22,11 @@ try {
 
 const app = initializeApp({ credential });
 const db = getFirestore(app);
+const tenantId = process.env.TENANT_ID ?? 'denzoz';
+
+if (!/^[a-z0-9][a-z0-9_-]{1,62}$/.test(tenantId)) {
+  throw new Error('TENANT_ID inválido.');
+}
 
 async function upsertUser(email, password, displayName, role, storeId) {
   let user;
@@ -40,10 +45,12 @@ async function upsertUser(email, password, displayName, role, storeId) {
     displayName,
     email,
     role,
+    tenantId,
     storeId: storeId ?? null,
     active: true,
     createdAt: Date.now()
   });
+  await getAuth(app).setCustomUserClaims(user.uid, { tenantId, role });
   return user.uid;
 }
 
@@ -55,14 +62,19 @@ const warehouses = {
   ALM01: { name: 'Almacén Central', code: 'ALM01', isCentral: true }
 };
 
-for (const [id, s] of Object.entries(stores)) await db.doc(`stores/${id}`).set(s);
-for (const [id, w] of Object.entries(warehouses)) await db.doc(`warehouses/${id}`).set(w);
+await db.doc(`tenants/${tenantId}`).set({ tenantId, createdAt: Date.now() }, { merge: true });
+for (const [id, s] of Object.entries(stores)) {
+  await db.doc(`tenants/${tenantId}/stores/${id}`).set({ ...s, tenantId });
+}
+for (const [id, w] of Object.entries(warehouses)) {
+  await db.doc(`tenants/${tenantId}/warehouses/${id}`).set({ ...w, tenantId });
+}
 
 await upsertUser('admin@denzoz.pe', 'admin123', 'Administrador', 'admin', null);
 await upsertUser('caja1@denzoz.pe', 'caja123', 'Rosa Cajera', 'pos', 'T01');
 await upsertUser('piso1@denzoz.pe', 'piso123', 'Luis Piso', 'trabajador', 'T01');
 
-await db.doc('company/main').set({
+await db.doc(`tenants/${tenantId}/config/company`).set({
   ruc: '20123456789',
   razonSocial: "D'ENZOZ S.A.C.",
   direccion: 'Jr. Real 123, Huancayo',
@@ -73,14 +85,12 @@ await db.doc('company/main').set({
   igvRate: 0.18,
   minBoletaSinDni: 700,
   umbralConsolidacion: 5,
-  apiFactUrl: '',
-  apiFactToken: '',
   updatedAt: Date.now()
 });
 
 // Correlativos iniciales (las reglas prohíben crearlos desde el cliente)
-await db.doc('counters/B001').set({ current: 0 });
-await db.doc('counters/F001').set({ current: 0 });
+await db.doc(`tenants/${tenantId}/counters/B001`).set({ tenantId, current: 0 });
+await db.doc(`tenants/${tenantId}/counters/F001`).set({ tenantId, current: 0 });
 
 const products = [
   ['Galleta Soda x12', 'Abarrotes', 'Fruna', 'UN', '7750000000012', 2.5],
@@ -93,8 +103,9 @@ const products = [
 
 const batch = db.batch();
 for (const [name, category, brand, unit, barcode, price] of products) {
-  const ref = db.collection('products').doc();
+  const ref = db.collection(`tenants/${tenantId}/products`).doc();
   batch.set(ref, {
+    tenantId,
     name,
     category,
     brand,
@@ -109,7 +120,8 @@ for (const [name, category, brand, unit, barcode, price] of products) {
     updatedAt: Date.now()
   });
   for (const [storeId, store] of Object.entries(stores)) {
-    batch.set(db.collection('product_stocks').doc(`${ref.id}_${storeId}`), {
+    batch.set(db.collection(`tenants/${tenantId}/product_stocks`).doc(`${ref.id}_${storeId}`), {
+      tenantId,
       productId: ref.id,
       productName: name,
       barcode,
@@ -123,6 +135,7 @@ for (const [name, category, brand, unit, barcode, price] of products) {
   }
 }
 await batch.commit();
+await db.doc(`tenants/${tenantId}/meta/catalog`).set({ tenantId, updatedAt: Date.now() });
 
 console.log('\nSeed listo.');
 console.log('Usuarios:');

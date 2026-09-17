@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { collection, doc, getDocs, limit, onSnapshot, query, setDoc, updateDoc, where, orderBy, getDoc } from 'firebase/firestore';
+import { doc, getDocs, limit, query, setDoc, updateDoc, where, orderBy, getDoc } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import { Printer, Vault, CheckCircle2 } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import { useCompany } from '../../hooks/useCompany';
 import type { CashSession, Sale } from '../../types';
@@ -40,7 +41,7 @@ export function CashPage() {
 
   useEffect(() => {
     if (profile.storeId) {
-      void getDoc(doc(db, 'stores', profile.storeId)).then((s) => {
+      void getDoc(tenantDoc('stores', profile.storeId)).then((s) => {
         if (s.exists()) setStoreName((s.data() as { name: string }).name);
       });
     }
@@ -50,8 +51,9 @@ export function CashPage() {
     if (!user) return;
     const unsubOpen = onSnapshot(
       query(
-        collection(db, 'cash_sessions'),
+        tenantCollection('cash_sessions'),
         where('userId', '==', user.uid),
+        where('storeId', '==', profile.storeId),
         where('status', '==', 'abierta'),
         limit(1)
       ),
@@ -63,8 +65,9 @@ export function CashPage() {
           // Cargar última cerrada para posible reimpresión
           void getDocs(
             query(
-              collection(db, 'cash_sessions'),
+              tenantCollection('cash_sessions'),
               where('userId', '==', user.uid),
+              where('storeId', '==', profile.storeId),
               where('status', '==', 'cerrada'),
               orderBy('closedAt', 'desc'),
               limit(1)
@@ -76,13 +79,18 @@ export function CashPage() {
       }
     );
     return () => unsubOpen();
-  }, [user]);
+  }, [profile.storeId, user]);
 
   // Escuchar ventas de la sesión abierta en tiempo real
   useEffect(() => {
     if (!session) return;
     return onSnapshot(
-      query(collection(db, 'sales'), where('cashSessionId', '==', session.id)),
+      query(
+        tenantCollection('sales'),
+        where('cashSessionId', '==', session.id),
+        where('userId', '==', user?.uid ?? ''),
+        where('storeId', '==', profile.storeId)
+      ),
       (snap) => {
         let cash = 0;
         let yape = 0;
@@ -113,13 +121,14 @@ export function CashPage() {
         });
       }
     );
-  }, [session]);
+  }, [profile.storeId, session, user]);
 
   const open = async () => {
     if (!user) return;
     setBusy(true);
     try {
-      await setDoc(doc(collection(db, 'cash_sessions')), {
+      await setDoc(doc(tenantCollection('cash_sessions')), {
+        tenantId: profile.tenantId,
         storeId: profile.storeId,
         userId: user.uid,
         userName: profile.displayName,
@@ -148,7 +157,7 @@ export function CashPage() {
       const diff = Math.round((counted - expected) * 100) / 100;
       const closedAt = Date.now();
 
-      await updateDoc(doc(db, 'cash_sessions', session.id), {
+      await updateDoc(tenantDoc('cash_sessions', session.id), {
         closingAmount: counted,
         expectedAmount: Math.round(expected * 100) / 100,
         difference: diff,
@@ -313,4 +322,3 @@ export function CashPage() {
     </div>
   );
 }
-

@@ -2,269 +2,215 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function activeUser() {
+      return signedIn() && profile().data.active == true
+        && profile().data.role in ['admin', 'pos', 'trabajador']
+        && profile().data.tenantId is string;
+    }
+    function isAdmin() { return activeUser() && profile().data.role == 'admin'; }
+    function isPos() { return activeUser() && profile().data.role == 'pos'; }
+    function isWorker() { return activeUser() && profile().data.role == 'trabajador'; }
+    function userTenantId() { return profile().data.tenantId; }
+    function userStoreId() { return profile().data.storeId; }
+    function belongsToTenant(tenantId) { return activeUser() && userTenantId() == tenantId; }
+    function validTenantData(data, tenantId) { return data.tenantId is string && data.tenantId == tenantId; }
+    function shortString(value, maxLength) { return value is string && value.size() <= maxLength; }
 
-    // ─── HELPER FUNCTIONS & RBAC DE SEGURIDAD ──────────────────
-    function signedIn() {
-      return request.auth != null;
+    function validCompany(data) {
+      return data.keys().hasAll([
+          'ruc', 'razonSocial', 'serieFactura', 'serieBoleta', 'entornoSunat',
+          'igvRate', 'minBoletaSinDni', 'umbralConsolidacion', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ruc', 'razonSocial', 'direccion', 'regimen', 'serieFactura', 'serieBoleta',
+          'serieNota', 'entornoSunat', 'igvRate', 'minBoletaSinDni', 'umbralConsolidacion',
+          'certFileName', 'certExpiresAt', 'certIssuer', 'isDemoMode', 'logoUrl', 'slogan',
+          'phone', 'footerText', 'ticketWidth', 'customUnits', 'updatedAt'
+        ])
+        && shortString(data.ruc, 11) && shortString(data.razonSocial, 160)
+        && shortString(data.serieFactura, 8) && shortString(data.serieBoleta, 8)
+        && data.igvRate is number && data.igvRate >= 0 && data.igvRate <= 1
+        && data.minBoletaSinDni is number && data.minBoletaSinDni >= 0
+        && data.umbralConsolidacion is number && data.umbralConsolidacion >= 0
+        && data.entornoSunat in ['beta', 'produccion']
+        && (!('customUnits' in data) || (data.customUnits is list && data.customUnits.size() <= 50));
     }
 
-    function userDoc() {
-      let path = /databases/$(database)/documents/users/$(request.auth.uid);
-      return exists(path) ? get(path).data : {};
+    function validUser(data) {
+      return data.keys().hasAll(['displayName', 'email', 'role', 'active', 'tenantId'])
+        && data.keys().hasOnly(['displayName', 'email', 'role', 'active', 'tenantId', 'storeId', 'warehouseId', 'createdAt'])
+        && shortString(data.displayName, 120) && shortString(data.email, 160)
+        && shortString(data.tenantId, 63) && data.role in ['admin', 'pos', 'trabajador']
+        && data.active is bool
+        && (!('storeId' in data) || data.storeId == null || shortString(data.storeId, 128))
+        && (!('warehouseId' in data) || data.warehouseId == null || shortString(data.warehouseId, 128));
     }
 
-    function userRole() {
-      return userDoc().get('role', '');
+    function validProduct(data, tenantId) {
+      return validTenantData(data, tenantId)
+        && data.keys().hasAll(['tenantId', 'name', 'category', 'salePrice', 'unit', 'active', 'minStock', 'updatedAt'])
+        && data.keys().hasOnly(['tenantId', 'name', 'category', 'brand', 'unit', 'internalCode', 'barcode', 'salePrice', 'minStock', 'locationHint', 'promoLabel', 'promoActive', 'sunatCode', 'active', 'presentations', 'createdAt', 'updatedAt'])
+        && shortString(data.name, 160) && shortString(data.category, 100) && shortString(data.unit, 40)
+        && data.salePrice is number && data.salePrice >= 0
+        && data.minStock is number && data.minStock >= 0 && data.active is bool
+        && (!('presentations' in data) || (data.presentations is list && data.presentations.size() <= 30));
     }
 
-    function isAdmin() {
-      return signedIn() && (
-        userRole() == 'admin' ||
-        request.auth.token.get('admin', false) == true ||
-        (request.auth.token.get('email', '') == 'admin@denzoz.pe' && request.auth.token.get('email_verified', false) == true)
-      );
-    }
-
-    function isPos() {
-      return signedIn() && (userRole() == 'pos' || isAdmin());
-    }
-
-    function isWorker() {
-      return signedIn() && (userRole() == 'trabajador' || isPos());
-    }
-
-    function str(v, minLen, maxLen) {
-      return v is string && v.size() >= minLen && v.size() <= maxLen;
-    }
-
-    function nonNegNum(v) {
-      return (v is number || v is int) && v >= 0 && v <= 9999999;
-    }
-
-    function changedKeys() {
-      return request.resource.data.diff(resource.data).affectedKeys();
-    }
-
-    // ─── 1. CONFIGURACIÓN DE LA EMPRESA (SINGLETON) ────────────
-    match /company/{docId} {
-      allow read: if signedIn();
-      allow create, update: if isAdmin()
-        && str(request.resource.data.razonSocial, 1, 120);
-      allow delete: if false;
-    }
-
-    // ─── 2. USUARIOS Y ROLES DE ACCESO ─────────────────────────
     match /users/{uid} {
-      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
-      allow list: if isAdmin();
-
-      // Solo administradores pueden crear nuevos usuarios y asignar roles
-      allow create: if isAdmin()
-        && str(request.resource.data.displayName, 2, 80)
-        && str(request.resource.data.email, 5, 120)
-        && request.resource.data.role in ['admin', 'pos', 'trabajador']
-        && request.resource.data.active is bool;
-
-      // Actualizaciones: Admin gestiona roles/estados; el usuario solo su propio nombre
-      allow update: if (
-          isAdmin()
-          && request.resource.data.role in ['admin', 'pos', 'trabajador']
-          && request.resource.data.active is bool
-          && str(request.resource.data.displayName, 2, 80)
-        ) || (
-          signedIn()
-          && request.auth.uid == uid
-          && changedKeys().hasOnly(['displayName'])
-          && str(request.resource.data.displayName, 2, 80)
-        );
-
-      allow delete: if isAdmin();
-    }
-
-    // ─── 3. TIENDAS Y ALMACENES ────────────────────────────────
-    match /stores/{id} {
-      allow read: if signedIn();
-      allow create, update: if isAdmin()
-        && str(request.resource.data.name, 1, 80)
-        && str(request.resource.data.code, 1, 20);
-      allow delete: if isAdmin();
-    }
-
-    match /warehouses/{id} {
-      allow read: if signedIn();
-      allow create, update: if isAdmin()
-        && str(request.resource.data.name, 1, 80)
-        && str(request.resource.data.code, 1, 20);
-      allow delete: if isAdmin();
-    }
-
-    // ─── 4. CATÁLOGO DE PRODUCTOS Y PRESENTACIONES ─────────────
-    match /products/{id} {
-      allow read: if true;
-      allow create, update: if isAdmin()
-        && str(request.resource.data.name, 1, 150)
-        && nonNegNum(request.resource.data.salePrice)
-        && str(request.resource.data.unit, 1, 30);
-      allow delete: if isAdmin();
-    }
-
-    // ─── 5. EXISTENCIAS POR UBICACIÓN (PRODUCT_STOCKS) ─────────
-    match /product_stocks/{stockId} {
-      allow read: if signedIn();
-
-      // Creación al recibir o inicializar producto en tienda o almacén
-      allow create: if signedIn()
-        && str(request.resource.data.productId, 1, 64)
-        && str(request.resource.data.locationId, 1, 64)
-        && (request.resource.data.quantity is number || request.resource.data.quantity is int)
-        && request.resource.data.quantity >= 0;
-
-      // Actualizaciones controladas de existencias
-      allow update: if signedIn()
-        && (request.resource.data.quantity is number || request.resource.data.quantity is int)
-        && request.resource.data.quantity >= 0;
-
-      allow delete: if isAdmin();
-    }
-
-    // ─── 6. KÁRDEX Y MOVIMIENTOS (INMUTABLE / APPEND-ONLY) ─────
-    match /stock_movements/{id} {
-      allow read: if signedIn();
-      allow create: if signedIn()
-        && str(request.resource.data.productId, 1, 64)
-        && request.resource.data.type in ['venta', 'ingreso', 'transferencia', 'ajuste', 'merma', 'recepcion']
-        && (request.resource.data.qty is number || request.resource.data.qty is int)
-        && request.resource.data.qty != 0
-        && request.resource.data.userId == request.auth.uid;
-      allow update, delete: if false; // Auditoría inmutable de inventario
-    }
-
-    // ─── 7. TRANSFERENCIAS DE MERCADERÍA ───────────────────────
-    match /transfers/{id} {
-      allow read: if signedIn();
-
-      allow create: if signedIn()
-        && str(request.resource.data.code, 3, 30)
-        && str(request.resource.data.fromLocationId, 1, 64)
-        && str(request.resource.data.toLocationId, 1, 64)
-        && request.resource.data.fromLocationId != request.resource.data.toLocationId
-        && request.resource.data.status == 'pendiente'
-        && request.resource.data.items is list
-        && request.resource.data.items.size() >= 1 && request.resource.data.items.size() <= 300;
-
-      allow update: if signedIn()
-        && request.resource.data.status in ['pendiente', 'en_transito', 'recibido', 'cancelado'];
-
-      allow delete: if isAdmin();
-    }
-
-    // ─── 8. SOLICITUDES DE REPOSICIÓN ──────────────────────────
-    match /replenishment_requests/{id} {
-      allow read: if signedIn();
-
-      allow create: if signedIn()
-        && str(request.resource.data.storeId, 1, 64)
-        && request.resource.data.status == 'pendiente'
-        && request.resource.data.items is list
-        && request.resource.data.items.size() >= 1 && request.resource.data.items.size() <= 200;
-
-      allow update: if signedIn()
-        && request.resource.data.status in ['pendiente', 'atendida', 'rechazada'];
-
-      allow delete: if isAdmin();
-    }
-
-    // ─── 9. INCIDENCIAS DE PISO Y MERMAS ───────────────────────
-    match /incidents/{id} {
-      allow read: if signedIn();
-
-      allow create: if signedIn()
-        && str(request.resource.data.productId, 1, 64)
-        && request.resource.data.type in ['danado', 'vencido', 'sin_etiqueta', 'sin_codigo', 'otro']
-        && str(request.resource.data.description, 3, 500)
-        && request.resource.data.createdBy == request.auth.uid;
-
-      allow update: if isAdmin()
-        && request.resource.data.status in ['abierta', 'resuelta', 'descartada'];
-
-      allow delete: if isAdmin();
-    }
-
-    // ─── 10. VENTAS, BOLETAS Y FACTURAS ────────────────────────
-    match /sales/{id} {
-      allow read: if signedIn();
-
-      allow create: if signedIn()
-        && str(request.resource.data.code, 5, 30)
-        && request.resource.data.type in ['boleta', 'factura', 'nota']
-        && request.resource.data.paymentMethod in ['efectivo', 'transferencia', 'tarjeta', 'yape', 'plin', 'sip', 'otro']
-        && request.resource.data.status == 'activa'
-        && nonNegNum(request.resource.data.total)
-        && nonNegNum(request.resource.data.subtotal)
-        && nonNegNum(request.resource.data.igv)
-        && request.resource.data.userId == request.auth.uid
-        && request.resource.data.items is list
-        && request.resource.data.items.size() >= 1 && request.resource.data.items.size() <= 300;
-
-      allow update: if signedIn()
-        && request.resource.data.status in ['activa', 'anulada'];
-
-      allow delete: if false; // Comprobantes fiscales nunca se eliminan
-    }
-
-    // ─── 11. TURNOS Y CONTROL DE CAJA (CORTE Z) ────────────────
-    match /cash_sessions/{id} {
-      allow read: if signedIn();
-
-      allow create: if signedIn()
-        && nonNegNum(request.resource.data.openingAmount)
-        && request.resource.data.status == 'abierta'
-        && request.resource.data.userId == request.auth.uid;
-
-      allow update: if signedIn()
-        && request.resource.data.status in ['abierta', 'cerrada'];
-
-      allow delete: if isAdmin();
-    }
-
-    // ─── 12. CLIENTES (CACHÉ DNI / RUC) ────────────────────────
-    match /clients/{docId} {
-      allow read: if signedIn();
-      allow create, update: if signedIn()
-        && request.resource.data.tipo in ['DNI', 'RUC']
-        && str(request.resource.data.nombre, 1, 150);
-      allow delete: if isAdmin();
-    }
-
-    // ─── 13. CORRELATIVOS FISCALES (COUNTERS) ──────────────────
-    match /counters/{serie} {
-      allow read: if signedIn();
-      allow create: if signedIn()
-        && (request.resource.data.current is number || request.resource.data.current is int)
-        && request.resource.data.current >= 0;
-      allow update: if signedIn()
-        && (request.resource.data.current is number || request.resource.data.current is int)
-        && request.resource.data.current >= resource.data.current;
+      allow get: if activeUser() && (request.auth.uid == uid || (isAdmin() && resource.data.tenantId == userTenantId()));
+      allow list: if isAdmin() && resource.data.tenantId == userTenantId();
+      allow create: if isAdmin() && validUser(request.resource.data) && request.resource.data.tenantId == userTenantId();
+      allow update: if (isAdmin() && resource.data.tenantId == userTenantId()
+          && validUser(request.resource.data) && request.resource.data.tenantId == userTenantId())
+        || (activeUser() && request.auth.uid == uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName'])
+          && shortString(request.resource.data.displayName, 120));
       allow delete: if false;
     }
 
-    // ─── 14. COTIZACIONES (LISTAS ESCOLARES Y PEDIDOS) ─────────
-    match /quotations/{id} {
-      allow read: if signedIn();
+    match /tenants/{tenantId} {
+      allow read, write: if false;
 
-      allow create: if signedIn()
-        && str(request.resource.data.code, 5, 30)
-        && request.resource.data.items is list
-        && request.resource.data.items.size() >= 1 && request.resource.data.items.size() <= 300
-        && nonNegNum(request.resource.data.totalAll)
-        && nonNegNum(request.resource.data.totalAvailable)
-        && request.resource.data.status in ['pendiente', 'facturada', 'descartada']
-        && request.resource.data.createdBy == request.auth.uid;
-
-      allow update: if signedIn()
-        && request.resource.data.status in ['pendiente', 'facturada', 'descartada'];
-
-      allow delete: if isAdmin() || (signedIn() && resource.data.createdBy == request.auth.uid);
+      match /config/{configId} {
+        allow read: if belongsToTenant(tenantId)
+          && !resource.data.keys().hasAny(['solUser', 'solPassword', 'apiFactUrl', 'apiFactToken']);
+        allow create, update: if belongsToTenant(tenantId) && isAdmin() && validCompany(request.resource.data);
+        allow delete: if false;
+      }
+      match /stores/{storeId} {
+        allow read: if belongsToTenant(tenantId);
+        allow create, update: if belongsToTenant(tenantId) && isAdmin()
+          && validTenantData(request.resource.data, tenantId)
+          && request.resource.data.keys().hasAll(['tenantId', 'name', 'code', 'address'])
+          && request.resource.data.keys().hasOnly(['tenantId', 'name', 'code', 'address'])
+          && shortString(request.resource.data.name, 120)
+          && shortString(request.resource.data.code, 30)
+          && shortString(request.resource.data.address, 240);
+        allow delete: if belongsToTenant(tenantId) && isAdmin();
+      }
+      match /warehouses/{warehouseId} {
+        allow read: if belongsToTenant(tenantId);
+        allow create, update: if belongsToTenant(tenantId) && isAdmin()
+          && validTenantData(request.resource.data, tenantId)
+          && request.resource.data.keys().hasAll(['tenantId', 'name', 'code', 'isCentral'])
+          && request.resource.data.keys().hasOnly(['tenantId', 'name', 'code', 'isCentral'])
+          && shortString(request.resource.data.name, 120)
+          && shortString(request.resource.data.code, 30)
+          && request.resource.data.isCentral is bool;
+        allow delete: if belongsToTenant(tenantId) && isAdmin();
+      }
+      match /products/{productId} {
+        allow read: if belongsToTenant(tenantId);
+        allow create, update: if belongsToTenant(tenantId) && isAdmin() && validProduct(request.resource.data, tenantId);
+        allow delete: if false;
+      }
+      match /meta/{metaId} {
+        allow read: if belongsToTenant(tenantId);
+        allow create, update: if belongsToTenant(tenantId) && isAdmin()
+          && metaId == 'catalog'
+          && validTenantData(request.resource.data, tenantId)
+          && request.resource.data.keys().hasAll(['tenantId', 'updatedAt'])
+          && request.resource.data.keys().hasOnly(['tenantId', 'updatedAt'])
+          && request.resource.data.updatedAt is number;
+        allow delete: if false;
+      }
+      match /product_stocks/{stockId} {
+        allow read: if belongsToTenant(tenantId);
+        allow write: if false;
+      }
+      match /stock_movements/{movementId} {
+        allow read: if belongsToTenant(tenantId) && isAdmin();
+        allow write: if false;
+      }
+      match /transfers/{transferId} {
+        allow get, list: if belongsToTenant(tenantId)
+          && (isAdmin() || (isPos() && resource.data.toLocationId == userStoreId()));
+        allow write: if false;
+      }
+      match /replenishment_requests/{requestId} {
+        allow get, list: if belongsToTenant(tenantId)
+          && (isAdmin() || (isPos() && resource.data.storeId == userStoreId()
+            && resource.data.createdBy == request.auth.uid));
+        allow create: if belongsToTenant(tenantId) && isPos()
+          && validTenantData(request.resource.data, tenantId)
+          && request.resource.data.storeId == userStoreId()
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.status == 'pendiente'
+          && request.resource.data.items is list && request.resource.data.items.size() > 0
+          && request.resource.data.items.size() <= 100;
+        allow update, delete: if false;
+      }
+      match /incidents/{incidentId} {
+        allow get, list: if belongsToTenant(tenantId)
+          && (isAdmin() || ((isPos() || isWorker()) && resource.data.storeId == userStoreId()));
+        allow create: if belongsToTenant(tenantId) && (isPos() || isWorker())
+          && validTenantData(request.resource.data, tenantId)
+          && request.resource.data.storeId == userStoreId()
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.status == 'abierta';
+        allow update: if belongsToTenant(tenantId) && isAdmin()
+          && validTenantData(request.resource.data, tenantId);
+        allow delete: if false;
+      }
+      match /sales/{saleId} {
+        allow get, list: if belongsToTenant(tenantId)
+          && (isAdmin() || (isPos() && resource.data.userId == request.auth.uid
+            && resource.data.storeId == userStoreId()));
+        allow create: if false;
+        allow update: if belongsToTenant(tenantId) && isPos()
+          && resource.data.tenantId == tenantId
+          && resource.data.userId == request.auth.uid && resource.data.storeId == userStoreId()
+          && (!('anulationRequest' in resource.data) || resource.data.anulationRequest == null)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['anulationRequest', 'anulationStatus'])
+          && request.resource.data.anulationRequest is map
+          && request.resource.data.anulationRequest.keys().hasOnly(['reason', 'byUserId', 'byUserName', 'requestedAt'])
+          && request.resource.data.anulationRequest.reason is string
+          && request.resource.data.anulationRequest.reason.size() > 0
+          && request.resource.data.anulationRequest.reason.size() <= 250
+          && request.resource.data.anulationRequest.byUserId == request.auth.uid
+          && request.resource.data.anulationStatus == 'solicitada';
+        allow delete: if false;
+      }
+      match /cash_sessions/{sessionId} {
+        allow get, list: if belongsToTenant(tenantId)
+          && (isAdmin() || (isPos() && resource.data.userId == request.auth.uid
+            && resource.data.storeId == userStoreId()));
+        allow create: if belongsToTenant(tenantId) && isPos()
+          && validTenantData(request.resource.data, tenantId)
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.storeId == userStoreId()
+          && request.resource.data.status == 'abierta';
+        allow update: if belongsToTenant(tenantId) && isPos()
+          && resource.data.tenantId == tenantId
+          && resource.data.userId == request.auth.uid && resource.data.storeId == userStoreId()
+          && resource.data.status == 'abierta' && request.resource.data.status == 'cerrada'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'closedAt', 'closingAmount', 'expectedAmount', 'difference']);
+        allow delete: if false;
+      }
+      match /clients/{clientId} { allow read, write: if false; }
+      match /quotations/{quotationId} {
+        allow get, list: if belongsToTenant(tenantId)
+          && (isAdmin() || ((isPos() || isWorker()) && resource.data.storeId == userStoreId()));
+        allow create: if belongsToTenant(tenantId) && (isPos() || isWorker())
+          && validTenantData(request.resource.data, tenantId)
+          && request.resource.data.storeId == userStoreId()
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.status == 'pendiente'
+          && request.resource.data.items is list && request.resource.data.items.size() > 0
+          && request.resource.data.items.size() <= 100;
+        allow update: if belongsToTenant(tenantId)
+          && (isAdmin() || ((isPos() || isWorker())
+            && resource.data.storeId == userStoreId()
+            && resource.data.createdBy == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+            && request.resource.data.status in ['pendiente', 'facturada', 'descartada']));
+        allow delete: if false;
+      }
+      match /counters/{counterId} { allow read, write: if false; }
+      match /{document=**} { allow read, write: if false; }
     }
+    match /{document=**} { allow read, write: if false; }
   }
 }

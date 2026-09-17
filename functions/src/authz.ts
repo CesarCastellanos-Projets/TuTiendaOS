@@ -1,0 +1,54 @@
+import { HttpsError, type CallableRequest } from 'firebase-functions/v2/https';
+import { db } from './firebase';
+import { assertTenantId } from './tenant';
+
+export type AppRole = 'admin' | 'pos' | 'trabajador';
+
+export interface ActiveProfile {
+  uid: string;
+  displayName: string;
+  role: AppRole;
+  tenantId: string;
+  storeId: string | null;
+}
+
+export async function requireActiveProfile(request: CallableRequest): Promise<ActiveProfile> {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
+  }
+
+  const snapshot = await db.doc(`users/${request.auth.uid}`).get();
+  const data = snapshot.data();
+  if (!snapshot.exists || data?.active !== true) {
+    throw new HttpsError('permission-denied', 'Tu usuario no está activo.');
+  }
+  if (!['admin', 'pos', 'trabajador'].includes(String(data.role))) {
+    throw new HttpsError('permission-denied', 'Tu usuario no tiene un rol válido.');
+  }
+  let tenantId: string;
+  try {
+    tenantId = assertTenantId(data.tenantId);
+  } catch {
+    throw new HttpsError('permission-denied', 'Tu usuario no tiene una empresa válida asignada.');
+  }
+  const claimedTenantId = request.auth.token.tenantId;
+  if (claimedTenantId !== undefined && claimedTenantId !== tenantId) {
+    throw new HttpsError('permission-denied', 'La sesión no corresponde a la empresa asignada.');
+  }
+
+  return {
+    uid: request.auth.uid,
+    displayName: String(data.displayName ?? ''),
+    role: data.role as AppRole,
+    tenantId,
+    storeId: typeof data.storeId === 'string' ? data.storeId : null
+  };
+}
+
+export async function requireAdmin(request: CallableRequest): Promise<ActiveProfile> {
+  const profile = await requireActiveProfile(request);
+  if (profile.role !== 'admin') {
+    throw new HttpsError('permission-denied', 'Solo el administrador puede realizar esta acción.');
+  }
+  return profile;
+}

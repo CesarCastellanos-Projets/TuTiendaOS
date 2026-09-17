@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { collection, onSnapshot, query, limit } from 'firebase/firestore';
-import { db } from '../../lib/firebase';
+import { useMemo, useState } from 'react';
+import { useProductsCatalog } from '../../hooks/useProductsCatalog';
 import type { Product } from '../../types';
 
 export interface PickLine {
@@ -13,12 +12,7 @@ export interface PickLine {
 
 /** Buscador de productos del catálogo con líneas de cantidad. */
 export function useProductSearch() {
-  const [products, setProducts] = useState<(Product & { id: string })[]>([]);
-
-  useEffect(() => {
-    const q = query(collection(db, 'products'), limit(500));
-    return onSnapshot(q, (snap) => setProducts(snap.docs.map((d) => ({ ...(d.data() as Product), id: d.id }))));
-  }, []);
+  const products = useProductsCatalog();
 
   const search = (term: string): (Product & { id: string })[] => {
     const s = term.trim().toLowerCase();

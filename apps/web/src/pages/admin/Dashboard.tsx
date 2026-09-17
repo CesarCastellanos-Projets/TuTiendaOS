@@ -1,14 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  collection,
   getDocs,
   limit,
-  onSnapshot,
   query,
   where
 } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import { AlertTriangle, ArrowLeftRight, ReceiptText, TrendingUp } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { tenantCollection } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import { money, todayStart } from '../../lib/utils';
 import type { Sale, Transfer, ProductStock } from '../../types';
@@ -34,14 +33,14 @@ export function AdminDashboard() {
     void loadToday(since);
 
     const qT = query(
-      collection(db, 'transfers'),
+      tenantCollection('transfers'),
       where('status', 'in', ['pendiente', 'en_transito']),
       limit(20)
     );
     const un1 = onSnapshot(qT, (s) => setPendingTransfers(s.docs.map((d) => d.data() as Transfer)));
 
     const qs = query(
-      collection(db, 'sales'),
+      tenantCollection('sales'),
       where('sunatStatus', 'in', ['rechazado', 'observado', 'pendiente']),
       limit(20)
     );
@@ -55,7 +54,7 @@ export function AdminDashboard() {
   }, []);
 
   async function loadToday(since: number) {
-    const q = query(collection(db, 'sales'), where('createdAt', '>=', since), limit(500));
+    const q = query(tenantCollection('sales'), where('createdAt', '>=', since), limit(500));
     const snap = await getDocs(q);
     setSalesToday(snap.docs.filter((d) => !d.data().consolidated).map((d) => d.data() as Sale));
     void loadCritical();
@@ -64,7 +63,7 @@ export function AdminDashboard() {
 
   async function loadCritical() {
     // Stock bajo mínimo: se revisa contra el mínimo del producto en stocks de tiendas
-    const q = query(collection(db, 'product_stocks'), where('locationType', '==', 'store'), limit(300));
+    const q = query(tenantCollection('product_stocks'), where('locationType', '==', 'store'), limit(300));
     const snap = await getDocs(q);
     setCriticalStock(
       snap.docs
@@ -198,6 +197,7 @@ function StatusBadge({ status }: { status: Sale['sunatStatus'] }) {
     rechazado: 'bg-red-50 text-critical',
     observado: 'bg-amber-100 text-amber-800',
     pendiente: 'bg-blue-50 text-blue-600',
+    error: 'bg-red-50 text-critical',
     no_enviado: 'bg-slate-100 text-slate-500',
     no_aplica: 'bg-slate-100 text-slate-600'
   };

@@ -1,6 +1,5 @@
 import { useState, type FormEvent } from 'react';
 import { Navigate } from 'react-router-dom';
-import { signInWithEmailAndPassword } from 'firebase/auth';
 import {
   Sparkles,
   Mail,
@@ -15,11 +14,10 @@ import {
   AlertCircle,
   Store
 } from 'lucide-react';
-import { auth } from '../../lib/firebase';
 import { useAuth, homeFor } from '../../lib/auth';
 
 export function LoginPage() {
-  const { user, profile, loading } = useAuth();
+  const { user, profile, loading, error: sessionError, login } = useAuth();
   const [email, setEmail] = useState('');
   const [pass, setPass] = useState('');
   const [showPass, setShowPass] = useState(false);
@@ -28,26 +26,35 @@ export function LoginPage() {
 
   if (!loading && user && profile) return <Navigate to={homeFor(profile.role)} replace />;
 
+  const authenticate = async (targetEmail: string, targetPass: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await login(targetEmail.trim(), targetPass);
+    } catch (loginError) {
+      const code = typeof loginError === 'object' && loginError !== null && 'code' in loginError
+        ? String(loginError.code)
+        : '';
+      setError(code === 'auth/invalid-credential' || code === 'auth/user-not-found'
+        ? 'Correo o contraseña incorrectos. Verifica tus credenciales.'
+        : loginError instanceof Error
+          ? loginError.message
+          : 'Error al iniciar sesión. Intenta nuevamente.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const submit = (e: FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !pass) return;
-    setBusy(true);
-    setError(null);
-    signInWithEmailAndPassword(auth, email.trim(), pass)
-      .then(() => undefined)
-      .catch((err) => {
-        const msg = err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found'
-          ? 'Correo o contraseña incorrectos. Verifica tus credenciales.'
-          : 'Error al iniciar sesión. Intenta nuevamente.';
-        setError(msg);
-      })
-      .finally(() => setBusy(false));
+    void authenticate(email, pass);
   };
 
-  const fillDemo = (demoEmail: string, demoPass: string) => {
+  const loginDemo = (demoEmail: string, demoPass: string) => {
     setEmail(demoEmail);
     setPass(demoPass);
-    setError(null);
+    void authenticate(demoEmail, demoPass);
   };
 
   return (
@@ -184,19 +191,19 @@ export function LoginPage() {
             </div>
 
             {/* Mensaje de Error */}
-            {error && (
+            {(error || sessionError) && (
               <div role="alert" className="flex items-start gap-2.5 rounded-2xl border border-red-200 bg-red-50 p-3.5 text-xs font-semibold text-critical animate-in fade-in">
                 <AlertCircle size={16} className="text-red-500 shrink-0 mt-0.5" />
-                <span>{error}</span>
+                <span>{error || sessionError}</span>
               </div>
             )}
 
             {/* Botón Principal de Ingreso */}
             <button
-              disabled={busy}
+              disabled={busy || loading}
               className="group relative flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-primary via-indigo-600 to-indigo-500 py-3.5 text-sm font-display font-extrabold text-white shadow-lg shadow-primary/25 transition-all duration-200 hover:shadow-primary/40 active:scale-[0.98] disabled:opacity-50"
             >
-              {busy ? (
+              {busy || loading ? (
                 <>
                   <Loader2 size={18} className="animate-spin" />
                   <span>Verificando acceso…</span>
@@ -218,7 +225,8 @@ export function LoginPage() {
             <div className="grid grid-cols-3 gap-2">
               <button
                 type="button"
-                onClick={() => fillDemo('admin@denzoz.pe', 'admin123')}
+                disabled={busy || loading}
+                onClick={() => loginDemo('admin@denzoz.pe', 'admin123')}
                 className="flex flex-col items-center justify-center rounded-2xl border border-slate-200 bg-slate-50/80 p-2.5 text-center transition-all hover:border-primary hover:bg-indigo-50/60 active:scale-95"
               >
                 <span className="text-xs font-bold text-primary font-display">Admin</span>
@@ -226,7 +234,8 @@ export function LoginPage() {
               </button>
               <button
                 type="button"
-                onClick={() => fillDemo('cajero@denzoz.pe', 'cajero123')}
+                disabled={busy || loading}
+                onClick={() => loginDemo('caja1@denzoz.pe', 'caja123')}
                 className="flex flex-col items-center justify-center rounded-2xl border border-slate-200 bg-slate-50/80 p-2.5 text-center transition-all hover:border-emerald-500 hover:bg-emerald-50/60 active:scale-95"
               >
                 <span className="text-xs font-bold text-emerald-700 font-display">Cajero</span>
@@ -234,7 +243,8 @@ export function LoginPage() {
               </button>
               <button
                 type="button"
-                onClick={() => fillDemo('piso@denzoz.pe', 'piso123')}
+                disabled={busy || loading}
+                onClick={() => loginDemo('piso1@denzoz.pe', 'piso123')}
                 className="flex flex-col items-center justify-center rounded-2xl border border-slate-200 bg-slate-50/80 p-2.5 text-center transition-all hover:border-amber-500 hover:bg-amber-50/60 active:scale-95"
               >
                 <span className="text-xs font-bold text-amber-700 font-display">Trabajador</span>

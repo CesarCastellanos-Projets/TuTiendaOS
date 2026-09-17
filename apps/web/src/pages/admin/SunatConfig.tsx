@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { doc, setDoc } from 'firebase/firestore';
+import { setDoc } from 'firebase/firestore';
 import {
   Activity,
   CheckCircle2,
@@ -12,7 +12,7 @@ import {
   Building2,
   Server
 } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { tenantDoc } from '../../lib/tenant-firestore';
 import { useCompany } from '../../hooks/useCompany';
 import { clean, num } from '../../lib/utils';
 import { DEFAULT_COMPANY, type CompanyConfig } from '../../types';
@@ -21,9 +21,38 @@ import {
   testSunatConnection,
   uploadCertificate,
   activateDemoMode,
+  saveSunatCredentials,
   SUNAT_DEMO_CREDENTIALS,
   type HealthCheckResult
 } from '../../services/sunat';
+
+function publicCompanyConfig(current: CompanyConfig | null, patch: Partial<CompanyConfig> = {}): CompanyConfig {
+  const source = { ...DEFAULT_COMPANY, ...(current ?? {}), ...patch };
+  return {
+    ruc: source.ruc,
+    razonSocial: source.razonSocial,
+    direccion: source.direccion,
+    regimen: source.regimen,
+    serieFactura: source.serieFactura,
+    serieBoleta: source.serieBoleta,
+    serieNota: source.serieNota,
+    entornoSunat: source.entornoSunat,
+    igvRate: source.igvRate,
+    minBoletaSinDni: source.minBoletaSinDni,
+    umbralConsolidacion: source.umbralConsolidacion,
+    certFileName: source.certFileName,
+    certExpiresAt: source.certExpiresAt,
+    certIssuer: source.certIssuer,
+    isDemoMode: source.isDemoMode,
+    logoUrl: source.logoUrl,
+    slogan: source.slogan,
+    phone: source.phone,
+    footerText: source.footerText,
+    ticketWidth: source.ticketWidth,
+    customUnits: source.customUnits,
+    updatedAt: Date.now()
+  };
+}
 
 export function SunatConfigPage() {
   const cfg = useCompany();
@@ -43,7 +72,7 @@ export function SunatConfigPage() {
   const runTest = async () => {
     setTesting(true);
     try {
-      const res = await testSunatConnection(cfg?.apiFactUrl, cfg?.apiFactToken);
+      const res = await testSunatConnection();
       setTestResult(res);
       if (res.ok && res.status === 'listo') {
         flash('Diagnóstico exitoso: Motor y SUNAT 100% operativos');
@@ -63,27 +92,23 @@ export function SunatConfigPage() {
     setBusy(true);
     try {
       if (targetDemo) {
-        await activateDemoMode(cfg?.apiFactUrl, cfg?.apiFactToken).catch(() => null);
-        const demoData: CompanyConfig = {
-          ...(cfg ?? DEFAULT_COMPANY),
+        await activateDemoMode();
+        const demoData = publicCompanyConfig(cfg, {
           ...SUNAT_DEMO_CREDENTIALS,
           isDemoMode: true,
           entornoSunat: 'beta',
           certFileName: 'certificado_demo_sunat.pfx',
           certExpiresAt: new Date(Date.now() + 365 * 86400000).toISOString(),
-          certIssuer: 'SUNAT Demo CA (Autofirmado)',
-          updatedAt: Date.now()
-        };
-        await setDoc(doc(db, 'company', 'main'), demoData);
+          certIssuer: 'SUNAT Demo CA (Autofirmado)'
+        });
+        await setDoc(tenantDoc('config', 'company'), demoData);
         flash('Modo de prueba (BETA SUNAT) activado.');
       } else {
-        const prodData = {
-          ...(cfg ?? DEFAULT_COMPANY),
+        const prodData = publicCompanyConfig(cfg, {
           isDemoMode: false,
-          entornoSunat: 'produccion' as const,
-          updatedAt: Date.now()
-        };
-        await setDoc(doc(db, 'company', 'main'), prodData);
+          entornoSunat: 'produccion'
+        });
+        await setDoc(tenantDoc('config', 'company'), prodData);
         flash('Modo Producción (EN VIVO CON SUNAT) activado. Ingresa tu RUC y claves SOL reales.');
       }
       void runTest();
@@ -106,25 +131,19 @@ export function SunatConfigPage() {
 
     setUploadingCert(true);
     try {
-      const res = await uploadCertificate(certFile, certPassword, {
-        apiFactUrl: cfg?.apiFactUrl,
-        apiFactToken: cfg?.apiFactToken
-      });
+      const res = await uploadCertificate(certFile, certPassword);
       if (!res.ok) {
         flash(`Error al procesar certificado: ${res.message || 'Fallo desconocido'}`);
         return;
       }
 
       await setDoc(
-        doc(db, 'company', 'main'),
-        {
-          ...(cfg ?? DEFAULT_COMPANY),
+        tenantDoc('config', 'company'),
+        publicCompanyConfig(cfg, {
           certFileName: certFile.name,
-          certExpiresAt: res.certificate?.expires_at ?? null,
-          certIssuer: res.certificate?.issuer ?? null,
-          updatedAt: Date.now()
-        },
-        { merge: true }
+          certExpiresAt: res.certificate?.expires_at ?? undefined,
+          certIssuer: res.certificate?.issuer ?? undefined
+        })
       );
 
       flash('Certificado digital instalado y verificado exitosamente');
@@ -142,25 +161,19 @@ export function SunatConfigPage() {
   const saveCompanySettings = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    const data: CompanyConfig = {
-      ...(cfg ?? DEFAULT_COMPANY),
+    const data = publicCompanyConfig(cfg, {
       ruc: clean(fd.get('ruc')),
       razonSocial: clean(fd.get('razonSocial')),
       direccion: clean(fd.get('direccion')),
       regimen: clean(fd.get('regimen')),
       serieFactura: clean(fd.get('serieFactura')) || 'F001',
       serieBoleta: clean(fd.get('serieBoleta')) || 'B001',
-      entornoSunat: fd.get('entornoSunat') === 'produccion' ? 'produccion' : 'beta',
-      isDemoMode: fd.get('entornoSunat') === 'beta',
+      entornoSunat: cfg?.entornoSunat ?? 'beta',
+      isDemoMode: cfg?.isDemoMode ?? true,
       igvRate: num(fd.get('igvRate')) || 0.18,
       minBoletaSinDni: Math.trunc(num(fd.get('minBoletaSinDni'))) || 700,
-      umbralConsolidacion: Math.trunc(num(fd.get('umbralConsolidacion'))) || 5,
-      solUser: clean(fd.get('solUser')),
-      solPassword: clean(fd.get('solPassword')),
-      apiFactUrl: clean(fd.get('apiFactUrl')) || DEFAULT_COMPANY.apiFactUrl,
-      apiFactToken: clean(fd.get('apiFactToken')) || DEFAULT_COMPANY.apiFactToken,
-      updatedAt: Date.now()
-    };
+      umbralConsolidacion: cfg?.umbralConsolidacion ?? 5,
+    });
 
     if (!data.razonSocial) {
       flash('Error: La razón social es obligatoria');
@@ -169,10 +182,37 @@ export function SunatConfigPage() {
 
     setBusy(true);
     try {
-      await setDoc(doc(db, 'company', 'main'), data);
+      await setDoc(tenantDoc('config', 'company'), data);
       flash('Configuración de la empresa guardada exitosamente');
     } catch {
       flash('Error al guardar la configuración');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const saveCredentials = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const solUser = clean(fd.get('solUser'));
+    const solPassword = clean(fd.get('solPassword'));
+    if (!cfg?.ruc || !cfg.razonSocial || !solUser || !solPassword) {
+      flash('Error: completa los datos de empresa, usuario y clave SOL');
+      return;
+    }
+    setBusy(true);
+    try {
+      await saveSunatCredentials({
+        ruc: cfg.ruc,
+        razonSocial: cfg.razonSocial,
+        solUser,
+        solPassword,
+        entorno: cfg.entornoSunat
+      });
+      e.currentTarget.reset();
+      flash('Credenciales SOL guardadas de forma segura en el motor tributario');
+    } catch (error) {
+      flash(error instanceof Error ? `Error: ${error.message}` : 'Error al guardar credenciales');
     } finally {
       setBusy(false);
     }
@@ -306,7 +346,7 @@ export function SunatConfigPage() {
                 {testResult ? (testResult.ok ? 'En Línea' : 'Desconectado') : 'Listo para probar'}
               </p>
               <p className="text-[11px] text-slate-400 font-mono truncate">
-                {cfg?.apiFactUrl || DEFAULT_COMPANY.apiFactUrl}
+                Proxy seguro de Cloud Functions
               </p>
             </div>
 
@@ -529,7 +569,7 @@ export function SunatConfigPage() {
           </div>
 
           {/* Formulario de Claves SOL */}
-          <form ref={formRef} onSubmit={saveCompanySettings} className="card p-5 space-y-4 shadow-xs">
+          <form onSubmit={saveCredentials} className="card p-5 space-y-4 shadow-xs">
             <div>
               <h3 className="text-sm font-bold text-slate-900 font-display">Credenciales SOL de SUNAT</h3>
               <p className="text-xs text-slate-500">
@@ -542,7 +582,6 @@ export function SunatConfigPage() {
                 <label className="label">Usuario Secundario SOL</label>
                 <input
                   name="solUser"
-                  defaultValue={cfg?.solUser}
                   placeholder="Ej.: MODDATOS o USERFACT01"
                   className="field font-mono uppercase"
                 />
@@ -552,7 +591,6 @@ export function SunatConfigPage() {
                 <input
                   name="solPassword"
                   type="password"
-                  defaultValue={cfg?.solPassword}
                   placeholder="••••••••"
                   className="field"
                 />

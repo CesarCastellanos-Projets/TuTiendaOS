@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { collection, doc, onSnapshot, query, updateDoc, where, getDoc } from 'firebase/firestore';
+import { query, where } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import { ArrowDownToLine, CheckCircle2, Truck } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { tenantCollection } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import { receiveTransferItems } from '../../lib/inventory';
 import type { Transfer } from '../../types';
@@ -16,20 +17,13 @@ export function ReceivingPage() {
   const [transfers, setTransfers] = useState<(Transfer & { id: string })[]>([]);
   const [receivingTransfer, setReceivingTransfer] = useState<(Transfer & { id: string }) | null>(null);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
-  const [storeName, setStoreName] = useState('Mi tienda');
   const [busy, setBusy] = useState(false);
   const { msg, flash } = useFlash();
 
   useEffect(() => {
-    void getDoc(doc(db, 'stores', storeId)).then((s) => {
-      if (s.exists()) setStoreName((s.data() as { name: string }).name);
-    });
-  }, [storeId]);
-
-  useEffect(() => {
     return onSnapshot(
       query(
-        collection(db, 'transfers'),
+        tenantCollection('transfers'),
         where('toLocationId', '==', storeId),
         where('status', 'in', ['pendiente', 'en_transito'])
       ),
@@ -59,33 +53,9 @@ export function ReceivingPage() {
 
     setBusy(true);
     try {
-      const itemsToReceive = receivingTransfer.items.map((i) => ({
-        productId: i.productId,
-        name: i.name,
-        qtyReceived: quantities[i.productId] ?? i.qtySent,
-        salePrice: 0 // se obtiene o mantiene en stock
-      }));
-
-      // 1. Sumar stock en tienda y registrar movimiento de recepción
       await receiveTransferItems({
-        toLocationId: storeId,
-        locationName: storeName,
-        items: itemsToReceive,
-        uid: user.uid,
-        userName: profile.displayName,
-        transferCode: receivingTransfer.code
-      });
-
-      // 2. Actualizar estado de la transferencia
-      await updateDoc(doc(db, 'transfers', receivingTransfer.id), {
-        status: 'recibido',
-        items: receivingTransfer.items.map((i) => ({
-          ...i,
-          qtyReceived: quantities[i.productId] ?? i.qtySent
-        })),
-        receivedBy: user.uid,
-        receivedByName: profile.displayName,
-        receivedAt: Date.now()
+        transferId: receivingTransfer.id,
+        quantities
       });
 
       flash(`Transferencia ${receivingTransfer.code} recibida con éxito`);

@@ -1,37 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
-import { onSnapshot, collection, getDocs, limit, query } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { onSnapshot } from '../lib/firestore-listener';
 import { stocksByLocation } from '../lib/inventory';
 import { cacheCatalog, localDb } from '../lib/catalog-cache';
-import type { Product, ProductStock } from '../types';
+import { getProductsCatalog, syncProductsCatalog, type ProductWithId } from '../lib/catalog-repository';
+import { requireCurrentTenantId } from '../lib/tenant-firestore';
+import { useAuth } from '../lib/auth';
+import { useProductsCatalog } from './useProductsCatalog';
+import type { ProductStock } from '../types';
 
 export interface SearchableCatalogItem extends ProductStock {
   presentationUnit?: string;
   factor?: number;
   searchKey: string;
-}
-
-export type ProductWithId = Product & { id: string };
-
-let memoryProducts: ProductWithId[] = [];
-let hasSubscribedProducts = false;
-
-export function ensureProductsSubscription() {
-  if (hasSubscribedProducts) return;
-  hasSubscribedProducts = true;
-  onSnapshot(
-    query(collection(db, 'products'), limit(500)),
-    (snap) => {
-      memoryProducts = snap.docs.map((d) => ({
-        ...(d.data() as Product),
-        id: d.id
-      }));
-    },
-    (err) => {
-      hasSubscribedProducts = false;
-      console.warn('Error sincronizando productos en tiempo real:', err);
-    }
-  );
 }
 
 /** Catálogo de la tienda: primero IndexedDB (offline), luego Firestore en vivo y productos sincronizados. */
@@ -41,21 +21,15 @@ export function useStoreCatalog(storeId: string | undefined): {
   offline: boolean;
 } {
   const [items, setItems] = useState<ProductStock[]>([]);
-  const [products, setProducts] = useState<ProductWithId[]>(memoryProducts);
+  const products = useProductsCatalog();
+  const tenantId = useAuth((state) => state.profile?.tenantId);
   const [offline, setOffline] = useState(false);
 
   useEffect(() => {
-    ensureProductsSubscription();
-    const unsubProds = onSnapshot(query(collection(db, 'products'), limit(500)), (snap) => {
-      const prods = snap.docs.map((d) => ({ ...(d.data() as Product), id: d.id }));
-      memoryProducts = prods;
-      setProducts(prods);
-    });
-
-    if (!storeId) return unsubProds;
+    if (!storeId || !tenantId) return;
     let alive = true;
 
-    void localDb.products.where('locationId').equals(storeId).toArray().then((cached) => {
+    void localDb.products.where('[tenantId+locationId]').equals([tenantId, storeId]).toArray().then((cached) => {
       if (!alive || cached.length === 0) return;
       setItems(cached.map(({ id: _id, cachedAt: _c, ...p }) => p));
       setOffline(!navigator.onLine);
@@ -68,7 +42,7 @@ export function useStoreCatalog(storeId: string | undefined): {
         const fresh = snap.docs.map((d) => d.data() as ProductStock);
         setItems(fresh);
         setOffline(false);
-        void cacheCatalog(fresh);
+        void cacheCatalog(tenantId, fresh);
       },
       () => {
         if (alive) setOffline(true);
@@ -78,9 +52,8 @@ export function useStoreCatalog(storeId: string | undefined): {
     return () => {
       alive = false;
       unsubStocks();
-      unsubProds();
     };
-  }, [storeId]);
+  }, [storeId, tenantId]);
 
   return { items, products, offline };
 }
@@ -93,7 +66,9 @@ export async function findInCatalog(
   const c = code.trim().toLowerCase();
   if (!c) return null;
 
-  ensureProductsSubscription();
+  const tenantId = requireCurrentTenantId();
+  await syncProductsCatalog(tenantId).catch(() => undefined);
+  const products = getProductsCatalog(tenantId);
 
   // Vercel Best Practice (js-index-maps): Map para resolución O(1) de stocks por productId
   const stockMap = new Map<string, ProductStock>();
@@ -131,24 +106,11 @@ export async function findInCatalog(
   };
 
   // 1. PRIMERO: Comprobar en la memoria de productos
-  let presMatch = findPresentationMatch(memoryProducts);
+  const presMatch = findPresentationMatch(products);
   if (presMatch) return presMatch;
 
-  // Fallback en vivo: si memoryProducts aún no se actualizó, consultar Firestore fresco
-  try {
-    const snap = await getDocs(query(collection(db, 'products'), limit(500)));
-    memoryProducts = snap.docs.map((d) => ({
-      ...(d.data() as Product),
-      id: d.id
-    }));
-    presMatch = findPresentationMatch(memoryProducts);
-    if (presMatch) return presMatch;
-  } catch {
-    // fallback silencioso
-  }
-
   // 2. SEGUNDO: Comprobar si coincide con el código base o código interno de un producto
-  for (const p of memoryProducts) {
+  for (const p of products) {
     const baseBarcode = String(p.barcode ?? '').trim().toLowerCase();
     const internalCode = String(p.internalCode ?? '').trim().toLowerCase();
     if ((baseBarcode !== '' && baseBarcode === c) || (internalCode !== '' && internalCode === c) || p.id.toLowerCase() === c) {
@@ -186,17 +148,7 @@ export async function findInCatalog(
 }
 
 export function useCatalogSearch(items: ProductStock[]) {
-  const [productsList, setProductsList] = useState<ProductWithId[]>(memoryProducts);
-
-  useEffect(() => {
-    ensureProductsSubscription();
-    const unsub = onSnapshot(query(collection(db, 'products'), limit(500)), (snap) => {
-      const prods = snap.docs.map((d) => ({ ...(d.data() as Product), id: d.id }));
-      memoryProducts = prods;
-      setProductsList(prods);
-    });
-    return unsub;
-  }, []);
+  const productsList = useProductsCatalog();
 
   // Vercel Best Practice: js-index-maps - Construir Map para lookup O(1) de stocks
   const stockMap = useMemo(() => {

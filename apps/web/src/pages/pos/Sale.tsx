@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { collection, doc, getDoc, getDocs, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
+import { getDoc, getDocs, limit, orderBy, query, where } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import {
   Camera,
   CheckCircle2,
@@ -22,13 +23,13 @@ import {
   WalletCards,
   FileText
 } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import type { LucideIcon } from 'lucide-react';
+import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import { useCompany } from '../../hooks/useCompany';
 import { findInCatalog, useCatalogSearch, useStoreCatalog } from '../../hooks/useStoreCatalog';
 import { useScanner, WedgeInput } from '../../hooks/useScanner';
 import { createSale } from '../../lib/sales';
-import { sendToSunat } from '../../services/sunat';
 import { lookupClient } from '../../services/ruc';
 import { ticketHtml, printTicket } from '../../lib/print';
 import type { CashSession, ClientDoc, PaymentMethod, ProductStock, SaleItem, Quotation } from '../../types';
@@ -43,7 +44,7 @@ interface CartLine extends SaleItem {
 
 const BANKS = ['BCP', 'BBVA', 'Interbank', 'Scotiabank', 'Caja Huancayo', 'Caja Arequipa', 'Banco de la Nación', 'Otro'];
 
-const PAYMENTS: { id: PaymentMethod; label: string; icon: any; colorClass: string }[] = [
+const PAYMENTS: { id: PaymentMethod; label: string; icon: LucideIcon; colorClass: string }[] = [
   { id: 'efectivo', label: 'Efectivo', icon: DollarSign, colorClass: 'border-emerald-500 text-emerald-700 bg-emerald-50/70' },
   { id: 'transferencia', label: 'Transferencia', icon: Building2, colorClass: 'border-blue-500 text-blue-700 bg-blue-50/70' },
   { id: 'yape', label: 'Yape', icon: QrCode, colorClass: 'border-purple-600 text-purple-700 bg-purple-50/70' },
@@ -56,12 +57,13 @@ export function PosSale() {
   const user = useAuth((s) => s.user);
   const company = useCompany();
   const storeId = profile.storeId!;
+  const cartStorageKey = `denzoz_pos_cart_${profile.tenantId}_${storeId}`;
   const { items: catalog, products } = useStoreCatalog(storeId);
   const searchIn = useCatalogSearch(catalog);
 
   const [cart, setCart] = useState<CartLine[]>(() => {
     try {
-      const saved = localStorage.getItem(`denzoz_pos_cart_${storeId}`);
+      const saved = localStorage.getItem(cartStorageKey);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed.cart)) return parsed.cart;
@@ -74,7 +76,7 @@ export function PosSale() {
   const [term, setTerm] = useState('');
   const [clientDoc, setClientDoc] = useState<ClientDoc>(() => {
     try {
-      const saved = localStorage.getItem(`denzoz_pos_cart_${storeId}`);
+      const saved = localStorage.getItem(cartStorageKey);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed.clientDoc) return parsed.clientDoc;
@@ -89,7 +91,7 @@ export function PosSale() {
   const [bankName, setBankName] = useState('BCP');
   const [docType, setDocType] = useState<'boleta' | 'factura' | 'nota'>(() => {
     try {
-      const saved = localStorage.getItem(`denzoz_pos_cart_${storeId}`);
+      const saved = localStorage.getItem(cartStorageKey);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed.docType) return parsed.docType;
@@ -120,7 +122,12 @@ export function PosSale() {
     setLoadingQuotes(true);
     try {
       const snap = await getDocs(
-        query(collection(db, 'quotations'), orderBy('createdAt', 'desc'), limit(20))
+        query(
+          tenantCollection('quotations'),
+          where('storeId', '==', storeId),
+          orderBy('createdAt', 'desc'),
+          limit(20)
+        )
       );
       setQuotesList(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Quotation)));
     } catch {
@@ -158,7 +165,7 @@ export function PosSale() {
   };
 
   useEffect(() => {
-    void getDoc(doc(db, 'stores', storeId)).then((s) => {
+    void getDoc(tenantDoc('stores', storeId)).then((s) => {
       if (s.exists()) setStoreName((s.data() as { name: string }).name);
     });
   }, [storeId]);
@@ -166,10 +173,16 @@ export function PosSale() {
 
   useEffect(() => {
     return onSnapshot(
-      query(collection(db, 'cash_sessions'), where('userId', '==', user?.uid ?? ''), where('status', '==', 'abierta'), limit(1)),
+      query(
+        tenantCollection('cash_sessions'),
+        where('userId', '==', user?.uid ?? ''),
+        where('storeId', '==', storeId),
+        where('status', '==', 'abierta'),
+        limit(1)
+      ),
       (s) => setSessionOpen(s.empty ? null : ({ ...(s.docs[0].data() as CashSession), id: s.docs[0].id }))
     );
-  }, [user?.uid]);
+  }, [storeId, user?.uid]);
 
   // Guardar automáticamente el carrito y datos de venta en localStorage para protección ante apagones o cierres
   useEffect(() => {
@@ -177,16 +190,16 @@ export function PosSale() {
     try {
       if (cart.length > 0 || clientDoc.tipo !== '-' || docType !== 'boleta') {
         localStorage.setItem(
-          `denzoz_pos_cart_${storeId}`,
+          cartStorageKey,
           JSON.stringify({ cart, clientDoc, docType, savedAt: Date.now() })
         );
       } else {
-        localStorage.removeItem(`denzoz_pos_cart_${storeId}`);
+        localStorage.removeItem(cartStorageKey);
       }
     } catch {
       // ignore
     }
-  }, [cart, clientDoc, docType, storeId]);
+  }, [cart, cartStorageKey, clientDoc, docType, storeId]);
 
   // Sincronizar stock del catálogo en los ítems del carrito recuperados
   useEffect(() => {
@@ -197,7 +210,7 @@ export function PosSale() {
         return found && found.quantity !== line.stock ? { ...line, stock: found.quantity } : line;
       })
     );
-  }, [catalog]);
+  }, [catalog, cart.length]);
 
   const total = useMemo(() => cart.reduce((s, l) => s + l.total, 0), [cart]);
   const change = Math.max(0, (Number(paid) || 0) - total);
@@ -388,14 +401,11 @@ export function PosSale() {
       setClientDoc({ tipo: '-', numero: '', nombre: '' });
       setDocType('boleta');
       try {
-        localStorage.removeItem(`denzoz_pos_cart_${storeId}`);
+        localStorage.removeItem(cartStorageKey);
       } catch {
         // ignore
       }
 
-      if (docType !== 'nota') {
-        void sendToSunat(sale.code, sale);
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error al registrar la venta.');
     } finally {
@@ -738,7 +748,7 @@ export function PosSale() {
                     setCart([]);
                     setClientDoc({ tipo: '-', numero: '', nombre: '' });
                     try {
-                      localStorage.removeItem(`denzoz_pos_cart_${storeId}`);
+                      localStorage.removeItem(cartStorageKey);
                     } catch {
                       // ignore
                     }

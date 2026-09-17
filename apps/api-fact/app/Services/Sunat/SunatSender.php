@@ -1,47 +1,167 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\Sunat;
 
 use App\Models\SunatDocument;
+use Greenter\Model\DocumentInterface;
 use Greenter\Model\Response\BillResult;
+use Greenter\Model\Response\CdrResponse;
+use Greenter\Model\Response\StatusResult;
+use Greenter\Model\Response\SummaryResult;
 use Greenter\See;
+use Throwable;
 
-class SunatSender
+final class SunatSender
 {
-    /** Envía el documento y persiste estado + XML + CDR. */
-    public static function send(See $see, object $document, SunatDocument $record): SunatDocument
+    /** @var list<int> */
+    private const BACKOFF_MINUTES = [1, 5, 15, 60, 360];
+
+    public function __construct(private readonly SunatArtifactStore $artifacts) {}
+
+    public function send(See $see, DocumentInterface $document, SunatDocument $record): SunatDocument
     {
-        $result = $see->send($document);
-
-        if ($result->isSuccess()) {
-            /** @var BillResult|null $cdr */
-            $cdr = method_exists($result, 'getCdrResponse') ? $result : null;
-            $response = $result->getCdrResponse();
-            $aceptado = $response?->isAccepted() ?? true;
-
-            $record->estado_sunat = $aceptado ? 'aceptado' : 'observado';
-            $record->mensaje_sunat = implode(' ', $response?->getNotes() ?? [$response?->getDescription() ?? 'Aceptado']);
-        } else {
-            $record->estado_sunat = 'rechazado';
-            $record->mensaje_sunat = $result->getError()->getMessage();
-        }
-
-        // XML firmado
+        $this->beginAttempt($record);
         try {
-            $xml = $see->getFactory()?->getLastXml();
-            if ($xml) {
-                $dir = "sunat/".config('sunat.ruc');
-                \Storage::makeDirectory($dir);
-                $path = "{$dir}/{$record->tipo}-{$record->serie}-{$record->correlativo}.xml";
-                \Storage::put($path, $xml);
-                $record->xml_path = $path;
+            $result = $see->send($document);
+            $this->storeXml($see, $record);
+            if (! $result instanceof BillResult || ! $result->isSuccess()) {
+                return $this->scheduleRetry($record, $result?->getError()?->getMessage() ?? 'SUNAT no respondió el envío.');
             }
-        } catch (\Throwable) {
-            // El XML es recuperable; no bloquea la respuesta
+
+            $record->sent_at ??= now();
+
+            return $this->applyCdr($record, $result->getCdrResponse(), $result->getCdrZip());
+        } catch (Throwable $exception) {
+            $this->storeXml($see, $record);
+            $this->scheduleRetry($record, 'No se pudo completar el envío a SUNAT.');
+            throw $exception;
+        }
+    }
+
+    public function sendAsync(See $see, DocumentInterface $document, SunatDocument $record): SunatDocument
+    {
+        $this->beginAttempt($record);
+        try {
+            $result = $see->send($document);
+            $this->storeXml($see, $record);
+            if (! $result instanceof SummaryResult || ! $result->isSuccess() || ! $result->getTicket()) {
+                return $this->scheduleRetry($record, $result?->getError()?->getMessage() ?? 'SUNAT no devolvió un ticket.');
+            }
+
+            $record->forceFill([
+                'ticket' => $result->getTicket(),
+                'estado_sunat' => 'procesando',
+                'mensaje_sunat' => 'Documento enviado; CDR pendiente de consulta.',
+                'sent_at' => $record->sent_at ?? now(),
+                'next_retry_at' => now()->addMinute(),
+            ])->save();
+
+            return $record;
+        } catch (Throwable $exception) {
+            $this->storeXml($see, $record);
+            $this->scheduleRetry($record, 'No se pudo enviar el documento asíncrono a SUNAT.');
+            throw $exception;
+        }
+    }
+
+    public function pollTicket(See $see, SunatDocument $record): SunatDocument
+    {
+        if (! $record->ticket) {
+            return $this->scheduleRetry($record, 'El documento no tiene ticket SUNAT.');
         }
 
+        $this->beginAttempt($record);
+        try {
+            $result = $see->getStatus($record->ticket);
+            if ($result->getCode() === '98') {
+                return $this->scheduleRetry($record, 'SUNAT continúa procesando el documento.', 'procesando');
+            }
+            if (! $result instanceof StatusResult || ! $result->isSuccess()) {
+                return $this->scheduleRetry($record, $result->getError()?->getMessage() ?? 'No se pudo consultar el ticket SUNAT.', 'procesando');
+            }
+
+            return $this->applyCdr($record, $result->getCdrResponse(), $result->getCdrZip());
+        } catch (Throwable $exception) {
+            $this->scheduleRetry($record, 'No se pudo consultar el ticket SUNAT.', 'procesando');
+            throw $exception;
+        }
+    }
+
+    private function beginAttempt(SunatDocument $record): void
+    {
+        $record->forceFill([
+            'attempts' => $record->attempts + 1,
+            'last_attempt_at' => now(),
+            'next_retry_at' => now()->addMinutes(5),
+        ])->save();
+    }
+
+    private function applyCdr(SunatDocument $record, ?CdrResponse $cdr, ?string $cdrZip): SunatDocument
+    {
+        if (! $cdr) {
+            return $this->scheduleRetry($record, 'SUNAT respondió sin CDR.');
+        }
+
+        $code = (int) $cdr->getCode();
+        $notes = array_values(array_filter($cdr->getNotes() ?? []));
+        $status = match (true) {
+            $code === 0 && $notes === [] => 'aceptado',
+            $code === 0 || $code >= 4000 => 'observado',
+            $code >= 2000 && $code <= 3999 => 'rechazado',
+            default => 'requiere_revision',
+        };
+        $message = trim(implode(' ', array_filter([$cdr->getDescription(), ...$notes])));
+        $record->forceFill([
+            'estado_sunat' => $status,
+            'mensaje_sunat' => mb_substr($message !== '' ? $message : 'CDR recibido.', 0, 2000),
+            'cdr_code' => (string) $cdr->getCode(),
+            'next_retry_at' => null,
+            'processed_at' => now(),
+        ]);
+
+        try {
+            $this->artifacts->storeCdr($record, $cdrZip);
+            $this->artifacts->storePdf($record);
+        } catch (Throwable $exception) {
+            report($exception);
+        }
         $record->save();
 
         return $record;
+    }
+
+    private function scheduleRetry(SunatDocument $record, string $message, string $retryStatus = 'pendiente'): SunatDocument
+    {
+        $maxAttempts = max(1, (int) config('sunat.retry_max_attempts', 6));
+        if ($record->attempts >= $maxAttempts) {
+            $record->forceFill([
+                'estado_sunat' => 'requiere_revision',
+                'mensaje_sunat' => mb_substr($message, 0, 2000),
+                'next_retry_at' => null,
+            ])->save();
+
+            return $record;
+        }
+
+        $backoffIndex = min(max($record->attempts - 1, 0), count(self::BACKOFF_MINUTES) - 1);
+        $record->forceFill([
+            'estado_sunat' => $retryStatus,
+            'mensaje_sunat' => mb_substr($message, 0, 2000),
+            'next_retry_at' => now()->addMinutes(self::BACKOFF_MINUTES[$backoffIndex]),
+        ])->save();
+
+        return $record;
+    }
+
+    private function storeXml(See $see, SunatDocument $record): void
+    {
+        try {
+            $this->artifacts->storeXml($see, $record);
+            $record->save();
+        } catch (Throwable $exception) {
+            report($exception);
+        }
     }
 }

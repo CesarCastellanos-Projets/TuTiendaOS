@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { collection, getDocs, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
-import { db } from '../../lib/firebase';
-import { useAuth } from '../../lib/auth';
+import { getDocs, limit, orderBy, query } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
+import { tenantCollection } from '../../lib/tenant-firestore';
 import { adjustStock } from '../../lib/inventory';
 import { ProductLines, useProductSearch } from '../../components/ui/ProductPicker';
 import type { StockMovement, Store, Warehouse } from '../../types';
@@ -9,8 +9,6 @@ import { fmtDateTime, num, clean } from '../../lib/utils';
 import { FlashBar, useFlash } from '../../components/ui/Feedback';
 
 export function AdjustmentsPage() {
-  const profile = useAuth((s) => s.profile)!;
-  const user = useAuth((s) => s.user);
   const [locations, setLocations] = useState<{ id: string; name: string }[]>([]);
   const [locationId, setLocationId] = useState('');
   const [lines, setLines] = useState<{ productId: string; name: string; qty: number; salePrice: number; barcode?: string }[]>([]);
@@ -24,8 +22,8 @@ export function AdjustmentsPage() {
   useEffect(() => {
     async function load() {
       const [st, wh] = await Promise.all([
-        getDocs(query(collection(db, 'stores'), limit(50))),
-        getDocs(query(collection(db, 'warehouses'), limit(50)))
+        getDocs(query(tenantCollection('stores'), limit(50))),
+        getDocs(query(tenantCollection('warehouses'), limit(50)))
       ]);
       const locs: { id: string; name: string }[] = [];
       st.forEach((d) => locs.push({ id: d.id, name: (d.data() as Store).name }));
@@ -34,7 +32,7 @@ export function AdjustmentsPage() {
     }
     void load();
     return onSnapshot(
-      query(collection(db, 'stock_movements'), orderBy('createdAt', 'desc'), limit(100)),
+      query(tenantCollection('stock_movements'), orderBy('createdAt', 'desc'), limit(100)),
       (s) => {
         const list = s.docs
           .map((d) => d.data() as StockMovement)
@@ -45,7 +43,7 @@ export function AdjustmentsPage() {
   }, []);
 
   const submit = async () => {
-    if (!user || !locationId || lines.length !== 1 || !reason.trim()) {
+    if (!locationId || lines.length !== 1 || !reason.trim()) {
       flash('Error: una ubicación, un producto y un motivo son obligatorios');
       return;
     }
@@ -54,12 +52,9 @@ export function AdjustmentsPage() {
       await adjustStock({
         locationId,
         productId: lines[0].productId,
-        productName: lines[0].name,
         newQty: Math.max(0, Math.trunc(num(String(lines[0].qty)))),
         reason,
-        type,
-        uid: user.uid,
-        userName: profile.displayName
+        type
       });
       flash(`${type === 'merma' ? 'Merma' : 'Ajuste'} registrado`);
       setLines([]);

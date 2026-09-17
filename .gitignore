@@ -3,6 +3,7 @@ dist/
 dist-ssr/
 .vite/
 coverage/
+.phpunit.result.cache
 
 .env
 .env.local
@@ -11,8 +12,18 @@ coverage/
 vendor/
 apps/api-fact/.env
 apps/api-fact/storage/**/*.key
+apps/api-fact/storage/app/sunat/config.json
+apps/api-fact/storage/app/private/
+apps/api-fact/storage/logs/*.log
+apps/api-fact/storage/framework/testing/
+apps/api-fact/storage/framework/views/*.php
+apps/api-fact/database/*.sqlite
 *.pfx
+*.p12
 *.pem
+
+tools/service-account.json
+firestore-rules.analysis.tmp.md
 
 functions/lib/
 firebase-debug.log

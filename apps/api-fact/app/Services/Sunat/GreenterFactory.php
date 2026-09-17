@@ -1,127 +1,117 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Services\Sunat;
 
-use Greenter\Model\Client;
+use DateTimeImmutable;
+use DateTimeZone;
+use Greenter\Model\Client\Client;
 use Greenter\Model\Company\Company;
 use Greenter\Model\Sale\Invoice;
 use Greenter\Model\Sale\Legend;
 use Greenter\Model\Sale\Note;
 use Greenter\Model\Sale\SaleDetail;
+use Greenter\Model\Summary\Summary;
+use Greenter\Model\Summary\SummaryDetail;
+use Greenter\Model\Voided\Voided;
+use Greenter\Model\Voided\VoidedDetail;
 use Greenter\See;
 use Greenter\Ws\Services\SunatEndpoints;
 
-class GreenterFactory
+final class GreenterFactory
 {
-    /** See configurado con certificado + credenciales SOL según entorno. */
     public static function see(): See
     {
-        $see = new See();
-        $entorno = SunatConfigHelper::get('entorno', 'beta');
-        $see->setService(
-            $entorno === 'produccion'
-                ? SunatEndpoints::FE_PRODUCCION
-                : SunatEndpoints::FE_BETA
-        );
+        $see = new See;
+        $environment = SunatConfigHelper::get('entorno', 'beta');
+        $see->setService($environment === 'produccion' ? SunatEndpoints::FE_PRODUCCION : SunatEndpoints::FE_BETA);
 
-        $ruc = SunatConfigHelper::get('ruc', '20000000001');
-        $user = SunatConfigHelper::get('sol_user', 'MODDATOS');
-        $password = SunatConfigHelper::get('sol_password', 'MODDATOS');
-
-        if ($entorno === 'produccion' && ! str_starts_with((string) $user, (string) $ruc)) {
-            $user = $ruc.$user;
+        $ruc = (string) SunatConfigHelper::get('ruc', '20000000001');
+        $user = (string) SunatConfigHelper::get('sol_user', 'MODDATOS');
+        $password = (string) SunatConfigHelper::get('sol_password', 'MODDATOS');
+        if (str_starts_with($user, $ruc)) {
+            $user = substr($user, strlen($ruc));
         }
-        $see->setClaveSOL($user, $password);
+        $see->setClaveSOL($ruc, $user, $password);
 
-        $certPath = SunatConfigHelper::get('cert_path', storage_path('app/sunat/certificate.pfx'));
-        $certPassword = SunatConfigHelper::get('cert_password', 'demo');
-
-        if (! file_exists($certPath)) {
-            // Genera certificado demo automáticamente si no existe y estamos en beta
+        $certificatePath = (string) SunatConfigHelper::get('cert_path', SunatConfigHelper::configDirectory().'/certificate.pfx');
+        $certificatePassword = (string) SunatConfigHelper::get('cert_password', 'demo');
+        if (! file_exists($certificatePath)) {
             SunatConfigHelper::generateDemoCertificate();
-            $certPath = storage_path('app/sunat/certificate.pfx');
-            $certPassword = 'demo';
+            $certificatePath = SunatConfigHelper::configDirectory().'/certificate.pfx';
+            $certificatePassword = 'demo';
         }
-
-        $see->setCertificate(
-            file_get_contents($certPath),
-            $certPassword
-        );
+        $certificate = file_get_contents($certificatePath);
+        if ($certificate === false) {
+            throw new \RuntimeException('No se pudo leer el certificado digital.');
+        }
+        $see->setCertificate($certificate, $certificatePassword);
 
         return $see;
     }
 
     public static function company(): Company
     {
-        $company = new Company();
-        $company->setRuc(SunatConfigHelper::get('ruc', config('sunat.ruc', '20000000001')))
-            ->setRazonSocial(SunatConfigHelper::get('razon_social', config('sunat.razon_social', "D'ENZOZ")))
+        return (new Company)
+            ->setRuc((string) SunatConfigHelper::get('ruc', config('sunat.ruc', '20000000001')))
+            ->setRazonSocial((string) SunatConfigHelper::get('razon_social', config('sunat.razon_social', "D'ENZOZ")))
             ->setNombreComercial("D'ENZOZ");
-
-        return $company;
     }
 
-    public static function client(array $cliente): Client
+    /** @param array<string, mixed> $clientData */
+    public static function client(array $clientData): Client
     {
-        $client = new Client();
-        $isRuc = ($cliente['tipo'] ?? '-') === 'RUC';
-        $client->setTipoDoc($isRuc ? '6' : '1')
-            ->setNumDoc($cliente['numero'])
-            ->setRznSocial($cliente['nombre'] ?: 'CLIENTE VARIOS');
+        $type = (string) ($clientData['tipo'] ?? '-');
+        $number = (string) ($clientData['numero'] ?? '');
 
-        return $client;
+        return (new Client)
+            ->setTipoDoc($type === 'RUC' ? '6' : '1')
+            ->setNumDoc($number !== '' ? $number : '00000000')
+            ->setRznSocial((string) (($clientData['nombre'] ?? '') ?: 'CLIENTE VARIOS'));
     }
 
-    /** Construye la Invoice UBL desde el payload JSON de la PWA. */
+    /** @param array<string, mixed> $data */
     public static function invoice(array $data): Invoice
     {
-        $invoice = new Invoice();
-        $invoice->setUblVersion('2.1')
+        $totals = $data['totals'];
+        $invoice = (new Invoice)
+            ->setUblVersion('2.1')
+            ->setTipoOperacion('0101')
             ->setCompany(self::company())
-            ->setClient(self::client($data['cliente'] ?? []))
-            ->setTipoDoc(($data['tipo'] ?? 'boleta') === 'factura' ? '01' : '03')
-            ->setSerie($data['serie'])
-            ->setCorrelativo((int) $data['correlativo'])
-            ->setFechaEmision(new \DateTimeImmutable($data['fecha'] ?? 'now', new \DateTimeZone('America/Lima')))
+            ->setClient(self::client($data['cliente']))
+            ->setTipoDoc($data['tipo'] === 'factura' ? '01' : '03')
+            ->setSerie((string) $data['serie'])
+            ->setCorrelativo((string) $data['correlativo'])
+            ->setFechaEmision(new DateTimeImmutable((string) $data['fecha'], new DateTimeZone('America/Lima')))
             ->setTipoMoneda('PEN')
-            ->setMtoOperGravadas((float) $data['totals']['subtotal'])
-            ->setMtoIGV((float) $data['totals']['igv'])
-            ->setTotalImpuestos((float) $data['totals']['igv'])
-            ->setMtoImpVenta((float) $data['totals']['total']);
+            ->setMtoOperGravadas((float) $totals['subtotal'])
+            ->setMtoIGV((float) $totals['igv'])
+            ->setTotalImpuestos((float) $totals['igv'])
+            ->setValorVenta((float) $totals['subtotal'])
+            ->setSubTotal((float) $totals['total'])
+            ->setMtoImpVenta((float) $totals['total']);
 
-        foreach ($data['items'] as $item) {
-            $cantidad = (float) $item['cantidad'];
-            $precioConIgv = round((float) $item['precio'], 2);
-            $valorUnitario = round($precioConIgv / 1.18, 5);
-            $detail = new SaleDetail();
-            $detail->setCodProducto(substr((string) ($item['codigo'] ?? ''), 0, 30))
-                ->setUnidad('NIU')
-                ->setDescripcion((string) $item['descripcion'])
-                ->setCantidad($cantidad)
-                ->setValorUnitario($valorUnitario)
-                ->setPrecioUnitario($precioConIgv)
-                ->setTipAfeIgv('10') // catálogo 16: gravado
-                ->setIgv(round($cantidad * $valorUnitario * 0.18, 2))
-                ->setTotal(round($cantidad * $precioConIgv, 2));
-            $invoice->addDetail($detail);
-        }
+        $details = array_map(
+            fn (array $item): SaleDetail => self::saleDetail($item, (float) $data['igv_rate']),
+            $data['items']
+        );
 
-        $legend = new Legend();
-        $legend->setCode('1000')
-            ->setValue(self::enLetras((float) $data['totals']['total']));
-        $invoice->setLegends([$legend]);
-
-        return $invoice;
+        return $invoice->setDetails($details)->setLegends([self::legend((float) $totals['total'])]);
     }
 
-    public static function creditNote(array $data, object $original, int $correlativoNc, string $serieNc): Note
+    /** @param array<string, mixed> $data */
+    public static function creditNote(array $data, object $original, int $correlative, string $series): Note
     {
-        $note = new Note();
-        $note->setUblVersion('2.1')
+        $payload = $original->payload;
+        $totals = $payload['totals'];
+        $rate = (float) ($payload['igv_rate'] ?? 18);
+        $note = (new Note)
+            ->setUblVersion('2.1')
             ->setTipoDoc('07')
-            ->setSerie($serieNc)
-            ->setCorrelativo($correlativoNc)
-            ->setFechaEmision(new \DateTimeImmutable('now', new \DateTimeZone('America/Lima')))
+            ->setSerie($series)
+            ->setCorrelativo((string) $correlative)
+            ->setFechaEmision(new DateTimeImmutable('now', new DateTimeZone('America/Lima')))
             ->setCompany(self::company())
             ->setClient(self::client([
                 'tipo' => $original->cliente_tipo,
@@ -130,79 +120,155 @@ class GreenterFactory
             ]))
             ->setTipDocAfectado($original->tipo === 'factura' ? '01' : '03')
             ->setNumDocfectado("{$original->serie}-{$original->correlativo}")
-            ->setCodMotivo('01') // 01: Anulación de la operación
-            ->setDesMotivo($data['motivo'] ?? 'ANULACION DE LA OPERACION')
+            ->setCodMotivo('01')
+            ->setDesMotivo((string) ($data['motivo'] ?? 'ANULACION DE LA OPERACION'))
             ->setTipoMoneda('PEN')
-            ->setMtoOperGravadas((float) ($original->payload['totals']['subtotal'] ?? round($original->total / 1.18, 2)))
-            ->setMtoIGV((float) ($original->payload['totals']['igv'] ?? round($original->total - ($original->total / 1.18), 2)))
-            ->setTotalImpuestos((float) ($original->payload['totals']['igv'] ?? round($original->total - ($original->total / 1.18), 2)))
-            ->setMtoImpVenta((float) $original->total);
+            ->setMtoOperGravadas((float) $totals['subtotal'])
+            ->setMtoIGV((float) $totals['igv'])
+            ->setTotalImpuestos((float) $totals['igv'])
+            ->setValorVenta((float) $totals['subtotal'])
+            ->setSubTotal((float) $totals['total'])
+            ->setMtoImpVenta((float) $totals['total']);
 
-        $items = $original->payload['items'] ?? [];
-        if (empty($items)) {
-            $detail = new SaleDetail();
-            $detail->setCodProducto('SERV01')
-                ->setUnidad('NIU')
-                ->setDescripcion($data['motivo'] ?? 'ANULACION DE COMPROBANTE')
-                ->setCantidad(1)
-                ->setValorUnitario(round($original->total / 1.18, 5))
-                ->setPrecioUnitario((float) $original->total)
-                ->setTipAfeIgv('10')
-                ->setIgv(round($original->total - ($original->total / 1.18), 2))
-                ->setTotal((float) $original->total);
-            $note->addDetail($detail);
-        } else {
-            foreach ($items as $item) {
-                $cantidad = (float) ($item['cantidad'] ?? 1);
-                $precioConIgv = round((float) ($item['precio'] ?? $original->total), 2);
-                $valorUnitario = round($precioConIgv / 1.18, 5);
-                $detail = new SaleDetail();
-                $detail->setCodProducto(substr((string) ($item['codigo'] ?? ''), 0, 30))
-                    ->setUnidad('NIU')
-                    ->setDescripcion((string) ($item['descripcion'] ?? 'ANULACION'))
-                    ->setCantidad($cantidad)
-                    ->setValorUnitario($valorUnitario)
-                    ->setPrecioUnitario($precioConIgv)
-                    ->setTipAfeIgv('10')
-                    ->setIgv(round($cantidad * $valorUnitario * 0.18, 2))
-                    ->setTotal(round($cantidad * $precioConIgv, 2));
-                $note->addDetail($detail);
-            }
-        }
+        $details = array_map(
+            fn (array $item): SaleDetail => self::saleDetail($item, $rate),
+            $payload['items']
+        );
 
-        $legend = new Legend();
-        $legend->setCode('1000')
-            ->setValue(self::enLetras((float) $original->total));
-        $note->setLegends([$legend]);
-
-        return $note;
+        return $note->setDetails($details)->setLegends([self::legend((float) $totals['total'])]);
     }
 
-    public static function enLetras(float $monto): string
+    /** @param array<string, mixed> $data */
+    public static function summary(array $data, int $correlative): Summary
     {
-        $monto = round($monto, 2);
-        $entero = (int) floor($monto);
-        $centavos = (int) round(($monto - $entero) * 100);
-
-        $unidades = ['', 'UNO', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS', 'SIETE', 'OCHO', 'NUEVE',
-            'DIEZ', 'ONCE', 'DOCE', 'TRECE', 'CATORCE', 'QUINCE', 'DIECISEIS', 'DIECISIETE', 'DIECIOCHO', 'DIECINUEVE'];
-        $decenas = ['', '', 'VEINTI', 'TREINTA', 'CUARENTA', 'CINCUENTA', 'SESENTA', 'SETENTA', 'OCHENTA', 'NOVENTA'];
-
-        $texto = '';
-        if ($entero === 100) {
-            $texto = 'CIEN';
-        } elseif ($entero < 20) {
-            $texto = $unidades[$entero];
-        } elseif ($entero < 30) {
-            $texto = 'VEINTI'.strtolower($unidades[$entero % 10]);
-        } elseif ($entero < 100) {
-            $d = intdiv($entero, 10);
-            $u = $entero % 10;
-            $texto = $decenas[$d].($u > 0 ? ' Y '.$unidades[$u] : '');
-        } else {
-            $texto = number_format($entero, 0); // montos mayores: simplificado
+        $details = [];
+        foreach ($data['boletas'] as $receipt) {
+            $client = $receipt['cliente'];
+            $totals = $receipt['totals'];
+            $details[] = (new SummaryDetail)
+                ->setTipoDoc('03')
+                ->setSerieNro($receipt['serie'].'-'.$receipt['correlativo'])
+                ->setEstado('1')
+                ->setClienteTipo($client['tipo'] === 'RUC' ? '6' : '1')
+                ->setClienteNro($client['numero'] !== '' ? $client['numero'] : '00000000')
+                ->setTotal((float) $totals['total'])
+                ->setMtoOperGravadas((float) $totals['subtotal'])
+                ->setMtoIGV((float) $totals['igv'])
+                ->setPorcentajeIgv((float) $receipt['igv_rate']);
         }
 
-        return "SON {$texto} CON {$centavos}/100";
+        return (new Summary)
+            ->setFecGeneracion(new DateTimeImmutable((string) $data['fecha'], new DateTimeZone('America/Lima')))
+            ->setFecResumen(new DateTimeImmutable('now', new DateTimeZone('America/Lima')))
+            ->setCorrelativo(str_pad((string) $correlative, 3, '0', STR_PAD_LEFT))
+            ->setCompany(self::company())
+            ->setDetails($details);
+    }
+
+    /** @param array<string, mixed> $data */
+    public static function voided(array $data, int $correlative): Voided
+    {
+        $details = [];
+        foreach ($data['documentos'] as $document) {
+            $details[] = (new VoidedDetail)
+                ->setTipoDoc($document['tipo'] === 'factura' ? '01' : '03')
+                ->setSerie((string) $document['serie'])
+                ->setCorrelativo((string) $document['correlativo'])
+                ->setDesMotivoBaja((string) $document['motivo']);
+        }
+
+        return (new Voided)
+            ->setCorrelativo(str_pad((string) $correlative, 5, '0', STR_PAD_LEFT))
+            ->setFecGeneracion(new DateTimeImmutable((string) $data['fecha'], new DateTimeZone('America/Lima')))
+            ->setFecComunicacion(new DateTimeImmutable('now', new DateTimeZone('America/Lima')))
+            ->setCompany(self::company())
+            ->setDetails($details);
+    }
+
+    /** @param array<string, mixed> $item */
+    private static function saleDetail(array $item, float $ratePercent): SaleDetail
+    {
+        $quantity = (float) $item['cantidad'];
+        $grossUnitPrice = round((float) $item['precio'], 2);
+        $grossTotal = round($quantity * $grossUnitPrice, 2);
+        $netUnitPrice = round($grossUnitPrice / (1 + ($ratePercent / 100)), 5);
+        $netTotal = round($grossTotal / (1 + ($ratePercent / 100)), 2);
+        $igv = round($grossTotal - $netTotal, 2);
+
+        return (new SaleDetail)
+            ->setCodProducto(substr((string) ($item['codigo'] ?? ''), 0, 30))
+            ->setUnidad('NIU')
+            ->setDescripcion((string) $item['descripcion'])
+            ->setCantidad($quantity)
+            ->setMtoValorUnitario($netUnitPrice)
+            ->setMtoPrecioUnitario($grossUnitPrice)
+            ->setMtoBaseIgv($netTotal)
+            ->setPorcentajeIgv($ratePercent)
+            ->setTipAfeIgv('10')
+            ->setIgv($igv)
+            ->setTotalImpuestos($igv)
+            ->setMtoValorVenta($netTotal);
+    }
+
+    private static function legend(float $amount): Legend
+    {
+        return (new Legend)->setCode('1000')->setValue(self::enLetras($amount));
+    }
+
+    public static function enLetras(float $amount): string
+    {
+        $amount = round($amount, 2);
+        $integer = (int) floor($amount);
+        $cents = (int) round(($amount - $integer) * 100);
+        $words = self::integerWords($integer);
+
+        return "SON {$words} CON ".str_pad((string) $cents, 2, '0', STR_PAD_LEFT).'/100 SOLES';
+    }
+
+    private static function integerWords(int $value): string
+    {
+        $units = ['', 'UNO', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS', 'SIETE', 'OCHO', 'NUEVE',
+            'DIEZ', 'ONCE', 'DOCE', 'TRECE', 'CATORCE', 'QUINCE', 'DIECISEIS', 'DIECISIETE', 'DIECIOCHO', 'DIECINUEVE'];
+        $tens = [2 => 'VEINTE', 3 => 'TREINTA', 4 => 'CUARENTA', 5 => 'CINCUENTA', 6 => 'SESENTA', 7 => 'SETENTA', 8 => 'OCHENTA', 9 => 'NOVENTA'];
+        $hundreds = [2 => 'DOSCIENTOS', 3 => 'TRESCIENTOS', 4 => 'CUATROCIENTOS', 5 => 'QUINIENTOS', 6 => 'SEISCIENTOS', 7 => 'SETECIENTOS', 8 => 'OCHOCIENTOS', 9 => 'NOVECIENTOS'];
+
+        if ($value === 0) {
+            return 'CERO';
+        }
+        if ($value < 20) {
+            return $units[$value];
+        }
+        if ($value < 100) {
+            $ten = intdiv($value, 10);
+            $unit = $value % 10;
+            if ($ten === 2 && $unit > 0) {
+                return 'VEINTI'.$units[$unit];
+            }
+
+            return $tens[$ten].($unit > 0 ? ' Y '.$units[$unit] : '');
+        }
+        if ($value < 1000) {
+            if ($value === 100) {
+                return 'CIEN';
+            }
+            $hundred = intdiv($value, 100);
+            $remainder = $value % 100;
+            $prefix = $hundred === 1 ? 'CIENTO' : $hundreds[$hundred];
+
+            return $prefix.($remainder > 0 ? ' '.self::integerWords($remainder) : '');
+        }
+        if ($value < 1_000_000) {
+            $thousands = intdiv($value, 1000);
+            $remainder = $value % 1000;
+            $prefix = $thousands === 1 ? 'MIL' : self::integerWords($thousands).' MIL';
+
+            return $prefix.($remainder > 0 ? ' '.self::integerWords($remainder) : '');
+        }
+
+        $millions = intdiv($value, 1_000_000);
+        $remainder = $value % 1_000_000;
+        $prefix = $millions === 1 ? 'UN MILLON' : self::integerWords($millions).' MILLONES';
+
+        return $prefix.($remainder > 0 ? ' '.self::integerWords($remainder) : '');
     }
 }

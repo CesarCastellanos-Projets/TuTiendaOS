@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, limit, onSnapshot, orderBy, query, setDoc, updateDoc } from 'firebase/firestore';
+import { limit, orderBy, query } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import { ArrowRight, Ban, Send } from 'lucide-react';
-import { db } from '../../lib/firebase';
-import { useAuth } from '../../lib/auth';
-import { deductTransferOrigin, restockCancelledTransfer } from '../../lib/inventory';
+import { tenantCollection } from '../../lib/tenant-firestore';
+import { cancelTransfer, createTransfer } from '../../lib/inventory';
 import { ProductLines, useProductSearch } from '../../components/ui/ProductPicker';
 import type { Store, Transfer, TransferStatus, Warehouse } from '../../types';
 import { fmtDateTime } from '../../lib/utils';
@@ -11,8 +11,6 @@ import { Modal } from '../../components/ui/Modal';
 import { EmptyState, FlashBar, useFlash } from '../../components/ui/Feedback';
 
 export function TransfersPage() {
-  const profile = useAuth((s) => s.profile)!;
-  const user = useAuth((s) => s.user);
   const [stores, setStores] = useState<Store[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [transfers, setTransfers] = useState<(Transfer & { id: string })[]>([]);
@@ -34,12 +32,23 @@ export function TransfersPage() {
   }, [warehouses, stores]);
 
   useEffect(() => {
-    onSnapshot(query(collection(db, 'stores'), limit(50)), (s) => setStores(s.docs.map((d) => ({ ...(d.data() as Store), id: d.id }))));
-    onSnapshot(query(collection(db, 'warehouses'), limit(50)), (s) => setWarehouses(s.docs.map((d) => ({ ...(d.data() as Warehouse), id: d.id }))));
-    return onSnapshot(
-      query(collection(db, 'transfers'), orderBy('createdAt', 'desc'), limit(100)),
+    const unStores = onSnapshot(
+      query(tenantCollection('stores'), limit(50)),
+      (s) => setStores(s.docs.map((d) => ({ ...(d.data() as Store), id: d.id })))
+    );
+    const unWarehouses = onSnapshot(
+      query(tenantCollection('warehouses'), limit(50)),
+      (s) => setWarehouses(s.docs.map((d) => ({ ...(d.data() as Warehouse), id: d.id })))
+    );
+    const unTransfers = onSnapshot(
+      query(tenantCollection('transfers'), orderBy('createdAt', 'desc'), limit(100)),
       (s) => setTransfers(s.docs.map((d) => ({ ...(d.data() as Transfer), id: d.id })))
     );
+    return () => {
+      unStores();
+      unWarehouses();
+      unTransfers();
+    };
   }, []);
 
   const shown = useMemo(
@@ -48,7 +57,7 @@ export function TransfersPage() {
   );
 
   const create = async () => {
-    if (!user || !fromId || !toId || lines.length === 0 || fromId === toId) {
+    if (!fromId || !toId || lines.length === 0 || fromId === toId) {
       flash('Error: selecciona origen, destino diferente y al menos un producto');
       return;
     }
@@ -60,33 +69,20 @@ export function TransfersPage() {
     }
 
     setBusy(true);
-    const code = `TR-${Date.now().toString(36).toUpperCase().slice(-6)}`;
     try {
-      await deductTransferOrigin({
+      const result = await createTransfer({
         fromLocationId: fromId,
-        items: lines.map((l) => ({ productId: l.productId, name: l.name, qtySent: l.qty })),
-        uid: user.uid,
-        userName: profile.displayName,
-        transferCode: code
-      });
-      await setDoc(doc(collection(db, 'transfers')), {
-        code,
-        fromLocationId: fromId,
-        fromLocationName: from.name,
+        fromLocationType: from.type,
         toLocationId: toId,
-        toLocationName: to.name,
-        status: 'pendiente',
-        items: lines.map((l) => ({ productId: l.productId, name: l.name, qtySent: l.qty, qtyReceived: 0 })),
-        createdBy: user.uid,
-        createdByName: profile.displayName,
-        createdAt: Date.now(),
+        toLocationType: to.type,
+        items: lines.map((l) => ({ productId: l.productId, qtySent: l.qty })),
         note: null
       });
       setCreating(false);
       setLines([]);
       setFromId('');
       setToId('');
-      flash(`Transferencia ${code} enviada de ${from.name} a ${to.name}`);
+      flash(`Transferencia ${result.code} enviada de ${from.name} a ${to.name}`);
     } catch (err) {
       flash(`Error: ${err instanceof Error ? err.message : 'no se pudo crear'}`);
     } finally {
@@ -95,22 +91,9 @@ export function TransfersPage() {
   };
 
   const cancel = async (t: Transfer & { id: string }) => {
-    if (!user) return;
     if (!confirm('¿Cancelar esta transferencia? El stock no recibido regresará al origen.')) return;
     try {
-      await updateDoc(doc(db, 'transfers', t.id), {
-        status: 'cancelado',
-        receivedBy: null,
-        receivedByName: null,
-        receivedAt: null
-      });
-      await restockCancelledTransfer({
-        fromLocationId: t.fromLocationId,
-        items: t.items,
-        uid: user.uid,
-        userName: profile.displayName,
-        transferCode: t.code
-      });
+      await cancelTransfer(t.id);
       flash(`Transferencia ${t.code} cancelada; stock devuelto a ${t.fromLocationName}`);
     } catch {
       flash('Error al cancelar la transferencia');

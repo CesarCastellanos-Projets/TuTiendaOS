@@ -149,8 +149,9 @@ export function App() {
   const init = useAuth((s) => s.init);
 
   useEffect(() => {
-    init();
+    const unsubscribe = init();
     void initAnalytics();
+    return unsubscribe;
   }, [init]);
 
   return (

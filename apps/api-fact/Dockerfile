@@ -31,6 +31,7 @@ RUN mkdir -p storage/framework/sessions \
              storage/framework/cache/data \
              storage/logs \
              storage/app/sunat \
+             storage/app/private \
              bootstrap/cache \
              database \
     && touch database/database.sqlite \
@@ -42,10 +43,12 @@ RUN composer install --no-dev --optimize-autoloader --no-interaction
 # Variables de entorno por defecto
 ENV APP_ENV=production
 ENV APP_DEBUG=false
-ENV APP_KEY=base64:e1sLw5r8gP+4Yp0q/8mP4Q2J5t3b1Z7n8M9k0L1v2X4=
-ENV API_FACT_TOKEN=cambia-este-token-largo-y-seguro
 ENV PORT=8000
 EXPOSE 8000
 
 # Script de arranque: migraciones y servidor Laravel
-CMD php artisan migrate --force && php artisan serve --host=0.0.0.0 --port=${PORT:-8000}
+CMD test -n "$APP_KEY" && test -n "$API_FACT_TOKEN" \
+    && mkdir -p "${SUNAT_STORAGE_ROOT:-/var/www/storage/app/private}" "${SUNAT_CONFIG_DIR:-/var/www/storage/app/sunat}" "$(dirname "${DB_DATABASE:-/var/www/database/database.sqlite}")" \
+    && touch "${DB_DATABASE:-/var/www/database/database.sqlite}" \
+    && php artisan migrate --force \
+    && php artisan serve --host=0.0.0.0 --port=${PORT:-8000}

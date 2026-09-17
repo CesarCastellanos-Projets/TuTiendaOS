@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
-import { collection, doc, onSnapshot, query, setDoc, limit, deleteDoc } from 'firebase/firestore';
+import { doc, query, setDoc, limit, deleteDoc } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import { Building2, Plus, Warehouse as WarehouseIcon, Trash2 } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { requireCurrentTenantId, tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
 import { clean } from '../../lib/utils';
 import type { Store, Warehouse } from '../../types';
 import { Modal } from '../../components/ui/Modal';
@@ -18,9 +19,9 @@ export function LocationsPage() {
   const { msg, flash } = useFlash();
 
   useEffect(() => {
-    const qs = query(collection(db, 'stores'), limit(50));
+    const qs = query(tenantCollection('stores'), limit(50));
     const un1 = onSnapshot(qs, (s) => setStores(s.docs.map((d) => ({ ...(d.data() as Store), id: d.id }))));
-    const qw = query(collection(db, 'warehouses'), limit(50));
+    const qw = query(tenantCollection('warehouses'), limit(50));
     const un2 = onSnapshot(qw, (s) => setWarehouses(s.docs.map((d) => ({ ...(d.data() as Warehouse), id: d.id }))));
     return () => {
       un1();
@@ -69,7 +70,7 @@ export function LocationsPage() {
                     className="text-critical hover:opacity-70"
                     onClick={() => {
                       if (confirm(`¿Eliminar la tienda ${s.name}? Los usuarios asignados quedarán sin tienda.`)) {
-                        void deleteDoc(doc(db, 'stores', s.id)).catch(() => flash('Error al eliminar'));
+                        void deleteDoc(tenantDoc('stores', s.id)).catch(() => flash('Error al eliminar'));
                       }
                     }}
                   >
@@ -97,7 +98,7 @@ export function LocationsPage() {
                     className="text-critical hover:opacity-70"
                     onClick={() => {
                       if (confirm(`¿Eliminar el almacén ${w.name}?`)) {
-                        void deleteDoc(doc(db, 'warehouses', w.id)).catch(() => flash('Error al eliminar'));
+                        void deleteDoc(tenantDoc('warehouses', w.id)).catch(() => flash('Error al eliminar'));
                       }
                     }}
                   >
@@ -121,12 +122,13 @@ export function LocationsPage() {
             e.preventDefault();
             const fd = new FormData(e.currentTarget);
             const data = {
+              tenantId: requireCurrentTenantId(),
               name: clean(fd.get('name')),
               code: (clean(fd.get('code')) || '').toUpperCase(),
               address: clean(fd.get('address'))
             };
             if (!data.name || !data.code) return flash('Error: nombre y código son obligatorios');
-            const ref = editingStore && stores.some((s) => s.id === editingStore.id) ? doc(db, 'stores', editingStore.id) : doc(collection(db, 'stores'));
+            const ref = editingStore && stores.some((s) => s.id === editingStore.id) ? tenantDoc('stores', editingStore.id) : doc(tenantCollection('stores'));
             void setDoc(ref, data).then(() => {
               setCreatingStore(false);
               setEditingStore(null);
@@ -157,12 +159,13 @@ export function LocationsPage() {
             e.preventDefault();
             const fd = new FormData(e.currentTarget);
             const data = {
+              tenantId: requireCurrentTenantId(),
               name: clean(fd.get('name')),
               code: (clean(fd.get('code')) || '').toUpperCase(),
               isCentral: fd.get('isCentral') === 'on'
             };
             if (!data.name || !data.code) return flash('Error: nombre y código son obligatorios');
-            const ref = editingWh && warehouses.some((w) => w.id === editingWh.id) ? doc(db, 'warehouses', editingWh.id) : doc(collection(db, 'warehouses'));
+            const ref = editingWh && warehouses.some((w) => w.id === editingWh.id) ? tenantDoc('warehouses', editingWh.id) : doc(tenantCollection('warehouses'));
             void setDoc(ref, data).then(() => {
               setCreatingWh(false);
               setEditingWh(null);

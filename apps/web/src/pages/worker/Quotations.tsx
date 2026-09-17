@@ -1,15 +1,14 @@
 import { useState, useMemo, useEffect } from 'react';
 import {
-  collection,
   doc,
   getDocs,
   limit,
-  onSnapshot,
   orderBy,
   query,
   setDoc,
   where
 } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import {
   Calculator,
   Camera,
@@ -33,7 +32,7 @@ import {
   X,
   AlertCircle
 } from 'lucide-react';
-import { db } from '../../lib/firebase';
+import { tenantCollection } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import { useStoreCatalog, useCatalogSearch, findInCatalog } from '../../hooks/useStoreCatalog';
 import { useScanner } from '../../hooks/useScanner';
@@ -103,7 +102,8 @@ export function WorkerQuotations() {
   // Suscripción a cotizaciones recientes
   useEffect(() => {
     const q = query(
-      collection(db, 'quotations'),
+      tenantCollection('quotations'),
+      where('storeId', '==', storeId),
       orderBy('createdAt', 'desc'),
       limit(50)
     );
@@ -115,7 +115,7 @@ export function WorkerQuotations() {
       },
       () => setLoadingQuotes(false)
     );
-  }, []);
+  }, [storeId]);
 
   // Búsqueda de productos
   const searchResults = term.trim().length >= 1 ? searchIn(term) : [];
@@ -212,7 +212,7 @@ export function WorkerQuotations() {
     setOtherStocks([]);
     try {
       const q = query(
-        collection(db, 'product_stocks'),
+        tenantCollection('product_stocks'),
         where('productId', '==', productId)
       );
       const snap = await getDocs(q);
@@ -249,7 +249,7 @@ export function WorkerQuotations() {
     try {
       const quoteCode = `COT-${Date.now().toString().slice(-6)}`;
       const storeName = catalog[0]?.locationName ?? 'Tienda Principal';
-      const quoteRef = doc(collection(db, 'quotations'));
+      const quoteRef = doc(tenantCollection('quotations'));
 
       const cleanItems: QuotationItem[] = items.map((i) => ({
         productId: i.productId,
@@ -264,6 +264,7 @@ export function WorkerQuotations() {
       }));
 
       const quoteData: Quotation = {
+        tenantId: profile.tenantId,
         id: quoteRef.id,
         code: quoteCode,
         clientName: clientName.trim() || 'Cliente Cotización',

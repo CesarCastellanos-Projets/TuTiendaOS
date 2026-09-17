@@ -3,9 +3,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "seed": "node seed.mjs"
+    "seed": "node seed.mjs",
+    "migrate:tenants": "node migrate-to-tenants.mjs",
+    "test:rules": "node --test firestore-rules.test.mjs",
+    "test:functions": "node --test functions-inventory.test.mjs",
+    "test:fiscal": "node --test fiscal-payload.test.mjs"
   },
   "dependencies": {
     "firebase-admin": "^12.7.0"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^11.0.2"
   }
 }

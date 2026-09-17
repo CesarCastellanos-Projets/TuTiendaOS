@@ -1,15 +1,13 @@
 import { useEffect, useState } from 'react';
-import { collection, onSnapshot, query, limit } from 'firebase/firestore';
-import { db } from '../../lib/firebase';
-import { useAuth } from '../../lib/auth';
+import { query, limit } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
+import { tenantCollection } from '../../lib/tenant-firestore';
 import { ingressStock } from '../../lib/inventory';
 import { ProductLines, useProductSearch, type PickLine } from '../../components/ui/ProductPicker';
 import type { Store, Warehouse } from '../../types';
 import { FlashBar, useFlash } from '../../components/ui/Feedback';
 
 export function IngressPage() {
-  const profile = useAuth((s) => s.profile)!;
-  const user = useAuth((s) => s.user);
   const [locations, setLocations] = useState<{ id: string; name: string; kind: 'store' | 'warehouse' }[]>([]);
   const [locationId, setLocationId] = useState('');
   const [lines, setLines] = useState<PickLine[]>([]);
@@ -18,13 +16,13 @@ export function IngressPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const un1 = onSnapshot(query(collection(db, 'stores'), limit(50)), (s) =>
+    const un1 = onSnapshot(query(tenantCollection('stores'), limit(50)), (s) =>
       setLocations((prev) => [
         ...prev.filter((p) => p.kind !== 'store'),
         ...s.docs.map((d) => ({ id: d.id, name: (d.data() as Store).name, kind: 'store' as const }))
       ])
     );
-    const un2 = onSnapshot(query(collection(db, 'warehouses'), limit(50)), (s) =>
+    const un2 = onSnapshot(query(tenantCollection('warehouses'), limit(50)), (s) =>
       setLocations((prev) => [
         ...prev.filter((p) => p.kind !== 'warehouse'),
         ...s.docs.map((d) => ({ id: d.id, name: (d.data() as Warehouse).name, kind: 'warehouse' as const }))
@@ -42,19 +40,13 @@ export function IngressPage() {
       return;
     }
     const loc = locations.find((l) => l.id === locationId);
-    if (!loc || !user) return;
+    if (!loc) return;
     setBusy(true);
     try {
       await ingressStock({
         locationId,
         locationType: loc.kind,
-        locationName: loc.name,
-        items: lines.map((l) => ({
-          product: { id: l.productId, name: l.name, barcode: l.barcode, salePrice: l.salePrice },
-          qty: l.qty
-        })),
-        uid: user.uid,
-        userName: profile.displayName
+        items: lines.map((l) => ({ productId: l.productId, qty: l.qty }))
       });
       setLines([]);
       flash(`Ingreso registrado: ${lines.length} productos a ${loc.name}`);

@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react';
 import {
-  collection,
   doc,
   getDoc,
   limit,
-  onSnapshot,
   orderBy,
   query,
   setDoc,
   where
 } from 'firebase/firestore';
-import { db, storage } from '../../lib/firebase';
+import { onSnapshot } from '../../lib/firestore-listener';
+import { storage } from '../../lib/firebase';
+import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { useAuth } from '../../lib/auth';
 import type { Incident, IncidentType } from '../../types';
@@ -37,7 +37,7 @@ export function IncidentsWorkerPage() {
     if (!profile.storeId) return;
     return onSnapshot(
       query(
-        collection(db, 'incidents'),
+        tenantCollection('incidents'),
         where('storeId', '==', profile.storeId),
         orderBy('createdAt', 'desc'),
         limit(50)
@@ -111,7 +111,7 @@ export function IncidentFormModal({
 
   useEffect(() => {
     if (!profile.storeId) return;
-    void getDoc(doc(db, 'stores', profile.storeId)).then((s) => {
+    void getDoc(tenantDoc('stores', profile.storeId)).then((s) => {
       if (s.exists()) setStoreName((s.data() as { name: string }).name);
     });
   }, [profile.storeId]);
@@ -125,12 +125,13 @@ export function IncidentFormModal({
     try {
       let photoUrl: string | null = null;
       if (file && file.size <= 5 * 1024 * 1024) {
-        const path = `incidents/${user.uid}/${Date.now()}_${file.name}`;
+        const path = `tenants/${profile.tenantId}/incidents/${user.uid}/${Date.now()}_${file.name}`;
         const storageRef = ref(storage, path);
         await uploadBytes(storageRef, file);
         photoUrl = await getDownloadURL(storageRef);
       }
-      await setDoc(doc(collection(db, 'incidents')), {
+      await setDoc(doc(tenantCollection('incidents')), {
+        tenantId: profile.tenantId,
         storeId: profile.storeId,
         storeName,
         productId: preset?.productId ?? null,

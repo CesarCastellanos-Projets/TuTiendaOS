@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
-import { collection, doc, limit, onSnapshot, query, setDoc } from 'firebase/firestore';
+import { collection, doc, limit, query, updateDoc, where } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import { Plus } from 'lucide-react';
 import { db } from '../../lib/firebase';
+import { useAuth } from '../../lib/auth';
+import { tenantCollection } from '../../lib/tenant-firestore';
 import type { NewUserPayload, Role, Store, UserProfile } from '../../types';
 import { createSystemUser } from '../../lib/admin-users';
 import { clean } from '../../lib/utils';
@@ -20,15 +23,17 @@ export function UsersPage() {
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
   const { msg, flash } = useFlash();
+  const tenantId = useAuth((state) => state.profile?.tenantId);
 
   useEffect(() => {
-    return onSnapshot(query(collection(db, 'users'), limit(100)), (s) =>
+    if (!tenantId) return;
+    return onSnapshot(query(collection(db, 'users'), where('tenantId', '==', tenantId), limit(100)), (s) =>
       setUsers(s.docs.map((d) => ({ ...(d.data() as UserProfile), id: d.id })))
     );
-  }, []);
+  }, [tenantId]);
 
   useEffect(() => {
-    return onSnapshot(query(collection(db, 'stores'), limit(50)), (s) =>
+    return onSnapshot(query(tenantCollection('stores'), limit(50)), (s) =>
       setStores(s.docs.map((d) => ({ ...(d.data() as Store), id: d.id })))
     );
   }, []);
@@ -66,7 +71,7 @@ export function UsersPage() {
 
   const toggleActive = async (u: UserProfile & { id: string }) => {
     try {
-      await setDoc(doc(db, 'users', u.id), { ...u, active: !u.active });
+      await updateDoc(doc(db, 'users', u.id), { active: !u.active });
       flash(u.active ? `${u.displayName} desactivado` : `${u.displayName} activado`);
     } catch {
       flash('Error al actualizar');

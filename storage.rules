@@ -2,36 +2,34 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
-
-    function signedIn() {
-      return request.auth != null;
+    function signedIn() { return request.auth != null; }
+    function profile() { return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)); }
+    function activeUser() {
+      return signedIn() && profile().data.active == true && profile().data.tenantId is string;
+    }
+    function belongsToTenant(tenantId) {
+      return activeUser() && profile().data.tenantId == tenantId;
+    }
+    function isAdmin(tenantId) {
+      return belongsToTenant(tenantId) && profile().data.role == 'admin';
     }
 
-    function isAdmin() {
-      return signedIn()
-        && firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role == 'admin';
-    }
-
-    // Fotos de incidencias reportadas desde el piso
-    match /incidents/{userId}/{fileName} {
-      allow read: if signedIn();
-      allow create: if signedIn() && request.auth.uid == userId
+    match /tenants/{tenantId}/incidents/{userId}/{fileName} {
+      allow read: if belongsToTenant(tenantId);
+      allow create: if belongsToTenant(tenantId) && request.auth.uid == userId
         && request.resource.size <= 5 * 1024 * 1024
         && request.resource.contentType.matches('image/.*');
-      allow update, delete: if isAdmin();
+      allow update, delete: if isAdmin(tenantId);
     }
 
-    // Certificado digital SUNAT: solo Admin sube; el microservicio lee vía Admin SDK
-    match /certificates/{fileName} {
-      allow read: if isAdmin();
-      allow create: if isAdmin()
+    match /tenants/{tenantId}/certificates/{fileName} {
+      allow read: if isAdmin(tenantId);
+      allow create: if isAdmin(tenantId)
         && request.resource.size <= 2 * 1024 * 1024
         && request.resource.contentType.matches('application/(x-pkcs12|octet-stream|pkix-cert).*');
-      allow update, delete: if isAdmin();
+      allow update, delete: if isAdmin(tenantId);
     }
 
-    match /{allPaths=**} {
-      allow read, write: if false;
-    }
+    match /{allPaths=**} { allow read, write: if false; }
   }
 }

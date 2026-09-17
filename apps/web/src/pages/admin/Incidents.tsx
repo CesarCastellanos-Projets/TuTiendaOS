@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { collection, doc, limit, onSnapshot, orderBy, query, updateDoc } from 'firebase/firestore';
-import { db } from '../../lib/firebase';
+import { limit, orderBy, query, updateDoc } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
+import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import type { Incident, IncidentStatus } from '../../types';
 import { fmtDateTime } from '../../lib/utils';
@@ -24,7 +25,7 @@ export function IncidentsAdminPage() {
   const { msg, flash } = useFlash();
 
   useEffect(() => {
-    const q = query(collection(db, 'incidents'), orderBy('createdAt', 'desc'), limit(100));
+    const q = query(tenantCollection('incidents'), orderBy('createdAt', 'desc'), limit(100));
     return onSnapshot(q, (s) => {
       const all = s.docs.map((d) => ({ ...(d.data() as Incident), id: d.id }));
       setIncidents(all.filter((x) => x.status === filter));
@@ -36,7 +37,7 @@ export function IncidentsAdminPage() {
     if (!user || !resolving) return;
     const fd = new FormData(e.currentTarget);
     try {
-      await updateDoc(doc(db, 'incidents', resolving.id), {
+      await updateDoc(tenantDoc('incidents', resolving.id), {
         status: 'resuelta',
         resolutionNote: (fd.get('note') as string ?? '').trim(),
         resolvedBy: user.uid,

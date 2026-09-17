@@ -1,6 +1,7 @@
 export type Role = 'admin' | 'pos' | 'trabajador';
 
 export interface UserProfile {
+  tenantId: string;
   displayName: string;
   email: string;
   role: Role;
@@ -28,6 +29,7 @@ export interface ProductPresentation {
 }
 
 export interface Product {
+  tenantId?: string;
   name: string;
   category: string;
   brand?: string;
@@ -67,6 +69,7 @@ export type AnyLocation = (
 );
 
 export interface ProductStock {
+  tenantId?: string;
   productId: string;
   productName: string;
   barcode?: string | null;
@@ -82,6 +85,7 @@ export interface ProductStock {
 export type MovementType = 'venta' | 'ingreso' | 'transferencia' | 'ajuste' | 'merma' | 'recepcion';
 
 export interface StockMovement {
+  tenantId?: string;
   type: MovementType;
   productId: string;
   productName: string;
@@ -106,6 +110,7 @@ export interface TransferItem {
 export type TransferStatus = 'pendiente' | 'en_transito' | 'recibido' | 'cancelado';
 
 export interface Transfer {
+  tenantId?: string;
   code: string;
   fromLocationId: string;
   fromLocationName: string;
@@ -132,6 +137,7 @@ export interface ReplenishmentItem {
 export type ReplenishmentStatus = 'pendiente' | 'atendida' | 'rechazada';
 
 export interface ReplenishmentRequest {
+  tenantId?: string;
   storeId: string;
   storeName: string;
   items: ReplenishmentItem[];
@@ -146,6 +152,7 @@ export type IncidentType = 'danado' | 'vencido' | 'sin_etiqueta' | 'sin_codigo' 
 export type IncidentStatus = 'abierta' | 'resuelta';
 
 export interface Incident {
+  tenantId?: string;
   storeId: string;
   storeName: string;
   productId?: string;
@@ -181,7 +188,7 @@ export interface SaleItem {
 }
 
 export type PaymentMethod = 'efectivo' | 'transferencia' | 'tarjeta' | 'yape' | 'plin' | 'sip' | 'otro';
-export type SunatStatus = 'no_enviado' | 'pendiente' | 'aceptado' | 'rechazado' | 'observado' | 'no_aplica';
+export type SunatStatus = 'no_enviado' | 'pendiente' | 'aceptado' | 'rechazado' | 'observado' | 'error' | 'no_aplica';
 
 export interface AnulationRequest {
   reason: string;
@@ -190,7 +197,10 @@ export interface AnulationRequest {
   requestedAt: number;
 }
 
+export type AnulationStatus = 'solicitada' | 'nc_pendiente' | 'anulada' | 'error';
+
 export interface Sale {
+  tenantId?: string;
   code: string;
   serie: string;
   correlativo: number;
@@ -210,15 +220,25 @@ export interface Sale {
   paidAmount: number;
   changeAmount: number;
   consolidated: boolean;
+  igvRate?: number;
+  minBoletaSinDni?: number;
   sunatStatus: SunatStatus;
   sunatMessage?: string | null;
+  sunatSummaryRef?: string | null;
   status: 'activa' | 'anulada';
   cashSessionId?: string | null;
   anulationRequest?: AnulationRequest | null;
+  anulationStatus?: AnulationStatus | null;
+  creditNoteStatus?: 'pendiente' | 'aceptado' | 'rechazado' | 'observado' | 'requiere_revision' | 'error' | null;
+  creditNoteMessage?: string | null;
+  creditNoteRef?: string | null;
+  creditNoteSerie?: string | null;
+  creditNoteCorrelativo?: number | null;
   createdAt: number;
 }
 
 export interface CashSession {
+  tenantId?: string;
   storeId: string;
   userId: string;
   userName: string;
@@ -243,14 +263,10 @@ export interface CompanyConfig {
   igvRate: number;
   minBoletaSinDni: number;
   umbralConsolidacion: number;
-  solUser?: string;
-  solPassword?: string;
   certFileName?: string;
   certExpiresAt?: string;
   certIssuer?: string;
   isDemoMode?: boolean;
-  apiFactUrl?: string;
-  apiFactToken?: string;
   // Personalización de Ticket
   logoUrl?: string;
   slogan?: string;
@@ -271,10 +287,6 @@ export const DEFAULT_COMPANY: CompanyConfig = {
   igvRate: 0.18,
   minBoletaSinDni: 700,
   umbralConsolidacion: 5,
-  solUser: 'MODDATOS',
-  solPassword: 'MODDATOS',
-  apiFactUrl: 'https://denzoz-api-fact.onrender.com',
-  apiFactToken: 'cambia-este-token-largo-y-seguro',
   isDemoMode: true,
   slogan: 'Calidad y confianza en cada compra',
   footerText: '¡Gracias por su preferencia!',
@@ -295,6 +307,7 @@ export interface QuotationItem {
 }
 
 export interface Quotation {
+  tenantId?: string;
   id: string;
   code: string;
   clientName?: string;

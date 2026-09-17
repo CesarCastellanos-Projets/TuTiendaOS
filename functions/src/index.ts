@@ -1,23 +1,38 @@
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import { defineSecret } from 'firebase-functions/params';
-import * as admin from 'firebase-admin';
+import { admin, db } from './firebase';
+import { requireActiveProfile, requireAdmin } from './authz';
+import { tenantCollection } from './tenant';
 
 setGlobalOptions({ region: 'us-central1', maxInstances: 10 });
-admin.initializeApp();
-
-const db = admin.firestore();
 const APISPERU_TOKEN = defineSecret('APISPERU_TOKEN');
+
+export { createSaleRecord, getCompanyConfig, receiveTransfer } from './operations';
+export {
+  adjustInventory,
+  attendReplenishmentRequest,
+  cancelInventoryTransfer,
+  createInventoryTransfer,
+  recordStockIngress,
+  rejectReplenishmentRequest
+} from './inventory';
+export {
+  activateSunatDemoMode,
+  saveSunatCredentials,
+  sendCreditNoteToSunat,
+  sendDailySummaryToSunat,
+  sendNewSaleToSunat,
+  sendSaleToSunat,
+  sendVoidedToSunat,
+  retryPendingSunatSales,
+  taxHealthCheck,
+  uploadSunatCertificate
+} from './tax';
 
 /** Crea usuario de Auth + perfil en Firestore. Solo Admin puede llamar. */
 export const createUser = onCall(async (request) => {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
-  }
-  const caller = await db.doc(`users/${request.auth.uid}`).get();
-  if (caller.data()?.role !== 'admin') {
-    throw new HttpsError('permission-denied', 'Solo el administrador crea usuarios.');
-  }
+  const profile = await requireAdmin(request);
 
   const { email, password, displayName, role, storeId } = request.data as {
     email?: string;
@@ -46,12 +61,17 @@ export const createUser = onCall(async (request) => {
   });
 
   await db.doc(`users/${userRecord.uid}`).set({
+    tenantId: profile.tenantId,
     displayName,
     email,
     role,
     storeId: storeId ?? null,
     active: true,
     createdAt: Date.now()
+  });
+  await admin.auth().setCustomUserClaims(userRecord.uid, {
+    tenantId: profile.tenantId,
+    role
   });
 
   return { uid: userRecord.uid };
@@ -64,6 +84,7 @@ export const lookupClient = onCall(
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
     }
+    const profile = await requireActiveProfile(request);
     const { type, number } = request.data as { type?: 'dni' | 'ruc'; number?: string };
     if ((type !== 'dni' && type !== 'ruc') || !number || !/^\d{8}$|^\d{11}$/.test(number)) {
       throw new HttpsError('invalid-argument', 'Documento inválido.');
@@ -73,7 +94,8 @@ export const lookupClient = onCall(
 
     // Caché primero: cero costo de API
     const cacheId = `${type === 'dni' ? 'DNI' : 'RUC'}-${number}`;
-    const cached = await db.collection('clients').doc(cacheId).get();
+    const clients = tenantCollection(profile.tenantId, 'clients');
+    const cached = await clients.doc(cacheId).get();
     if (cached.exists) {
       return cached.data();
     }
@@ -112,7 +134,7 @@ export const lookupClient = onCall(
       direccion: data.direccion ?? null,
       updatedAt: Date.now()
     };
-    await db.collection('clients').doc(cacheId).set(result);
+    await clients.doc(cacheId).set({ ...result, tenantId: profile.tenantId });
     return result;
   }
 );

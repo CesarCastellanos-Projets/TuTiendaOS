@@ -1,16 +1,14 @@
 import { useEffect, useState } from 'react';
-import { collection, doc, limit, onSnapshot, orderBy, query, updateDoc, where, getDocs, addDoc } from 'firebase/firestore';
+import { limit, orderBy, query, where, getDocs } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import { CheckCircle2, XCircle } from 'lucide-react';
-import { db } from '../../lib/firebase';
-import { useAuth } from '../../lib/auth';
-import type { ReplenishmentRequest, Warehouse } from '../../types';
+import { tenantCollection } from '../../lib/tenant-firestore';
+import type { ReplenishmentRequest } from '../../types';
 import { fmtDateTime } from '../../lib/utils';
-import { deductTransferOrigin } from '../../lib/inventory';
+import { attendReplenishment, rejectReplenishment } from '../../lib/inventory';
 import { EmptyState, FlashBar, useFlash } from '../../components/ui/Feedback';
 
 export function ReplenishmentAdminPage() {
-  const profile = useAuth((s) => s.profile)!;
-  const user = useAuth((s) => s.user);
   const [requests, setRequests] = useState<(ReplenishmentRequest & { id: string })[]>([]);
   const [centralWhId, setCentralWhId] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -18,7 +16,7 @@ export function ReplenishmentAdminPage() {
 
   useEffect(() => {
     const un1 = onSnapshot(
-      query(collection(db, 'replenishment_requests'), orderBy('createdAt', 'desc'), limit(100)),
+      query(tenantCollection('replenishment_requests'), orderBy('createdAt', 'desc'), limit(100)),
       (s) => {
         const list = s.docs
           .map((d) => ({ ...(d.data() as ReplenishmentRequest), id: d.id }))
@@ -26,31 +24,22 @@ export function ReplenishmentAdminPage() {
         setRequests(list);
       }
     );
-    getDocs(query(collection(db, 'warehouses'), where('isCentral', '==', true), limit(1))).then((s) => {
+    getDocs(query(tenantCollection('warehouses'), where('isCentral', '==', true), limit(1))).then((s) => {
       if (!s.empty) setCentralWhId(s.docs[0].id);
     });
     return () => un1();
   }, []);
 
   const attend = async (r: ReplenishmentRequest & { id: string }) => {
-    if (!user || !centralWhId) {
+    if (!centralWhId) {
       flash('Error: no hay almacén central configurado');
       return;
     }
     if (!confirm(`¿Crear transferencia del almacén central a ${r.storeName} y marcar como atendida?`)) return;
     setBusyId(r.id);
-    const code = `RP-${Date.now().toString(36).toUpperCase().slice(-6)}`;
     try {
-      await deductTransferOrigin({
-        fromLocationId: centralWhId,
-        items: r.items.map((i) => ({ productId: i.productId, name: i.name, qtySent: i.requestedQty })),
-        uid: user.uid,
-        userName: profile.displayName,
-        transferCode: code
-      });
-      await addTransferDoc(code, r, user.uid, profile.displayName);
-      await updateDoc(doc(db, 'replenishment_requests', r.id), { status: 'atendida' });
-      flash(`Solicitud atendida: transferencia ${code}`);
+      const result = await attendReplenishment({ requestId: r.id, warehouseId: centralWhId });
+      flash(`Solicitud atendida: transferencia ${result.code}`);
     } catch (err) {
       flash(`Error: ${err instanceof Error ? err.message : 'no se pudo atender'}`);
     } finally {
@@ -61,7 +50,7 @@ export function ReplenishmentAdminPage() {
   const reject = async (r: ReplenishmentRequest & { id: string }) => {
     if (!confirm('¿Rechazar esta solicitud?')) return;
     try {
-      await updateDoc(doc(db, 'replenishment_requests', r.id), { status: 'rechazada' });
+      await rejectReplenishment(r.id);
     } catch {
       flash('Error al rechazar');
     }
@@ -114,28 +103,4 @@ export function ReplenishmentAdminPage() {
       <FlashBar msg={msg} />
     </div>
   );
-}
-
-async function addTransferDoc(
-  code: string,
-  r: ReplenishmentRequest,
-  uid: string,
-  userName: string
-): Promise<void> {
-  const whSnap = await getDocs(query(collection(db, 'warehouses'), where('isCentral', '==', true), limit(1)));
-  const central = whSnap.empty ? null : { id: whSnap.docs[0].id, name: (whSnap.docs[0].data() as Warehouse).name };
-  if (!central) throw new Error('No hay almacén central configurado');
-  await addDoc(collection(db, 'transfers'), {
-    code,
-    fromLocationId: central.id,
-    fromLocationName: central.name,
-    toLocationId: r.storeId,
-    toLocationName: r.storeName,
-    status: 'pendiente',
-    items: r.items.map((i) => ({ productId: i.productId, name: i.name, qtySent: i.requestedQty, qtyReceived: 0 })),
-    createdBy: uid,
-    createdByName: userName,
-    createdAt: Date.now(),
-    note: `Reposición solicitada por ${r.createdByName}`
-  });
 }

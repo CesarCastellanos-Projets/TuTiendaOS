@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, limit, onSnapshot, orderBy, query, updateDoc } from 'firebase/firestore';
+import { limit, orderBy, query } from 'firebase/firestore';
+import { onSnapshot } from '../../lib/firestore-listener';
 import { CheckCircle2, Download, RefreshCw, Send, Layers } from 'lucide-react';
-import { db } from '../../lib/firebase';
-import { useAuth } from '../../lib/auth';
+import { tenantCollection } from '../../lib/tenant-firestore';
 import type { Sale, SunatStatus } from '../../types';
 import { fmtDateTime, money } from '../../lib/utils';
 import { sendToSunat, sendCreditNote, sendDailySummary } from '../../services/sunat';
@@ -11,7 +11,6 @@ import { FlashBar, useFlash } from '../../components/ui/Feedback';
 type Filter = SunatStatus | 'todos' | 'anulaciones';
 
 export function ReceiptsPage() {
-  const profile = useAuth((s) => s.profile)!;
   const [filter, setFilter] = useState<Filter>('rechazado');
   const [sales, setSales] = useState<(Sale & { id: string })[]>([]);
   const [busyBatch, setBusyBatch] = useState(false);
@@ -19,7 +18,7 @@ export function ReceiptsPage() {
 
   useEffect(() => {
     const q = query(
-      collection(db, 'sales'),
+      tenantCollection('sales'),
       orderBy('createdAt', 'desc'),
       limit(200)
     );
@@ -40,14 +39,10 @@ export function ReceiptsPage() {
     if (!req) return;
     if (!confirm(`¿Autorizar anulación de ${sale.code}? Se emitirá nota de crédito vía Greenter.`)) return;
     try {
-      await updateDoc(doc(db, 'sales', sale.id), {
-        status: 'anulada',
-        sunatStatus: 'pendiente',
-        sunatMessage: 'Nota de crédito en proceso',
-        anulationAuthorizedBy: profile.displayName
-      });
-      void sendCreditNote(sale.id, sale);
-      flash(`${sale.code} anulada; nota de crédito en proceso`);
+      const result = await sendCreditNote(sale.id);
+      flash(result.status === 'aceptado'
+        ? `${sale.code} anulada; nota de crédito aceptada`
+        : `${sale.code}: ${result.message || 'la nota de crédito quedó pendiente'}`);
     } catch {
       flash('Error al autorizar');
     }
@@ -55,11 +50,13 @@ export function ReceiptsPage() {
 
   const retrySunat = async (sale: Sale & { id: string }) => {
     flash(`Reenviando ${sale.code} a SUNAT…`);
-    await sendToSunat(sale.id, sale);
+    await sendToSunat(sale.id);
   };
 
   const retryAllPending = async () => {
-    const pendingSales = sales.filter((s) => s.status === 'activa' && (s.sunatStatus === 'pendiente' || s.sunatStatus === 'no_enviado'));
+    const pendingSales = sales.filter(
+      (s) => !s.consolidated && s.status === 'activa' && (s.sunatStatus === 'pendiente' || s.sunatStatus === 'no_enviado')
+    );
     if (pendingSales.length === 0) {
       flash('No hay comprobantes pendientes para reenviar');
       return;
@@ -68,7 +65,7 @@ export function ReceiptsPage() {
     flash(`Reenviando lote de ${pendingSales.length} comprobantes…`);
     try {
       for (const s of pendingSales) {
-        await sendToSunat(s.id, s);
+        await sendToSunat(s.id);
       }
       flash(`Lote de ${pendingSales.length} comprobantes procesado`);
     } catch {
@@ -81,7 +78,7 @@ export function ReceiptsPage() {
   const createDailySummary = async () => {
     const todayStr = new Date().toISOString().slice(0, 10);
     const boletasToday = sales.filter(
-      (s) => s.type === 'boleta' && s.status === 'activa' && new Date(s.createdAt).toISOString().startsWith(todayStr)
+      (s) => s.type === 'boleta' && s.consolidated && s.status === 'activa' && new Date(s.createdAt).toISOString().startsWith(todayStr)
     );
     if (boletasToday.length === 0) {
       flash('No hay boletas registradas hoy para consolidar');
@@ -91,10 +88,7 @@ export function ReceiptsPage() {
 
     setBusyBatch(true);
     try {
-      const res = await sendDailySummary(
-        todayStr,
-        boletasToday.map((b) => ({ serie: b.serie, correlativo: b.correlativo, total: b.total }))
-      );
+      const res = await sendDailySummary(todayStr);
       flash(res.message);
     } finally {
       setBusyBatch(false);
@@ -134,7 +128,9 @@ export function ReceiptsPage() {
 
   const totals = useMemo(() => sales.reduce((s, x) => s + x.total, 0), [sales]);
   const pendingCount = useMemo(
-    () => sales.filter((s) => s.status === 'activa' && (s.sunatStatus === 'pendiente' || s.sunatStatus === 'no_enviado')).length,
+    () => sales.filter(
+      (s) => !s.consolidated && s.status === 'activa' && (s.sunatStatus === 'pendiente' || s.sunatStatus === 'no_enviado')
+    ).length,
     [sales]
   );
 
@@ -174,6 +170,7 @@ export function ReceiptsPage() {
           <select className="field !min-h-9 w-52" value={filter} onChange={(e) => setFilter(e.target.value as Filter)}>
             <option value="rechazado">Rechazados por SUNAT</option>
             <option value="observado">Observados</option>
+            <option value="error">Errores de integridad</option>
             <option value="pendiente">Pendientes de envío</option>
             <option value="todos">Todos los estados</option>
             <option value="anulaciones">Solicitudes de anulación</option>
@@ -217,9 +214,9 @@ export function ReceiptsPage() {
                   <td className="td whitespace-nowrap text-right">
                     {s.anulationRequest && s.status === 'activa' ? (
                       <button className="btn-danger !min-h-8 !px-2 !py-1 text-xs" onClick={() => void authorizeAnulation(s)}>
-                        Autorizar anulación ({s.anulationRequest.reason})
+                        {s.anulationStatus === 'solicitada' ? 'Autorizar anulación' : 'Reintentar nota'} ({s.anulationRequest.reason})
                       </button>
-                    ) : (s.sunatStatus === 'pendiente' || s.sunatStatus === 'no_enviado' || s.sunatStatus === 'rechazado') && s.status === 'activa' ? (
+                    ) : !s.consolidated && (s.sunatStatus === 'pendiente' || s.sunatStatus === 'no_enviado' || s.sunatStatus === 'rechazado') && s.status === 'activa' ? (
                       <button className="btn-ghost !min-h-8 !px-2 !py-1 text-xs" onClick={() => void retrySunat(s)}>
                         <Send size={12} className="inline mr-1" /> Reenviar
                       </button>
@@ -242,10 +239,12 @@ export function ReceiptsPage() {
 
 function StatusBadge({ sale }: { sale: Sale }) {
   if (sale.status === 'anulada') return <span className="badge bg-slate-100 text-slate-500">anulada</span>;
+  if (sale.consolidated) return <span className="badge bg-violet-50 text-violet-700">para resumen</span>;
   const map: Record<SunatStatus, string> = {
     aceptado: 'bg-emerald-50 text-success',
     rechazado: 'bg-red-50 text-critical',
     observado: 'bg-amber-100 text-amber-800',
+    error: 'bg-red-50 text-critical',
     pendiente: 'bg-blue-50 text-blue-600',
     no_enviado: 'bg-slate-100 text-slate-500',
     no_aplica: 'bg-slate-100 text-slate-600'
@@ -257,4 +256,3 @@ function StatusBadge({ sale }: { sale: Sale }) {
     </span>
   );
 }
-

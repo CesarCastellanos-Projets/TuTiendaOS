@@ -110,7 +110,7 @@ class HealthCheckController extends Controller
                 $sunatPing['message'] = $curlError ?: "SUNAT respondió con código HTTP {$httpCode}";
             }
         } catch (\Throwable $e) {
-            $sunatPing['message'] = 'Error al conectar con SUNAT: ' . $e->getMessage();
+            $sunatPing['message'] = 'Error al conectar con SUNAT: '.$e->getMessage();
         }
 
         $totalDurationMs = round((microtime(true) - $startTime) * 1000, 2);

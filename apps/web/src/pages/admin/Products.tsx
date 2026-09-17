@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { collection, doc, onSnapshot, query, setDoc, limit, orderBy, where, getDocs, updateDoc } from 'firebase/firestore';
+import { useMemo, useState, type FormEvent } from 'react';
+import { doc, query, where, getDocs, updateDoc, writeBatch } from 'firebase/firestore';
 import { Layers, Plus, Search, Trash2, Barcode, Boxes, Tag } from 'lucide-react';
-import { db } from '../../lib/firebase';
 import { useCompany } from '../../hooks/useCompany';
+import { useProductsCatalog } from '../../hooks/useProductsCatalog';
+import { refreshProductsCatalog } from '../../lib/catalog-repository';
+import { requireCurrentTenantId, tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
+import { db } from '../../lib/firebase';
 import { clean, num } from '../../lib/utils';
 import type { Product, ProductPresentation, ProductStock, Unit } from '../../types';
 import { Modal } from '../../components/ui/Modal';
@@ -26,7 +29,7 @@ const DEFAULT_UNITS: string[] = [
 
 export function ProductsPage() {
   const company = useCompany();
-  const [products, setProducts] = useState<(Product & { id: string })[]>([]);
+  const products = useProductsCatalog();
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<(Partial<Product> & { id?: string }) | null>(null);
   const [presentations, setPresentations] = useState<(ProductPresentation & { salePriceInput?: string; factorInput?: string })[]>([]);
@@ -44,11 +47,6 @@ export function ProductsPage() {
     const list = new Set([...DEFAULT_UNITS, ...(company?.customUnits ?? [])]);
     return Array.from(list);
   }, [company?.customUnits]);
-
-  useEffect(() => {
-    const q = query(collection(db, 'products'), orderBy('name'), limit(300));
-    return onSnapshot(q, (snap) => setProducts(snap.docs.map((d) => ({ ...(d.data() as Product), id: d.id }))));
-  }, []);
 
   const openEditModal = (p: Partial<Product> & { id?: string }) => {
     setEditing(p);
@@ -71,7 +69,7 @@ export function ProductsPage() {
     setViewingStockProduct(p);
     setLoadingStocks(true);
     try {
-      const q = query(collection(db, 'product_stocks'), where('productId', '==', p.id));
+      const q = query(tenantCollection('product_stocks'), where('productId', '==', p.id));
       const snap = await getDocs(q);
       setProductStocks(snap.docs.map((d) => d.data() as ProductStock));
     } catch {
@@ -91,7 +89,7 @@ export function ProductsPage() {
     }
     try {
       const newUnits = [...(company?.customUnits ?? DEFAULT_UNITS), u];
-      await updateDoc(doc(db, 'company', 'main'), {
+      await updateDoc(tenantDoc('config', 'company'), {
         customUnits: Array.from(new Set(newUnits)),
         updatedAt: Date.now()
       });
@@ -184,6 +182,7 @@ export function ProductsPage() {
       .filter((p) => p.unit && p.salePrice > 0);
 
     const data: Product = {
+      tenantId: requireCurrentTenantId(),
       name: clean(fd.get('name')),
       category: clean(fd.get('category')) || 'General',
       brand: clean(fd.get('brand')),
@@ -203,8 +202,15 @@ export function ProductsPage() {
     }
 
     try {
-      const ref = editing?.id ? doc(db, 'products', editing.id) : doc(collection(db, 'products'));
-      await setDoc(ref, data);
+      const ref = editing?.id ? tenantDoc('products', editing.id) : doc(tenantCollection('products'));
+      const batch = writeBatch(db);
+      batch.set(ref, data);
+      batch.set(tenantDoc('meta', 'catalog'), {
+        tenantId: data.tenantId,
+        updatedAt: data.updatedAt
+      });
+      await batch.commit();
+      await refreshProductsCatalog(data.tenantId!);
       setEditing(null);
       flash(editing?.id ? 'Producto actualizado con éxito' : 'Producto creado con éxito');
     } catch {
