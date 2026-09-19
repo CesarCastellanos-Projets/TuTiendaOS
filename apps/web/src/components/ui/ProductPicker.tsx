@@ -1,9 +1,12 @@
 import { useMemo, useState } from 'react';
 import { useProductsCatalog } from '../../hooks/useProductsCatalog';
-import type { Product } from '../../types';
+import type { Product, ProductPresentation } from '../../types';
 
 export interface PickLine {
   productId: string;
+  presentationId: string | null;
+  presentationLabel: string;
+  factor: number;
   name: string;
   qty: number;
   salePrice: number;
@@ -14,7 +17,14 @@ export interface PickLine {
 export function useProductSearch() {
   const products = useProductsCatalog();
 
-  const search = (term: string): (Product & { id: string })[] => {
+  type ProductChoice = Pick<Product, 'name' | 'salePrice' | 'barcode'> & {
+    id: string;
+    presentationId: string | null;
+    presentationLabel: string;
+    factor: number;
+  };
+
+  const search = (term: string): ProductChoice[] => {
     const s = term.trim().toLowerCase();
     if (!s) return [];
     return products
@@ -32,7 +42,33 @@ export function useProductSearch() {
             )
           )
       )
-      .slice(0, 8);
+      .flatMap((product) => {
+        const base: ProductChoice = {
+          id: product.id,
+          name: product.name,
+          salePrice: product.salePrice,
+          barcode: product.barcode,
+          presentationId: null,
+          presentationLabel: `Unidad base (${product.unit})`,
+          factor: 1
+        };
+        const secondary = (product.presentations ?? []).map((presentation: ProductPresentation, index): ProductChoice => ({
+          id: product.id,
+          name: product.name,
+          salePrice: presentation.salePrice,
+          barcode: presentation.barcode,
+          presentationId: presentation.id || `legacy-${index + 1}`,
+          presentationLabel: presentation.description || `${presentation.unit} x${presentation.factor}`,
+          factor: presentation.factor
+        }));
+        return [base, ...secondary].filter((choice) => {
+          if (!s) return true;
+          return choice.name.toLowerCase().includes(s)
+            || choice.barcode?.toLowerCase().includes(s)
+            || choice.presentationLabel.toLowerCase().includes(s);
+        });
+      })
+      .slice(0, 12);
   };
 
   return { products, search };
@@ -45,15 +81,24 @@ export function ProductLines({
 }: {
   lines: PickLine[];
   setLines: (l: PickLine[]) => void;
-  searchFn: (t: string) => { id: string; name: string; salePrice: number; barcode?: string }[];
+  searchFn: (t: string) => {
+    id: string; name: string; salePrice: number; barcode?: string;
+    presentationId: string | null; presentationLabel: string; factor: number;
+  }[];
 }) {
   const [term, setTerm] = useState('');
   const results = useMemo(() => (term.length >= 2 ? searchFn(term) : []), [term, searchFn]);
 
-  const add = (p: { id: string; name: string; salePrice: number; barcode?: string }) => {
-    if (lines.some((l) => l.productId === p.id)) return;
+  const add = (p: {
+    id: string; name: string; salePrice: number; barcode?: string;
+    presentationId: string | null; presentationLabel: string; factor: number;
+  }) => {
+    if (lines.some((l) => l.productId === p.id && l.presentationId === p.presentationId)) return;
     setTerm('');
-    setLines([...lines, { productId: p.id, name: p.name, qty: 1, salePrice: p.salePrice, barcode: p.barcode }]);
+    setLines([...lines, {
+      productId: p.id, presentationId: p.presentationId, presentationLabel: p.presentationLabel,
+      factor: p.factor, name: p.name, qty: 1, salePrice: p.salePrice, barcode: p.barcode
+    }]);
   };
 
   return (
@@ -66,16 +111,39 @@ export function ProductLines({
         autoComplete="off"
       />
       {results.length > 0 && (
-        <ul className="card divide-y divide-linea overflow-hidden">
+        <ul className="card divide-y divide-linea overflow-hidden shadow-lg animate-in fade-in">
           {results.map((p) => (
-            <li key={p.id}>
+            <li key={`${p.id}:${p.presentationId ?? 'base'}`}>
               <button
                 type="button"
                 onClick={() => add(p)}
-                className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-100"
+                className="flex w-full items-center justify-between px-3.5 py-2.5 text-left text-sm hover:bg-indigo-50/50 transition-colors"
               >
-                <span>{p.name}</span>
-                <span className="font-mono text-xs">S/ {p.salePrice.toFixed(2)}</span>
+                <div className="min-w-0 flex-1">
+                  <span className="font-semibold text-slate-900 block truncate">{p.name}</span>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    {p.presentationId ? (
+                      <>
+                        <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 text-[11px] font-extrabold text-primary">
+                          📦 {p.presentationLabel}
+                        </span>
+                        <span className="text-[11px] text-slate-500 font-medium">
+                          ({p.factor} unidades por empaque)
+                        </span>
+                      </>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[11px] font-bold text-slate-600">
+                        Unidad suelta base
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="ml-3 shrink-0 text-right font-mono">
+                  <span className="text-xs font-bold text-slate-900">S/ {p.salePrice.toFixed(2)}</span>
+                  <span className="block text-[10px] text-slate-400 font-medium">
+                    {p.presentationId ? 'por empaque' : 'por unidad'}
+                  </span>
+                </div>
               </button>
             </li>
           ))}
@@ -83,31 +151,68 @@ export function ProductLines({
       )}
 
       {lines.length > 0 && (
-        <ul className="space-y-1.5">
+        <ul className="space-y-2">
           {lines.map((l, idx) => (
-            <li key={l.productId} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">{l.name}</span>
-              <label className="sr-only" htmlFor={`qty-${l.productId}`}>Cantidad</label>
-              <input
-                id={`qty-${l.productId}`}
-                type="number"
-                min={1}
-                value={l.qty}
-                onChange={(e) => {
-                  const next = [...lines];
-                  next[idx] = { ...l, qty: Math.max(1, Math.trunc(Number(e.target.value) || 1)) };
-                  setLines(next);
-                }}
-                className="field !min-h-0 w-20 !px-2 !py-1.5 text-center"
-              />
-              <button
-                type="button"
-                aria-label={`Quitar ${l.name}`}
-                className="text-sm font-semibold text-critical hover:opacity-70"
-                onClick={() => setLines(lines.filter((x) => x.productId !== l.productId))}
-              >
-                Quitar
-              </button>
+            <li
+              key={`${l.productId}:${l.presentationId ?? 'base'}`}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200/90 bg-white p-3 shadow-xs"
+            >
+              <div className="min-w-0 flex-1">
+                <span className="font-bold text-slate-900 text-sm block truncate">{l.name}</span>
+                <div className="flex items-center gap-2 mt-1">
+                  {l.presentationId ? (
+                    <>
+                      <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 text-[11px] font-extrabold text-primary">
+                        📦 {l.presentationLabel}
+                      </span>
+                      <span className="text-[11px] font-medium text-slate-500">
+                        Total: <b className="font-mono text-slate-700">{l.qty * l.factor}</b> unidades
+                      </span>
+                    </>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[11px] font-bold text-slate-600">
+                      Unidad suelta base
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="text-right">
+                  <label
+                    htmlFor={`qty-${l.productId}-${l.presentationId ?? 'base'}`}
+                    className="block text-[10px] font-bold uppercase tracking-wider text-slate-500"
+                  >
+                    {l.presentationId ? 'Cajas / Empaques' : 'Unidades'}
+                  </label>
+                  <input
+                    id={`qty-${l.productId}-${l.presentationId ?? 'base'}`}
+                    type="number"
+                    min={1}
+                    value={l.qty}
+                    onChange={(e) => {
+                      const next = [...lines];
+                      next[idx] = { ...l, qty: Math.max(1, Math.trunc(Number(e.target.value) || 1)) };
+                      setLines(next);
+                    }}
+                    className="field !min-h-0 w-24 !px-2 !py-1 text-center font-mono text-sm font-extrabold text-slate-900"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  aria-label={`Quitar ${l.name}`}
+                  className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-critical transition-colors"
+                  onClick={() =>
+                    setLines(
+                      lines.filter((x) => !(x.productId === l.productId && x.presentationId === l.presentationId))
+                    )
+                  }
+                  title="Quitar de la lista"
+                >
+                  <span className="text-xs font-bold text-critical">Quitar</span>
+                </button>
+              </div>
             </li>
           ))}
         </ul>

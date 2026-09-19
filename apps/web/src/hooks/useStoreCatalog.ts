@@ -10,7 +10,11 @@ import type { ProductStock } from '../types';
 
 export interface SearchableCatalogItem extends ProductStock {
   presentationUnit?: string;
+  presentationId?: string;
+  presentationLabel?: string;
   factor?: number;
+  allowFractionalSale?: boolean;
+  fractionStep?: number;
   searchKey: string;
 }
 
@@ -79,12 +83,14 @@ export async function findInCatalog(
   // Helper para buscar presentación secundaria en una lista de productos
   const findPresentationMatch = (prods: ProductWithId[]): SearchableCatalogItem | null => {
     for (const p of prods) {
-      const matchPres = (p.presentations || []).find((pr) => {
+      const matchIndex = (p.presentations || []).findIndex((pr) => {
         const b = String(pr.barcode ?? '').trim().toLowerCase();
         return b !== '' && b === c;
       });
+      const matchPres = matchIndex >= 0 ? (p.presentations || [])[matchIndex] : undefined;
 
       if (matchPres) {
+        const presentationId = matchPres.id || `legacy-${matchIndex + 1}`;
         const foundStock = stockMap.get(p.id);
         const label = matchPres.factor && matchPres.factor > 1 ? `${matchPres.unit} x${matchPres.factor}` : matchPres.unit;
         return {
@@ -93,12 +99,16 @@ export async function findInCatalog(
           salePrice: matchPres.salePrice,
           barcode: String(matchPres.barcode ?? code.trim()),
           presentationUnit: matchPres.unit,
+          presentationId,
+          presentationLabel: matchPres.description || label,
           factor: matchPres.factor || 1,
-          quantity: foundStock ? foundStock.quantity : 0,
+          allowFractionalSale: matchPres.allowFractionalSale !== false,
+          fractionStep: matchPres.fractionStep ?? 0.5,
+          quantity: foundStock?.presentationQuantities?.[presentationId] ?? 0,
           locationId: foundStock?.locationId ?? _storeId,
           locationName: foundStock?.locationName ?? '',
           locationType: 'store',
-          searchKey: `${p.id}_${matchPres.unit}_${matchPres.factor || 1}_${code.trim()}`
+          searchKey: `${p.id}_${presentationId}`
         };
       }
     }
@@ -122,7 +132,7 @@ export async function findInCatalog(
         barcode: p.barcode ?? code.trim(),
         presentationUnit: p.unit ?? 'UN',
         factor: 1,
-        quantity: foundStock ? foundStock.quantity : 0,
+        quantity: foundStock?.baseQuantity ?? foundStock?.quantity ?? 0,
         locationId: foundStock?.locationId ?? _storeId,
         locationName: foundStock?.locationName ?? '',
         locationType: 'store',
@@ -164,7 +174,13 @@ export function useCatalogSearch(items: ProductStock[]) {
 
     for (const p of productsList) {
       const stock = stockMap.get(p.id);
-      const stockQty = stock ? stock.quantity : 0;
+      const looseQuantity = stock?.baseQuantity ?? stock?.quantity ?? 0;
+      const baseStockQty = (p.presentations ?? []).reduce(
+        (total, presentation) => presentation.autoUnpackEnabled
+          ? total + (stock?.presentationQuantities?.[presentation.id] ?? 0) * presentation.factor
+          : total,
+        looseQuantity
+      );
 
       // Presentación base
       list.push({
@@ -172,31 +188,37 @@ export function useCatalogSearch(items: ProductStock[]) {
         productName: `${p.name} (${p.unit || 'UN'})`,
         salePrice: p.salePrice,
         barcode: p.barcode,
-        quantity: stockQty,
+        quantity: baseStockQty,
         locationId: stock?.locationId ?? '',
         locationName: stock?.locationName ?? '',
         locationType: 'store',
         presentationUnit: p.unit ?? 'UN',
+        presentationLabel: `Unidad base (${p.unit ?? 'UN'})`,
         factor: 1,
         searchKey: `${p.id}_base`
       });
 
       // Presentaciones secundarias
-      for (const pres of p.presentations || []) {
+      for (const [index, pres] of (p.presentations || []).entries()) {
         if (!pres.salePrice) continue;
+        const presentationId = pres.id || `legacy-${index + 1}`;
         const label = pres.factor && pres.factor > 1 ? `${pres.unit} x${pres.factor}` : pres.unit;
         list.push({
           productId: p.id,
           productName: `${p.name} (${label})`,
           salePrice: pres.salePrice,
           barcode: pres.barcode,
-          quantity: stockQty,
           locationId: stock?.locationId ?? '',
           locationName: stock?.locationName ?? '',
           locationType: 'store',
           presentationUnit: pres.unit,
+          presentationId,
+          presentationLabel: pres.description || label,
           factor: pres.factor || 1,
-          searchKey: `${p.id}_${pres.unit}_${pres.factor || 1}_${pres.barcode || ''}`
+          allowFractionalSale: pres.allowFractionalSale === true,
+          fractionStep: pres.fractionStep ?? 0.5,
+          quantity: stock?.presentationQuantities?.[presentationId] ?? 0,
+          searchKey: `${p.id}_${presentationId}`
         });
       }
     }

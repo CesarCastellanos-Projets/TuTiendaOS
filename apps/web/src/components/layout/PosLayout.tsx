@@ -72,7 +72,7 @@ export function PosLayout() {
   };
 
   return (
-    <div className="flex min-h-dvh flex-col bg-slate-100/60">
+    <div className="flex min-h-dvh flex-col bg-slate-100/60 lg:h-dvh lg:overflow-hidden">
       {/* ─── BARRA SUPERIOR INTEGRADA (Header limpio sin barras laterales raras) ─ */}
       <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-slate-200 bg-white px-4 shadow-xs">
         {/* Lado Izquierdo: Botón Hamburguesa 3 Líneas + Logo */}
@@ -153,7 +153,7 @@ export function PosLayout() {
       </header>
 
       {/* ─── CONTENIDO PRINCIPAL (Ocupa el 100% de la pantalla sin barras que estorben) ─── */}
-      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <main className="flex min-w-0 flex-1 flex-col overflow-y-auto lg:min-h-0 lg:overflow-hidden">
         {canChooseStore && !profile.storeId ? (
           <div className="grid flex-1 place-items-center p-4">
             <section className="card w-full max-w-md space-y-4 p-5 text-center">

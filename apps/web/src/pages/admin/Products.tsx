@@ -1,11 +1,12 @@
 import { useMemo, useState, type FormEvent } from 'react';
-import { doc, query, where, getDocs, updateDoc, writeBatch } from 'firebase/firestore';
+import { query, where, getDocs, updateDoc } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
 import { Layers, Plus, Search, Trash2, Barcode, Boxes, Tag } from 'lucide-react';
 import { useCompany } from '../../hooks/useCompany';
 import { useProductsCatalog } from '../../hooks/useProductsCatalog';
 import { refreshProductsCatalog } from '../../lib/catalog-repository';
 import { requireCurrentTenantId, tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
-import { db } from '../../lib/firebase';
+import { functions } from '../../lib/firebase';
 import { clean, num } from '../../lib/utils';
 import type { Product, ProductPresentation, ProductStock, Unit } from '../../types';
 import { Modal } from '../../components/ui/Modal';
@@ -27,6 +28,10 @@ const DEFAULT_UNITS: string[] = [
   'SOBRE'
 ];
 
+function newPresentationId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `pres-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
 export function ProductsPage() {
   const company = useCompany();
   const products = useProductsCatalog();
@@ -34,12 +39,12 @@ export function ProductsPage() {
   const [editing, setEditing] = useState<(Partial<Product> & { id?: string }) | null>(null);
   const [presentations, setPresentations] = useState<(ProductPresentation & { salePriceInput?: string; factorInput?: string })[]>([]);
   const [basePriceInput, setBasePriceInput] = useState('');
+  const [baseUnit, setBaseUnit] = useState<Unit>('UN');
   const [viewingStockProduct, setViewingStockProduct] = useState<(Product & { id: string }) | null>(null);
   const [productStocks, setProductStocks] = useState<ProductStock[]>([]);
   const [loadingStocks, setLoadingStocks] = useState(false);
   const [customUnitInput, setCustomUnitInput] = useState('');
   const [showAddUnitInput, setShowAddUnitInput] = useState(false);
-  const [baseFactorInput, setBaseFactorInput] = useState('1');
   const { msg, flash } = useFlash();
 
   // Combine default units with company custom units
@@ -51,13 +56,17 @@ export function ProductsPage() {
   const openEditModal = (p: Partial<Product> & { id?: string }) => {
     setEditing(p);
     setBasePriceInput(p.salePrice !== undefined ? String(p.salePrice) : '');
-    setBaseFactorInput('1');
+    setBaseUnit(p.unit ?? 'UN');
     setPresentations(
       p.presentations
         ? p.presentations.map((pr) => ({
             ...pr,
             salePriceInput: pr.salePrice !== undefined ? String(pr.salePrice) : '',
-            factorInput: String(pr.factor || 1)
+            id: pr.id || newPresentationId(),
+            factorInput: String(pr.factor || 1),
+            description: pr.description || `${pr.unit} x${pr.factor || 1}`,
+            fractionStep: pr.fractionStep ?? 0.5,
+            autoUnpackPriority: pr.autoUnpackPriority ?? 1
           }))
         : []
     );
@@ -105,37 +114,53 @@ export function ProductsPage() {
     setPresentations((prev) => [
       ...prev,
       {
+        id: newPresentationId(),
         unit: 'CJA',
+        description: 'Caja x12',
         factor: 12,
         factorInput: '12',
         barcode: '',
         salePrice: 0,
-        salePriceInput: ''
+        salePriceInput: '',
+        allowFractionalSale: false,
+        fractionStep: 0.5,
+        autoUnpackEnabled: false,
+        autoUnpackPriority: prev.length + 1
       }
     ]);
   };
 
-  const updatePresentationRow = (index: number, field: string, value: string) => {
+  const updatePresentationRow = (index: number, field: string, value: string | boolean) => {
     setPresentations((prev) => {
       const updated = [...prev];
       const current = { ...updated[index] };
       if (field === 'salePrice') {
-        const sanitized = value.replace(/[^0-9.,]/g, '');
+        const sanitized = String(value).replace(/[^0-9.,]/g, '');
         current.salePriceInput = sanitized;
         current.salePrice = parseFloat(sanitized.replace(',', '.')) || 0;
       } else if (field === 'factor') {
-        const sanitized = value.replace(/[^0-9]/g, '');
+        const sanitized = String(value).replace(/[^0-9]/g, '');
         current.factorInput = sanitized;
         current.factor = Math.max(1, parseInt(sanitized) || 1);
       } else if (field === 'unit') {
-        current.unit = value;
+        current.unit = String(value);
         if (current.factorInput === '1' || current.factorInput === '12' || current.factorInput === '6' || !current.factorInput) {
           const defFactor = value === 'DOC' || value === 'CJA' ? '12' : value === 'PAQ' ? '6' : '1';
           current.factorInput = defFactor;
           current.factor = parseInt(defFactor);
         }
       } else if (field === 'barcode') {
-        current.barcode = value;
+        current.barcode = String(value);
+      } else if (field === 'description') {
+        current.description = String(value);
+      } else if (field === 'allowFractionalSale') {
+        current.allowFractionalSale = Boolean(value);
+      } else if (field === 'fractionStep') {
+        current.fractionStep = Math.max(0.001, Math.min(0.999, Number(String(value).replace(',', '.')) || 0.5));
+      } else if (field === 'autoUnpackEnabled') {
+        current.autoUnpackEnabled = Boolean(value);
+      } else if (field === 'autoUnpackPriority') {
+        current.autoUnpackPriority = Math.max(1, Math.trunc(Number(value) || 1));
       }
       updated[index] = current;
       return updated;
@@ -163,7 +188,7 @@ export function ProductsPage() {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
     const mainPrice = Math.round((parseFloat(basePriceInput.replace(',', '.')) || 0) * 100) / 100;
-    const mainUnit = (clean(fd.get('unit')) || 'UN') as Unit;
+    const mainUnit = baseUnit;
 
     // Filter and sanitize presentations
     const validPresentations: ProductPresentation[] = presentations
@@ -173,13 +198,28 @@ export function ProductsPage() {
         const rawFactor = p.factorInput !== undefined ? p.factorInput : String(p.factor || 1);
         const factorNum = Math.max(1, parseInt(rawFactor) || 1);
         return {
+          id: p.id || newPresentationId(),
           unit: p.unit.trim().toUpperCase(),
+          description: (p.description || `${p.unit} x${factorNum}`).trim(),
           barcode: (p.barcode || '').trim() || undefined,
           salePrice: Math.round(priceNum * 100) / 100,
-          factor: factorNum
+          factor: factorNum,
+          allowFractionalSale: p.allowFractionalSale === true,
+          fractionStep: p.fractionStep ?? 0.5,
+          autoUnpackEnabled: p.autoUnpackEnabled === true,
+          autoUnpackPriority: p.autoUnpackPriority ?? 1
         };
       })
       .filter((p) => p.unit && p.salePrice > 0);
+
+    const invalidFraction = validPresentations.find((presentation) =>
+      presentation.allowFractionalSale
+      && !Number.isInteger(Math.round((presentation.fractionStep ?? 0.5) * 1000) * presentation.factor / 1000)
+    );
+    if (invalidFraction) {
+      flash(`El paso de ${invalidFraction.description || invalidFraction.unit} debe equivaler a unidades completas.`);
+      return;
+    }
 
     const data: Product = {
       tenantId: requireCurrentTenantId(),
@@ -202,19 +242,16 @@ export function ProductsPage() {
     }
 
     try {
-      const ref = editing?.id ? tenantDoc('products', editing.id) : doc(tenantCollection('products'));
-      const batch = writeBatch(db);
-      batch.set(ref, data);
-      batch.set(tenantDoc('meta', 'catalog'), {
-        tenantId: data.tenantId,
-        updatedAt: data.updatedAt
-      });
-      await batch.commit();
+      const callable = httpsCallable<
+        { productId?: string; product: Product },
+        { id: string; presentations: ProductPresentation[] }
+      >(functions, 'saveCatalogProduct');
+      await callable({ productId: editing?.id, product: data });
       await refreshProductsCatalog(data.tenantId!);
       setEditing(null);
       flash(editing?.id ? 'Producto actualizado con éxito' : 'Producto creado con éxito');
-    } catch {
-      flash('Error al guardar el producto');
+    } catch (error) {
+      flash(`Error: ${error instanceof Error ? error.message : 'no se pudo guardar el producto'}`);
     }
   };
 
@@ -284,9 +321,9 @@ export function ProductsPage() {
                           <span className="badge bg-indigo-50 text-primary border border-indigo-200 text-[11px]">
                             {p.unit}: S/ {p.salePrice.toFixed(2)}
                           </span>
-                          {p.presentations.map((pr, idx) => (
-                            <span key={idx} className="badge bg-slate-100 text-slate-700 border border-slate-200 text-[11px]">
-                              {pr.unit} {pr.factor && pr.factor > 1 ? `(x${pr.factor})` : ''}: S/ {pr.salePrice.toFixed(2)}
+                          {p.presentations.map((pr, index) => (
+                            <span key={pr.id || `legacy-${index + 1}`} className="badge bg-slate-100 text-slate-700 border border-slate-200 text-[11px]">
+                              {pr.description || `${pr.unit} x${pr.factor}`}: S/ {pr.salePrice.toFixed(2)}
                             </span>
                           ))}
                         </div>
@@ -353,6 +390,13 @@ export function ProductsPage() {
                     <span className="badge bg-slate-100 text-xs text-slate-600 font-semibold capitalize mt-0.5">
                       {s.locationType === 'warehouse' ? 'Almacén' : 'Tienda'}
                     </span>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Sueltas: {s.baseQuantity ?? s.quantity}
+                      {(viewingStockProduct?.presentations ?? []).map((presentation, index) => {
+                        const presentationId = presentation.id || `legacy-${index + 1}`;
+                        return ` · ${presentation.description || presentation.unit}: ${s.presentationQuantities?.[presentationId] ?? 0}`;
+                      })}
+                    </p>
                   </div>
                   <span
                     className={`badge text-xs font-mono font-bold ${
@@ -468,7 +512,7 @@ export function ProductsPage() {
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-12">
                 <div className="sm:col-span-3">
                   <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Unidad Base *</label>
-                  <select name="unit" defaultValue={editing?.unit ?? 'UN'} className="field !h-10 text-xs font-bold">
+                  <select name="unit" value={baseUnit} onChange={(event) => setBaseUnit(event.target.value)} className="field !h-10 text-xs font-bold">
                     {availableUnits.map((u) => (
                       <option key={u} value={u}>
                         {u}
@@ -477,16 +521,8 @@ export function ProductsPage() {
                   </select>
                 </div>
                 <div className="sm:col-span-2">
-                  <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Equivale a</label>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    value={baseFactorInput}
-                    onChange={(e) => setBaseFactorInput(e.target.value.replace(/[^0-9]/g, ''))}
-                    placeholder="1"
-                    title="Cuántas unidades base representa (por defecto 1)"
-                    className="field !h-10 text-center font-mono font-bold text-xs"
-                  />
+                  <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Contiene</label>
+                  <div className="field !h-10 flex items-center justify-center text-xs font-bold text-slate-600">1 unidad base</div>
                 </div>
                 <div className="sm:col-span-4">
                   <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Código de Barras</label>
@@ -527,11 +563,20 @@ export function ProductsPage() {
                 </span>
                 {presentations.map((pres, index) => (
                   <div
-                    key={index}
-                    className="flex flex-col sm:flex-row items-start sm:items-center gap-2 rounded-xl border border-slate-200 bg-white p-3 animate-in fade-in"
+                    key={pres.id}
+                    className="grid grid-cols-1 gap-2 rounded-xl border border-slate-200 bg-white p-3 animate-in fade-in sm:grid-cols-12"
                   >
-                    <div className="w-full sm:w-28 shrink-0">
-                      <label className="text-[10px] font-bold uppercase text-slate-500 block sm:hidden mb-0.5">Unidad</label>
+                    <div className="sm:col-span-4">
+                      <label className="text-[10px] font-bold uppercase text-slate-500 block mb-0.5">Nombre de la presentación</label>
+                      <input
+                        value={pres.description ?? ''}
+                        onChange={(e) => updatePresentationRow(index, 'description', e.target.value)}
+                        placeholder={`Ej.: ${pres.unit} x${pres.factor}`}
+                        className="field !h-9 text-xs font-semibold"
+                      />
+                    </div>
+                    <div className="sm:col-span-2">
+                      <label className="text-[10px] font-bold uppercase text-slate-500 block mb-0.5">Presentación</label>
                       <select
                         value={pres.unit}
                         onChange={(e) => updatePresentationRow(index, 'unit', e.target.value)}
@@ -545,8 +590,8 @@ export function ProductsPage() {
                       </select>
                     </div>
 
-                    <div className="w-full sm:w-28 shrink-0">
-                      <label className="text-[10px] font-bold uppercase text-slate-500 block sm:hidden mb-0.5">Equivale a (un)</label>
+                    <div className="sm:col-span-2">
+                      <label className="text-[10px] font-bold uppercase text-slate-500 block mb-0.5">Contiene ({baseUnit})</label>
                       <input
                         type="text"
                         inputMode="numeric"
@@ -558,9 +603,9 @@ export function ProductsPage() {
                       />
                     </div>
 
-                    <div className="w-full sm:flex-1 relative">
-                      <label className="text-[10px] font-bold uppercase text-slate-500 block sm:hidden mb-0.5">Código de barras / QR</label>
-                      <Barcode size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <div className="relative sm:col-span-4">
+                      <label className="text-[10px] font-bold uppercase text-slate-500 block mb-0.5">Código de barras / QR</label>
+                      <Barcode size={14} className="pointer-events-none absolute left-3 top-[2rem] -translate-y-1/2 text-slate-400" />
                       <input
                         value={pres.barcode ?? ''}
                         onChange={(e) => updatePresentationRow(index, 'barcode', e.target.value)}
@@ -569,8 +614,8 @@ export function ProductsPage() {
                       />
                     </div>
 
-                    <div className="w-full sm:w-28 shrink-0">
-                      <label className="text-[10px] font-bold uppercase text-slate-500 block sm:hidden mb-0.5">Precio S/</label>
+                    <div className="sm:col-span-3">
+                      <label className="text-[10px] font-bold uppercase text-slate-500 block mb-0.5">Precio por {pres.unit.toLowerCase()} S/</label>
                       <input
                         type="text"
                         inputMode="decimal"
@@ -581,14 +626,32 @@ export function ProductsPage() {
                       />
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => removePresentationRow(index)}
-                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-critical transition-colors"
-                      title="Eliminar presentación"
-                    >
-                      <Trash2 size={15} />
-                    </button>
+                    <div className="sm:col-span-9 grid grid-cols-1 gap-2 rounded-lg bg-slate-50 p-2 sm:grid-cols-3">
+                      <label className="flex min-h-11 items-center gap-2 text-xs font-semibold text-slate-700">
+                        <input type="checkbox" checked={pres.allowFractionalSale === true} onChange={(e) => updatePresentationRow(index, 'allowFractionalSale', e.target.checked)} />
+                        Permitir venta fraccionada
+                      </label>
+                      <label className="text-[10px] font-bold uppercase text-slate-500">
+                        Paso permitido
+                        <input type="number" min="0.001" max="0.999" step="0.001" disabled={!pres.allowFractionalSale} value={pres.fractionStep ?? 0.5} onChange={(e) => updatePresentationRow(index, 'fractionStep', e.target.value)} className="field mt-1 !h-9 text-center text-xs" />
+                      </label>
+                      <label className="flex min-h-11 items-center gap-2 text-xs font-semibold text-slate-700">
+                        <input type="checkbox" checked={pres.autoUnpackEnabled === true} onChange={(e) => updatePresentationRow(index, 'autoUnpackEnabled', e.target.checked)} />
+                        Abrir para vender unidades
+                      </label>
+                    </div>
+                    <div className="flex items-end gap-2 sm:col-span-3">
+                      <label className="flex-1 text-[10px] font-bold uppercase text-slate-500">
+                        Prioridad de apertura
+                        <input type="number" min="1" value={pres.autoUnpackPriority ?? index + 1} onChange={(e) => updatePresentationRow(index, 'autoUnpackPriority', e.target.value)} className="field mt-1 !h-9 text-center text-xs" />
+                      </label>
+                      <button type="button" onClick={() => removePresentationRow(index)} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-critical transition-colors" title="Eliminar presentación">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                    <p className="sm:col-span-12 rounded-lg bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-950">
+                      1 {pres.unit} = {pres.factor} {baseUnit} · S/ {(pres.salePrice || 0).toFixed(2)} por {pres.unit.toLowerCase()}
+                    </p>
                   </div>
                 ))}
               </div>

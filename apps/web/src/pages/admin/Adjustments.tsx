@@ -3,7 +3,7 @@ import { getDocs, limit, orderBy, query } from 'firebase/firestore';
 import { onSnapshot } from '../../lib/firestore-listener';
 import { tenantCollection } from '../../lib/tenant-firestore';
 import { adjustStock } from '../../lib/inventory';
-import { ProductLines, useProductSearch } from '../../components/ui/ProductPicker';
+import { ProductLines, useProductSearch, type PickLine } from '../../components/ui/ProductPicker';
 import type { StockMovement, Store, Warehouse } from '../../types';
 import { fmtDateTime, num, clean } from '../../lib/utils';
 import { FlashBar, useFlash } from '../../components/ui/Feedback';
@@ -11,7 +11,7 @@ import { FlashBar, useFlash } from '../../components/ui/Feedback';
 export function AdjustmentsPage() {
   const [locations, setLocations] = useState<{ id: string; name: string }[]>([]);
   const [locationId, setLocationId] = useState('');
-  const [lines, setLines] = useState<{ productId: string; name: string; qty: number; salePrice: number; barcode?: string }[]>([]);
+  const [lines, setLines] = useState<PickLine[]>([]);
   const [type, setType] = useState<'ajuste' | 'merma'>('ajuste');
   const [reason, setReason] = useState('');
   const [movements, setMovements] = useState<StockMovement[]>([]);
@@ -52,6 +52,7 @@ export function AdjustmentsPage() {
       await adjustStock({
         locationId,
         productId: lines[0].productId,
+        presentationId: lines[0].presentationId,
         newQty: Math.max(0, Math.trunc(num(String(lines[0].qty)))),
         reason,
         type

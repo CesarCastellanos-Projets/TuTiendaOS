@@ -14,7 +14,7 @@ export async function receiveTransferItems(params: {
 export async function ingressStock(params: {
   locationId: string;
   locationType: 'store' | 'warehouse';
-  items: { productId: string; qty: number }[];
+  items: { productId: string; presentationId: string | null; qty: number }[];
 }): Promise<void> {
   const callable = httpsCallable<typeof params, { ok: boolean }>(functions, 'recordStockIngress');
   await callable(params);
@@ -23,6 +23,7 @@ export async function ingressStock(params: {
 export async function adjustStock(params: {
   locationId: string;
   productId: string;
+  presentationId: string | null;
   newQty: number;
   reason: string;
   type: 'ajuste' | 'merma';
@@ -36,7 +37,7 @@ export async function createTransfer(params: {
   fromLocationType: 'store' | 'warehouse';
   toLocationId: string;
   toLocationType: 'store' | 'warehouse';
-  items: { productId: string; qtySent: number }[];
+  items: { productId: string; presentationId: string | null; qtySent: number }[];
   note?: string | null;
 }): Promise<{ id: string; code: string }> {
   const callable = httpsCallable<typeof params, { id: string; code: string }>(

@@ -13,7 +13,8 @@ const TYPE_LABELS: Record<MovementType, { label: string; tone: string }> = {
   transferencia: { label: 'Transferencia', tone: 'bg-blue-50 text-blue-600' },
   recepcion: { label: 'Recepción', tone: 'bg-emerald-50 text-success' },
   ajuste: { label: 'Ajuste físico', tone: 'bg-amber-100 text-amber-800' },
-  merma: { label: 'Merma / Baja', tone: 'bg-red-50 text-critical' }
+  merma: { label: 'Merma / Baja', tone: 'bg-red-50 text-critical' },
+  conversion: { label: 'Conversión de empaque', tone: 'bg-indigo-50 text-primary' }
 };
 
 export function KardexPage() {
@@ -54,12 +55,14 @@ export function KardexPage() {
       flash('No hay movimientos para exportar');
       return;
     }
-    const headers = ['Fecha', 'Tipo', 'Producto', 'Cantidad', 'Usuario', 'Referencia / Motivo'];
+    const headers = ['Fecha', 'Tipo', 'Producto', 'Presentación', 'Cantidad base', 'Cantidad presentación', 'Usuario', 'Referencia / Motivo'];
     const rows = filtered.map((m) => [
       fmtDateTime(m.createdAt),
       TYPE_LABELS[m.type]?.label ?? m.type,
       `"${m.productName.replace(/"/g, '""')}"`,
+      `"${(m.presentationLabel || 'Unidad base').replace(/"/g, '""')}"`,
       m.qty,
+      m.presentationQty ?? '',
       `"${m.userName.replace(/"/g, '""')}"`,
       `"${(m.refId || m.reason || '—').replace(/"/g, '""')}"`
     ]);
@@ -99,6 +102,7 @@ export function KardexPage() {
             <option value="recepcion">Recepciones</option>
             <option value="ajuste">Ajustes</option>
             <option value="merma">Mermas / Bajas</option>
+            <option value="conversion">Conversiones de empaque</option>
           </select>
         </div>
       </div>
@@ -138,7 +142,13 @@ export function KardexPage() {
                     <td className="td">
                       <span className={`badge ${info.tone}`}>{info.label}</span>
                     </td>
-                    <td className="td font-medium text-sm">{m.productName}</td>
+                    <td className="td font-medium text-sm">
+                      {m.productName}
+                      <span className="mt-0.5 block text-[11px] font-normal text-slate-500">
+                        {m.presentationLabel || 'Unidad base'}
+                        {m.presentationQty != null ? ` · ${Math.abs(m.presentationQty)} presentación(es)` : ''}
+                      </span>
+                    </td>
                     <td className="td text-right font-mono font-bold text-sm">
                       <span className={isPositive ? 'text-success' : 'text-critical'}>
                         {isPositive ? `+${m.qty}` : m.qty}

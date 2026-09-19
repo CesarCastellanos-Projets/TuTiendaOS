@@ -25,11 +25,16 @@ export interface NewUserPayload {
 export type Unit = 'UN' | 'KG' | 'LT' | 'PAQ' | 'CJA' | 'DOC' | string;
 
 export interface ProductPresentation {
+  id: string;
   unit: string;
-  description?: string; // Ej: "Caja x12", "Caja x24", "Display x50"
-  factor?: number;      // Unidades base contenidas (default 1)
+  description?: string;
+  factor: number;
   barcode?: string;
   salePrice: number;
+  allowFractionalSale?: boolean;
+  fractionStep?: number;
+  autoUnpackEnabled?: boolean;
+  autoUnpackPriority?: number;
 }
 
 export interface Product {
@@ -82,11 +87,14 @@ export interface ProductStock {
   locationId: string;
   locationName: string;
   quantity: number;
+  baseQuantity?: number;
+  presentationQuantities?: Record<string, number>;
+  stockModelVersion?: 2;
   unit?: string | null;
   updatedAt?: number;
 }
 
-export type MovementType = 'venta' | 'ingreso' | 'transferencia' | 'ajuste' | 'merma' | 'recepcion';
+export type MovementType = 'venta' | 'ingreso' | 'transferencia' | 'ajuste' | 'merma' | 'recepcion' | 'conversion';
 
 export interface StockMovement {
   tenantId?: string;
@@ -94,6 +102,12 @@ export interface StockMovement {
   productId: string;
   productName: string;
   qty: number;
+  presentationId?: string | null;
+  presentationLabel?: string | null;
+  presentationQty?: number | null;
+  baseQty?: number | null;
+  packagesOpened?: number | null;
+  remainderToBase?: number | null;
   fromLocationId?: string | null;
   toLocationId?: string | null;
   reason?: string | null;
@@ -109,6 +123,10 @@ export interface TransferItem {
   name: string;
   qtySent: number;
   qtyReceived: number;
+  presentationId?: string | null;
+  presentationLabel?: string;
+  factor?: number;
+  baseEquivalent?: number;
 }
 
 export type TransferStatus = 'pendiente' | 'en_transito' | 'recibido' | 'cancelado';
@@ -136,6 +154,8 @@ export interface ReplenishmentItem {
   name: string;
   currentQty: number;
   requestedQty: number;
+  presentationId?: string | null;
+  presentationLabel?: string;
 }
 
 export type ReplenishmentStatus = 'pendiente' | 'atendida' | 'rechazada';
@@ -187,10 +207,15 @@ export interface SaleItem {
   unitPrice: number;
   total: number;
   presentationUnit?: string;
+  presentationId?: string;
+  presentationLabel?: string;
   factor?: number;
   barcode?: string;
   catalogUnitPrice?: number;
   priceOverridden?: boolean;
+  baseUnitsSold?: number;
+  packagesConsumed?: number;
+  remainderToBase?: number;
 }
 
 export type PaymentMethod = 'efectivo' | 'transferencia' | 'tarjeta' | 'yape' | 'plin' | 'sip' | 'otro';
@@ -302,6 +327,9 @@ export const DEFAULT_COMPANY: CompanyConfig = {
 
 export interface QuotationItem {
   productId: string;
+  presentationId?: string;
+  presentationLabel?: string;
+  factor?: number;
   name: string;
   barcode?: string;
   unit?: string;

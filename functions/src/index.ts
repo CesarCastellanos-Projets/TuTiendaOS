@@ -9,6 +9,7 @@ setGlobalOptions({ region: 'us-central1', maxInstances: 10 });
 const APISPERU_TOKEN = defineString('APISPERU_TOKEN', { default: 'disabled' });
 
 export { createSaleRecord, getCompanyConfig, receiveTransfer } from './operations';
+export { saveCatalogProduct } from './catalog';
 export {
   adjustInventory,
   attendReplenishmentRequest,
@@ -164,3 +165,143 @@ export const lookupClient = onCall(async (request) => {
     await clients.doc(cacheId).set({ ...result, tenantId: profile.tenantId });
     return result;
 });
+
+interface CatalogPresentationInput {
+  id?: string;
+  unit?: string;
+  description?: string;
+  factor?: number | string;
+  salePrice?: number | string;
+  barcode?: string;
+  allowFractionalSale?: boolean;
+  fractionStep?: number | string;
+  autoUnpackEnabled?: boolean;
+  autoUnpackPriority?: number | string;
+}
+
+/** Migra catálogo y stocks al modelo v2 de empaques separados. Solo Admin puede llamar. */
+export const migrateCatalogAndStocks = onCall(async (request) => {
+  const profile = await requireAdmin(request);
+  const tenantRoot = db.collection('tenants').doc(profile.tenantId);
+  const [productsSnapshot, stocksSnapshot] = await Promise.all([
+    tenantRoot.collection('products').get(),
+    tenantRoot.collection('product_stocks').get()
+  ]);
+
+  const batch = db.batch();
+  let productUpdates = 0;
+  let registryWrites = 0;
+  let stockUpdates = 0;
+
+  const productsMap = new Map<string, Record<string, unknown>>();
+
+  function registryId(code: string): string {
+    return Buffer.from(code.toLowerCase(), 'utf8').toString('base64url');
+  }
+
+  for (const doc of productsSnapshot.docs) {
+    const data = doc.data();
+    productsMap.set(doc.id, data);
+    const sourcePresentations = Array.isArray(data.presentations)
+      ? data.presentations as CatalogPresentationInput[]
+      : [];
+    let needsUpdate = false;
+
+    const presentations = sourcePresentations.map((p, index) => {
+      const factor = Number(p.factor) || 1;
+      const unit = String(p.unit ?? 'CJA').trim().toUpperCase();
+      const id = String(p.id ?? '').trim() || `legacy-${index + 1}`;
+      if (!p.id || p.id !== id) needsUpdate = true;
+
+      return {
+        ...p,
+        id,
+        unit,
+        description: String(p.description ?? '').trim() || `${unit} x${factor}`,
+        factor,
+        allowFractionalSale: p.allowFractionalSale !== false,
+        fractionStep: Number(p.fractionStep) > 0 && Number(p.fractionStep) < 1 ? Number(p.fractionStep) : 0.5,
+        autoUnpackEnabled: p.autoUnpackEnabled === true,
+        autoUnpackPriority: Number.isInteger(Number(p.autoUnpackPriority)) ? Number(p.autoUnpackPriority) : index + 1
+      };
+    });
+
+    if (needsUpdate || JSON.stringify(sourcePresentations) !== JSON.stringify(presentations)) {
+      batch.update(doc.ref, { presentations, updatedAt: Date.now() });
+      productUpdates++;
+      data.presentations = presentations;
+    }
+
+    const barcodes = [data.barcode as string | undefined, ...presentations.map((p) => p.barcode)]
+      .map((b) => String(b ?? '').trim())
+      .filter(Boolean);
+
+    for (const code of barcodes) {
+      const regRef = tenantRoot.collection('barcode_registry').doc(registryId(code));
+      batch.set(regRef, {
+        tenantId: profile.tenantId,
+        productId: doc.id,
+        code,
+        updatedAt: Date.now()
+      }, { merge: true });
+      registryWrites++;
+    }
+  }
+
+  for (const doc of stocksSnapshot.docs) {
+    const stock = doc.data();
+    const prod = productsMap.get(stock.productId as string);
+    const presentations = Array.isArray(prod?.presentations)
+      ? prod.presentations as CatalogPresentationInput[]
+      : [];
+
+    const baseQuantity = typeof stock.baseQuantity === 'number'
+      ? stock.baseQuantity
+      : Math.max(0, Number(stock.quantity ?? 0));
+    const presentationQuantities: Record<string, number> = stock.presentationQuantities
+      ? { ...(stock.presentationQuantities as Record<string, number>) }
+      : {};
+
+    // Si tiene presentaciones y no tenía stock de presentaciones inicializado
+    if (presentations.length > 0 && Object.keys(presentationQuantities).length === 0) {
+      const p = presentations[0];
+      const presId = p.id || 'legacy-1';
+      // Inicializamos stock de cajas físicas: 10 para almacén ALM01, 5 para tienda T01, 3 para otras
+      const testBoxes = stock.storeId === 'ALM01' ? 10 : (stock.storeId === 'T01' ? 5 : 3);
+      presentationQuantities[presId] = testBoxes;
+    }
+
+    let totalEquivalent = baseQuantity;
+    for (const p of presentations) {
+      const presId = p.id || 'legacy-1';
+      const qty = presentationQuantities[presId] ?? 0;
+      totalEquivalent += qty * (Number(p.factor) || 1);
+    }
+
+    batch.update(doc.ref, {
+      baseQuantity,
+      presentationQuantities,
+      quantity: totalEquivalent,
+      stockModelVersion: 2,
+      updatedAt: Date.now()
+    });
+    stockUpdates++;
+  }
+
+  const metaCatalogRef = tenantRoot.collection('meta').doc('catalog');
+  batch.set(metaCatalogRef, {
+    tenantId: profile.tenantId,
+    updatedAt: Date.now()
+  }, { merge: true });
+
+  await batch.commit();
+
+  return {
+    success: true,
+    productUpdates,
+    registryWrites,
+    stockUpdates,
+    tenantId: profile.tenantId
+  };
+});
+

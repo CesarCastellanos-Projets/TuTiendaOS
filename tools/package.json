@@ -5,6 +5,7 @@
   "scripts": {
     "seed": "node seed.mjs",
     "migrate:tenants": "node migrate-to-tenants.mjs",
+    "migrate:presentations": "node migrate-presentation-stock.mjs",
     "test:rules": "node --test firestore-rules.test.mjs",
     "test:functions": "node --test functions-inventory.test.mjs",
     "test:fiscal": "node --test fiscal-payload.test.mjs"

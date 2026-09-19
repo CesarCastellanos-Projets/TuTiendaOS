@@ -64,7 +64,7 @@ beforeEach(async () => {
   });
 });
 
-after(async () => env.cleanup());
+after(async () => env?.cleanup?.());
 
 test('bloquea usuarios anónimos, perfiles inexistentes y rutas heredadas', async () => {
   const path = `tenants/${TENANT_A}/product_stocks/p1_A01`;

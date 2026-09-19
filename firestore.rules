@@ -2,6 +2,18 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    // ===============================================================
+    // Modelo asumido
+    // ===============================================================
+    // users/{uid}: perfil privado, rol y tenant (roles inmutables para el usuario).
+    // tenants/{tenantId}/products/{id}: catálogo; lectura de la empresa, escritura solo Admin SDK.
+    // barcode_registry/{id}: reserva única de código; solo Admin SDK.
+    // product_stocks/{id}, stock_movements/{id}: inventario y kardex; escritura solo Admin SDK.
+    // sales/{id}, transfers/{id}, counters/{id}, clients/{id}: flujos críticos; creación/mutación por Functions.
+    // config, stores, warehouses: administración validada por esquema y rol admin.
+    // replenishment_requests, incidents, quotations, cash_sessions: escrituras cliente validadas y acotadas.
+    // Todas las rutas de tenant exigen que users/{uid}.tenantId coincida con la ruta.
+    // ===============================================================
     function signedIn() { return request.auth != null; }
     function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)); }
     function activeUser() {
@@ -51,14 +63,60 @@ service cloud.firestore {
         && (!('warehouseId' in data) || data.warehouseId == null || shortString(data.warehouseId, 128));
     }
 
-    function validProduct(data, tenantId) {
+    function validReplenishment(data, tenantId) {
       return validTenantData(data, tenantId)
-        && data.keys().hasAll(['tenantId', 'name', 'category', 'salePrice', 'unit', 'active', 'minStock', 'updatedAt'])
-        && data.keys().hasOnly(['tenantId', 'name', 'category', 'brand', 'unit', 'internalCode', 'barcode', 'salePrice', 'minStock', 'locationHint', 'promoLabel', 'promoActive', 'sunatCode', 'active', 'presentations', 'createdAt', 'updatedAt'])
-        && shortString(data.name, 160) && shortString(data.category, 100) && shortString(data.unit, 40)
-        && data.salePrice is number && data.salePrice >= 0
-        && data.minStock is number && data.minStock >= 0 && data.active is bool
-        && (!('presentations' in data) || (data.presentations is list && data.presentations.size() <= 30));
+        && data.keys().hasAll(['tenantId', 'storeId', 'storeName', 'items', 'status', 'createdBy', 'createdByName', 'createdAt'])
+        && data.keys().hasOnly(['tenantId', 'storeId', 'storeName', 'items', 'status', 'createdBy', 'createdByName', 'createdAt', 'note'])
+        && shortString(data.storeId, 128) && shortString(data.storeName, 120)
+        && shortString(data.createdBy, 128) && shortString(data.createdByName, 120)
+        && data.createdAt is number && data.createdAt > 0
+        && data.status == 'pendiente'
+        && data.items is list && data.items.size() > 0 && data.items.size() <= 100
+        && (!('note' in data) || data.note == null || shortString(data.note, 250));
+    }
+
+    function validIncident(data, tenantId) {
+      return validTenantData(data, tenantId)
+        && data.keys().hasAll(['tenantId', 'storeId', 'storeName', 'type', 'description', 'status', 'createdBy', 'createdByName', 'createdAt'])
+        && data.keys().hasOnly(['tenantId', 'storeId', 'storeName', 'productId', 'productName', 'type', 'description', 'photoUrl', 'status', 'createdBy', 'createdByName', 'createdAt', 'resolutionNote', 'resolvedBy', 'resolvedByName', 'resolvedAt'])
+        && shortString(data.storeId, 128) && shortString(data.storeName, 120)
+        && data.type in ['danado', 'vencido', 'sin_etiqueta', 'sin_codigo', 'otro']
+        && shortString(data.description, 1000)
+        && shortString(data.createdBy, 128) && shortString(data.createdByName, 120)
+        && data.status in ['abierta', 'resuelta'] && data.createdAt is number
+        && (!('productId' in data) || data.productId == null || shortString(data.productId, 128))
+        && (!('productName' in data) || data.productName == null || shortString(data.productName, 180))
+        && (!('photoUrl' in data) || data.photoUrl == null || shortString(data.photoUrl, 1000))
+        && (!('resolutionNote' in data) || data.resolutionNote == null || shortString(data.resolutionNote, 1000));
+    }
+
+    function validCashSession(data, tenantId) {
+      return validTenantData(data, tenantId)
+        && data.keys().hasAll(['tenantId', 'storeId', 'userId', 'userName', 'openingAmount', 'status', 'openedAt'])
+        && data.keys().hasOnly(['tenantId', 'storeId', 'userId', 'userName', 'openingAmount', 'closingAmount', 'expectedAmount', 'difference', 'status', 'openedAt', 'closedAt'])
+        && shortString(data.storeId, 128) && shortString(data.userId, 128) && shortString(data.userName, 120)
+        && data.openingAmount is number && data.openingAmount >= 0 && data.openingAmount <= 100000000
+        && data.status in ['abierta', 'cerrada'] && data.openedAt is number
+        && (!('closingAmount' in data) || data.closingAmount == null || (data.closingAmount is number && data.closingAmount >= 0 && data.closingAmount <= 100000000))
+        && (!('expectedAmount' in data) || data.expectedAmount == null || (data.expectedAmount is number && data.expectedAmount >= 0 && data.expectedAmount <= 100000000))
+        && (!('difference' in data) || data.difference == null || (data.difference is number && data.difference >= -100000000 && data.difference <= 100000000))
+        && (!('closedAt' in data) || data.closedAt == null || data.closedAt is number);
+    }
+
+    function validQuotation(data, tenantId) {
+      return validTenantData(data, tenantId)
+        && data.keys().hasAll(['tenantId', 'id', 'code', 'storeId', 'storeName', 'items', 'totalAll', 'totalAvailable', 'createdBy', 'createdByName', 'status', 'createdAt'])
+        && data.keys().hasOnly(['tenantId', 'id', 'code', 'clientName', 'clientPhone', 'storeId', 'storeName', 'items', 'totalAll', 'totalAvailable', 'note', 'createdBy', 'createdByName', 'status', 'createdAt'])
+        && shortString(data.id, 128) && shortString(data.code, 40)
+        && shortString(data.storeId, 128) && shortString(data.storeName, 120)
+        && shortString(data.createdBy, 128) && shortString(data.createdByName, 120)
+        && data.items is list && data.items.size() > 0 && data.items.size() <= 100
+        && data.totalAll is number && data.totalAll >= 0 && data.totalAll <= 100000000
+        && data.totalAvailable is number && data.totalAvailable >= 0 && data.totalAvailable <= 100000000
+        && data.status in ['pendiente', 'facturada', 'descartada'] && data.createdAt is number
+        && (!('clientName' in data) || data.clientName == null || shortString(data.clientName, 180))
+        && (!('clientPhone' in data) || data.clientPhone == null || shortString(data.clientPhone, 30))
+        && (!('note' in data) || data.note == null || shortString(data.note, 500));
     }
 
     match /users/{uid} {
@@ -69,6 +127,7 @@ service cloud.firestore {
           && validUser(request.resource.data) && request.resource.data.tenantId == userTenantId())
         || (activeUser() && request.auth.uid == uid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName'])
+          && validUser(request.resource.data)
           && shortString(request.resource.data.displayName, 120));
       allow delete: if false;
     }
@@ -106,8 +165,10 @@ service cloud.firestore {
       }
       match /products/{productId} {
         allow read: if belongsToTenant(tenantId);
-        allow create, update: if belongsToTenant(tenantId) && isAdmin() && validProduct(request.resource.data, tenantId);
-        allow delete: if false;
+        allow write: if belongsToTenant(tenantId) && isAdmin();
+      }
+      match /barcode_registry/{barcodeId} {
+        allow read, write: if belongsToTenant(tenantId) && isAdmin();
       }
       match /meta/{metaId} {
         allow read: if belongsToTenant(tenantId);
@@ -121,11 +182,11 @@ service cloud.firestore {
       }
       match /product_stocks/{stockId} {
         allow read: if belongsToTenant(tenantId);
-        allow write: if false;
+        allow write: if belongsToTenant(tenantId) && isAdmin();
       }
       match /stock_movements/{movementId} {
         allow read: if belongsToTenant(tenantId) && isAdmin();
-        allow write: if false;
+        allow write: if belongsToTenant(tenantId) && isAdmin();
       }
       match /transfers/{transferId} {
         allow get, list: if belongsToTenant(tenantId)
@@ -137,7 +198,7 @@ service cloud.firestore {
           && (isAdmin() || (isPos() && resource.data.storeId == userStoreId()
             && resource.data.createdBy == request.auth.uid));
         allow create: if belongsToTenant(tenantId) && isPos()
-          && validTenantData(request.resource.data, tenantId)
+          && validReplenishment(request.resource.data, tenantId)
           && request.resource.data.storeId == userStoreId()
           && request.resource.data.createdBy == request.auth.uid
           && request.resource.data.status == 'pendiente'
@@ -149,12 +210,12 @@ service cloud.firestore {
         allow get, list: if belongsToTenant(tenantId)
           && (isAdmin() || ((isPos() || isWorker()) && resource.data.storeId == userStoreId()));
         allow create: if belongsToTenant(tenantId) && (isPos() || isWorker())
-          && validTenantData(request.resource.data, tenantId)
+          && validIncident(request.resource.data, tenantId)
           && request.resource.data.storeId == userStoreId()
           && request.resource.data.createdBy == request.auth.uid
           && request.resource.data.status == 'abierta';
         allow update: if belongsToTenant(tenantId) && isAdmin()
-          && validTenantData(request.resource.data, tenantId);
+          && validIncident(request.resource.data, tenantId);
         allow delete: if false;
       }
       match /sales/{saleId} {
@@ -181,12 +242,13 @@ service cloud.firestore {
           && (isAdmin() || (isPos() && resource.data.userId == request.auth.uid
             && resource.data.storeId == userStoreId()));
         allow create: if belongsToTenant(tenantId) && isPos()
-          && validTenantData(request.resource.data, tenantId)
+          && validCashSession(request.resource.data, tenantId)
           && request.resource.data.userId == request.auth.uid
           && request.resource.data.storeId == userStoreId()
           && request.resource.data.status == 'abierta';
         allow update: if belongsToTenant(tenantId) && isPos()
           && resource.data.tenantId == tenantId
+          && validCashSession(request.resource.data, tenantId)
           && resource.data.userId == request.auth.uid && resource.data.storeId == userStoreId()
           && resource.data.status == 'abierta' && request.resource.data.status == 'cerrada'
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'closedAt', 'closingAmount', 'expectedAmount', 'difference']);
@@ -197,13 +259,14 @@ service cloud.firestore {
         allow get, list: if belongsToTenant(tenantId)
           && (isAdmin() || ((isPos() || isWorker()) && resource.data.storeId == userStoreId()));
         allow create: if belongsToTenant(tenantId) && (isPos() || isWorker())
-          && validTenantData(request.resource.data, tenantId)
+          && validQuotation(request.resource.data, tenantId)
           && request.resource.data.storeId == userStoreId()
           && request.resource.data.createdBy == request.auth.uid
           && request.resource.data.status == 'pendiente'
           && request.resource.data.items is list && request.resource.data.items.size() > 0
           && request.resource.data.items.size() <= 100;
         allow update: if belongsToTenant(tenantId)
+          && validQuotation(request.resource.data, tenantId)
           && (isAdmin() || ((isPos() || isWorker())
             && resource.data.storeId == userStoreId()
             && resource.data.createdBy == request.auth.uid

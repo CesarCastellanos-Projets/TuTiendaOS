@@ -46,7 +46,7 @@ export function IngressPage() {
       await ingressStock({
         locationId,
         locationType: loc.kind,
-        items: lines.map((l) => ({ productId: l.productId, qty: l.qty }))
+        items: lines.map((l) => ({ productId: l.productId, presentationId: l.presentationId, qty: l.qty }))
       });
       setLines([]);
       flash(`Ingreso registrado: ${lines.length} productos a ${loc.name}`);

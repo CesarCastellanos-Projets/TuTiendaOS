@@ -35,7 +35,7 @@ export function ReceivingPage() {
     setReceivingTransfer(t);
     const initial: Record<string, number> = {};
     t.items.forEach((i) => {
-      initial[i.productId] = i.qtySent;
+      initial[`${i.productId}:${i.presentationId ?? 'base'}`] = i.qtySent;
     });
     setQuantities(initial);
   };
@@ -44,7 +44,7 @@ export function ReceivingPage() {
     if (!receivingTransfer || !user) return;
 
     for (const item of receivingTransfer.items) {
-      const rec = quantities[item.productId] ?? 0;
+      const rec = quantities[`${item.productId}:${item.presentationId ?? 'base'}`] ?? 0;
       if (rec < 0 || rec > item.qtySent) {
         flash(`Error: La cantidad recibida de ${item.name} debe estar entre 0 y ${item.qtySent}`);
         return;
@@ -112,11 +112,25 @@ export function ReceivingPage() {
 
               <div className="mt-3 border-t border-slate-100 pt-2">
                 <p className="mb-1 text-xs font-bold uppercase text-slate-400">Productos en el envío:</p>
-                <ul className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+                <ul className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
                   {t.items.map((i) => (
-                    <li key={i.productId} className="flex justify-between rounded bg-slate-50 px-2 py-1 text-xs">
-                      <span className="truncate">{i.name}</span>
-                      <b className="font-mono">{i.qtySent} u.</b>
+                    <li
+                      key={`${i.productId}:${i.presentationId ?? 'base'}`}
+                      className="flex items-center justify-between rounded-lg bg-slate-50 border border-slate-100 px-2.5 py-1.5 text-xs"
+                    >
+                      <div className="min-w-0 flex-1 truncate mr-2">
+                        <span className="font-semibold text-slate-800 block truncate">{i.name}</span>
+                        {i.presentationId ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-primary">
+                            📦 {i.presentationLabel}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-slate-400">Unidad suelta</span>
+                        )}
+                      </div>
+                      <b className="font-mono text-slate-900 shrink-0">
+                        {i.qtySent} {i.presentationId ? 'empaques' : 'un.'}
+                      </b>
                     </li>
                   ))}
                 </ul>
@@ -139,28 +153,53 @@ export function ReceivingPage() {
           </p>
 
           <div className="max-h-72 overflow-y-auto divide-y divide-linea rounded-lg border border-slate-200 bg-white">
-            {receivingTransfer?.items.map((item) => (
-              <div key={item.productId} className="flex items-center justify-between gap-3 p-3">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold">{item.name}</p>
-                  <p className="text-xs text-slate-500">Enviado: {item.qtySent} unidades</p>
+            {receivingTransfer?.items.map((item) => {
+              const quantityKey = `${item.productId}:${item.presentationId ?? 'base'}`;
+              return (
+                <div key={quantityKey} className="flex items-center justify-between gap-3 p-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-bold text-slate-900">{item.name}</p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      {item.presentationId ? (
+                        <>
+                          <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 text-[10px] font-extrabold text-primary">
+                            📦 {item.presentationLabel}
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            Enviado: <b>{item.qtySent} empaques</b> ({item.qtySent * (item.factor ?? 1)} un. base)
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
+                            Unidad suelta
+                          </span>
+                          <span className="text-xs text-slate-500">
+                            Enviado: <b>{item.qtySent} unidades</b>
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <label className="text-xs font-bold text-slate-600">
+                      {item.presentationId ? 'Empaques:' : 'Unidades:'}
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={item.qtySent}
+                      value={quantities[quantityKey] ?? item.qtySent}
+                      onChange={(e) => {
+                        const val = Math.max(0, Math.min(item.qtySent, Math.trunc(Number(e.target.value) || 0)));
+                        setQuantities({ ...quantities, [quantityKey]: val });
+                      }}
+                      className="field !min-h-0 w-20 !px-2 !py-1 text-center font-mono text-sm font-extrabold"
+                    />
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <label className="text-xs font-medium text-slate-600">Recibido:</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={item.qtySent}
-                    value={quantities[item.productId] ?? item.qtySent}
-                    onChange={(e) => {
-                      const val = Math.max(0, Math.min(item.qtySent, Math.trunc(Number(e.target.value) || 0)));
-                      setQuantities({ ...quantities, [item.productId]: val });
-                    }}
-                    className="field !min-h-0 w-20 !px-2 !py-1.5 text-center font-mono font-bold"
-                  />
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="flex justify-end gap-2 pt-2">

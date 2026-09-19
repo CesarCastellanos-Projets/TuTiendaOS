@@ -372,12 +372,13 @@ function ProductCard({
                 {/* 2. Otras Presentaciones */}
                 {presentations.map((pres, idx) => {
                   const factor = pres.factor || 1;
-                  const cajasDisponibles = Math.floor(p.quantity / factor);
-                  const sobrante = p.quantity % factor;
+                  const presentationId = pres.id || `legacy-${idx + 1}`;
+                  const cajasDisponibles = p.presentationQuantities?.[presentationId] ?? 0;
+                  const sobrante = p.baseQuantity ?? p.quantity;
 
                   return (
                     <div
-                      key={idx}
+                      key={presentationId}
                       className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs hover:border-slate-300 transition-all"
                     >
                       <div className="min-w-0 flex-1 pr-3">
@@ -395,8 +396,8 @@ function ProductCard({
                           </span>
                         )}
                         <span className="text-[11px] text-emerald-700 font-medium block mt-1">
-                          Alcanza para: <strong>{cajasDisponibles} {pres.unit}</strong>
-                          {sobrante > 0 ? ` (sobran ${sobrante} ${baseUnit})` : ''}
+                          Cerradas: <strong>{cajasDisponibles} {pres.description || pres.unit}</strong>
+                          {sobrante > 0 ? ` · Sueltas: ${sobrante} ${baseUnit}` : ''}
                         </span>
                       </div>
                       <div className="text-right shrink-0">

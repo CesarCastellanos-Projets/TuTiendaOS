@@ -6,12 +6,12 @@ export function ticketHtml(sale: Sale, cfg?: CompanyConfig): string {
     .map(
       (i) =>
         `<div class="row"><span class="name">${esc(i.name)}</span>` +
-        `<span class="mono">${i.qty} x ${i.unitPrice.toFixed(2)}</span>` +
+        `<span class="mono">${esc(ticketItemDetail(i))}</span>` +
         `<span class="mono r">${i.total.toFixed(2)}</span></div>`
     )
     .join('');
 
-  return `
+  return `<div data-ticket-width="${cfg?.ticketWidth ?? '80mm'}">
   <div class="head">
     ${cfg?.logoUrl ? `<div style="text-align:center;margin-bottom:6px;"><img src="${esc(cfg.logoUrl)}" style="max-height:48px;max-width:140px;display:inline-block;filter:grayscale(100%);" alt="Logo" /></div>` : ''}
     <div class="brand">${esc(cfg?.razonSocial ?? "D'ENZOZ")}</div>
@@ -35,7 +35,7 @@ export function ticketHtml(sale: Sale, cfg?: CompanyConfig): string {
   <hr />
   <div class="foot" style="text-align:center;font-size:11px;margin-top:6px;line-height:1.4;">
     ${esc(cfg?.footerText ?? '¡Gracias por su compra!')}
-  </div>`;
+  </div></div>`;
 }
 
 export function printTicket(html: string): void {
@@ -46,7 +46,14 @@ export function printTicket(html: string): void {
     document.body.appendChild(holder);
   }
   holder.innerHTML = html;
+  holder.dataset.width = (holder.firstElementChild as HTMLElement | null)?.dataset.ticketWidth ?? '80mm';
+  const cleanup = () => {
+    holder?.remove();
+    window.removeEventListener('afterprint', cleanup);
+  };
+  window.addEventListener('afterprint', cleanup, { once: true });
   window.print();
+  window.setTimeout(cleanup, 2_000);
 }
 
 export function cashCloseTicketHtml(
@@ -73,7 +80,7 @@ export function cashCloseTicketHtml(
   const diff = session.difference ?? 0;
   const diffLabel = diff === 0 ? 'CUADRADO' : diff > 0 ? `SOBRANTE +${diff.toFixed(2)}` : `FALTANTE ${diff.toFixed(2)}`;
 
-  return `
+  return `<div data-ticket-width="${cfg?.ticketWidth ?? '80mm'}">
   <div class="head">
     <div class="brand">${esc(cfg?.razonSocial ?? "D'ENZOZ")}</div>
     ${cfg?.ruc ? `<div>RUC ${esc(cfg.ruc)}</div>` : ''}
@@ -101,10 +108,16 @@ export function cashCloseTicketHtml(
     Firma Cajero: ${esc(session.userName)}<br /><br />
     __________________________<br />
     V°B° Administrador / Supervisor
-  </div>`;
+  </div></div>`;
 }
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
+function ticketItemDetail(item: Sale['items'][number]): string {
+  if (!item.presentationId) return `${item.qty} un x ${item.unitPrice.toFixed(2)}`;
+  const label = item.presentationLabel || item.presentationUnit || 'pres.';
+  const equivalent = Math.round((item.qty * (item.factor ?? 1) + Number.EPSILON) * 1000) / 1000;
+  return `${item.qty} ${label} = ${equivalent} un`;
+}

@@ -27,12 +27,12 @@ import type { LucideIcon } from 'lucide-react';
 import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import { useCompany } from '../../hooks/useCompany';
-import { findInCatalog, useCatalogSearch, useStoreCatalog } from '../../hooks/useStoreCatalog';
+import { findInCatalog, useCatalogSearch, useStoreCatalog, type SearchableCatalogItem } from '../../hooks/useStoreCatalog';
 import { useScanner } from '../../hooks/useScanner';
 import { createSale } from '../../lib/sales';
 import { lookupClient } from '../../services/ruc';
 import { ticketHtml, printTicket } from '../../lib/print';
-import type { CashSession, ClientDoc, PaymentMethod, ProductStock, SaleItem, Quotation } from '../../types';
+import type { CashSession, ClientDoc, PaymentMethod, SaleItem, Quotation } from '../../types';
 import { DNI_RE, money, RUC_RE } from '../../lib/utils';
 import { Modal } from '../../components/ui/Modal';
 
@@ -40,6 +40,9 @@ interface CartLine extends SaleItem {
   lineId: string;
   stock: number;
   promo?: boolean;
+  allowFractionalSale?: boolean;
+  fractionStep?: number;
+  priceOverridden?: boolean;
 }
 
 const BANKS = ['BCP', 'BBVA', 'Interbank', 'Scotiabank', 'Caja Huancayo', 'Caja Arequipa', 'Banco de la Nación', 'Otro'];
@@ -114,6 +117,7 @@ export function PosSale() {
   const [editingPriceLineId, setEditingPriceLineId] = useState<string | null>(null);
   const [priceDraft, setPriceDraft] = useState('');
   const canOverridePrices = profile.role === 'admin' || profile.canOverridePrices === true;
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Cotizaciones
   const [quoteModal, setQuoteModal] = useState(false);
@@ -144,9 +148,19 @@ export function PosSale() {
     const newCart: CartLine[] = [];
     for (const item of q.items) {
       const inCat = catalog.find((c) => c.productId === item.productId);
-      const stock = inCat ? inCat.quantity : item.availableQty;
-      const effectiveQty = Math.max(1, item.qty);
-      const lineId = `${item.productId}_${item.barcode || 'base'}_${item.unitPrice}`;
+      const stock = inCat
+        ? item.presentationId
+          ? inCat.presentationQuantities?.[item.presentationId] ?? 0
+          : inCat.baseQuantity ?? inCat.quantity
+        : item.availableQty;
+      const effectiveQty = item.qty > 0 ? round3(item.qty) : 1;
+      const prodDef = products.find((pr) => pr.id === item.productId);
+      const pres = item.presentationId
+        ? (prodDef?.presentations ?? []).find(
+            (p, index) => (p.id || `legacy-${index + 1}`) === item.presentationId
+          )
+        : null;
+      const lineId = `${item.productId}_${item.presentationId || 'base'}`;
       newCart.push({
         lineId,
         productId: item.productId,
@@ -156,8 +170,12 @@ export function PosSale() {
         total: round2(effectiveQty * item.unitPrice),
         stock: stock,
         presentationUnit: item.unit,
-        factor: 1,
-        barcode: item.barcode
+        presentationId: item.presentationId,
+        presentationLabel: item.presentationLabel,
+        factor: item.factor ?? 1,
+        barcode: item.barcode,
+        allowFractionalSale: pres?.allowFractionalSale !== false,
+        fractionStep: pres?.fractionStep ?? 0.5
       });
     }
     setCart(newCart);
@@ -204,16 +222,67 @@ export function PosSale() {
     }
   }, [cart, cartStorageKey, clientDoc, docType, storeId]);
 
-  // Sincronizar stock del catálogo en los ítems del carrito recuperados
+  // Sincronizar y sanear ítems del carrito recuperados del almacenamiento local
   useEffect(() => {
     if (cart.length === 0 || catalog.length === 0) return;
     setCart((prev) =>
       prev.map((line) => {
         const found = catalog.find((c) => c.productId === line.productId);
-        return found && found.quantity !== line.stock ? { ...line, stock: found.quantity } : line;
+        if (!found) return line;
+        const prodDef = products.find((pr) => pr.id === line.productId);
+
+        const stock = line.presentationId
+          ? found.presentationQuantities?.[line.presentationId] ?? 0
+          : found.baseQuantity ?? found.quantity;
+
+        const pres = line.presentationId
+          ? (prodDef?.presentations ?? []).find(
+              (p, index) => (p.id || `legacy-${index + 1}`) === line.presentationId
+            )
+          : null;
+
+        const allowFractionalSale = pres ? pres.allowFractionalSale !== false : true;
+        const fractionStep = pres?.fractionStep ?? 0.5;
+        const step = line.presentationId && allowFractionalSale ? fractionStep : (line.presentationId ? 1 : 0.5);
+        const officialPrice = pres ? pres.salePrice : (found.salePrice ?? prodDef?.salePrice ?? line.unitPrice);
+
+        let validQty = line.qty;
+        if (!allowFractionalSale) {
+          if (!Number.isInteger(validQty) || validQty < 1) {
+            validQty = Math.max(1, Math.round(validQty));
+          }
+        } else {
+          const steps = validQty / step;
+          if (Math.abs(steps - Math.round(steps)) > 0.000001 || validQty < step) {
+            validQty = Math.max(step, round3(Math.round(steps) * step));
+          }
+        }
+
+        const unitPrice = line.priceOverridden ? line.unitPrice : officialPrice;
+        const total = round2(validQty * unitPrice);
+
+        const hasChanged =
+          line.stock !== stock ||
+          line.qty !== validQty ||
+          line.unitPrice !== unitPrice ||
+          line.total !== total ||
+          line.allowFractionalSale !== allowFractionalSale ||
+          line.fractionStep !== fractionStep;
+
+        if (!hasChanged) return line;
+
+        return {
+          ...line,
+          stock,
+          qty: validQty,
+          unitPrice,
+          total,
+          allowFractionalSale,
+          fractionStep
+        };
       })
     );
-  }, [catalog, cart.length]);
+  }, [catalog, products]);
 
   const total = useMemo(() => round2(cart.reduce((s, l) => s + l.total, 0)), [cart]);
   const change = Math.max(0, (Number(paid) || 0) - total);
@@ -232,26 +301,25 @@ export function PosSale() {
     return catalog.filter((p) => p.locationName === selectedCategory);
   }, [catalog, selectedCategory]);
 
-  function addToCart(p: ProductStock & { presentationUnit?: string; factor?: number }): void {
+  function addToCart(p: Omit<SearchableCatalogItem, 'searchKey'> & { searchKey?: string }): void {
     setError(null);
     const factor = p.factor || 1;
-    const lineId = `${p.productId}_${p.barcode || 'base'}_${p.salePrice}`;
+    const lineId = `${p.productId}_${p.presentationId || 'base'}`;
 
     setCart((prev) => {
-      const currentAllocated = prev
-        .filter((l) => l.productId === p.productId)
-        .reduce((sum, l) => sum + l.qty * (l.factor || 1), 0);
-
-      const remainingPresentations = round3((p.quantity - currentAllocated) / factor);
-      if (remainingPresentations <= 0) {
-        setError(`Stock insuficiente: quedan ${p.quantity} unidades base de ${p.productName}`);
+      if (p.quantity < 1) {
+        setError(`Stock insuficiente de ${p.presentationLabel ?? p.productName}`);
         return prev;
       }
-      const quantityToAdd = Math.min(1, remainingPresentations);
+      const quantityToAdd = 1;
 
       const existing = prev.find((l) => l.lineId === lineId);
       if (existing) {
         const nextQty = round3(existing.qty + quantityToAdd);
+        if (Math.ceil(nextQty - 0.0000001) > p.quantity) {
+          setError(`Stock máximo alcanzado para ${p.presentationLabel ?? p.productName}.`);
+          return prev;
+        }
         const updated = { ...existing, qty: nextQty, total: round2(nextQty * existing.unitPrice) };
         return [updated, ...prev.filter((line) => line.lineId !== lineId)];
       }
@@ -266,44 +334,68 @@ export function PosSale() {
           total: round2(quantityToAdd * p.salePrice),
           stock: p.quantity,
           presentationUnit: p.presentationUnit,
+          presentationId: p.presentationId,
+          presentationLabel: p.presentationLabel,
           factor,
-          barcode: p.barcode ?? undefined
+          barcode: p.barcode ?? undefined,
+          allowFractionalSale: p.allowFractionalSale,
+          fractionStep: p.fractionStep
         },
         ...prev
       ];
     });
   }
 
-  function updateCartQuantity(lineId: string, requestedQty: number): void {
-    if (!Number.isFinite(requestedQty) || requestedQty <= 0 || requestedQty > 1_000_000) return;
+  function updateCartQuantity(lineId: string, requestedQty: number): boolean {
+    if (!Number.isFinite(requestedQty) || requestedQty <= 0 || requestedQty > 1_000_000) {
+      setError('La cantidad debe ser mayor a cero.');
+      return false;
+    }
+    const line = cart.find((item) => item.lineId === lineId);
+    if (!line) return false;
+
     const quantity = round3(requestedQty);
-    setCart((prev) => {
-      const line = prev.find((item) => item.lineId === lineId);
-      if (!line) return prev;
-      const allocatedByOthers = prev
-        .filter((item) => item.productId === line.productId && item.lineId !== lineId)
-        .reduce((sum, item) => sum + item.qty * (item.factor || 1), 0);
-      const required = round3(allocatedByOthers + quantity * (line.factor || 1));
-      if (required > line.stock + 0.0001) {
-        setError(`Stock máximo alcanzado para ${line.name} (quedan ${line.stock} unidades base)`);
-        return prev;
-      }
-      setError(null);
-      return prev.map((item) => item.lineId === lineId
-        ? { ...item, qty: quantity, total: round2(quantity * item.unitPrice) }
-        : item);
-    });
+    const allowFractional = line.presentationId ? line.allowFractionalSale !== false : true;
+    const step = line.presentationId ? (line.fractionStep ?? 0.5) : 0.5;
+
+    if (line.presentationId && line.allowFractionalSale === false && !Number.isInteger(quantity)) {
+      setError(`${line.presentationLabel ?? line.name} no permite venta fraccionada (solo cantidades enteras).`);
+      return false;
+    }
+    if (line.presentationId && allowFractional && Math.abs(quantity / step - Math.round(quantity / step)) > 0.000001) {
+      setError(`La cantidad de ${line.presentationLabel ?? line.name} debe avanzar de ${step} en ${step}.`);
+      return false;
+    }
+    if (Math.ceil(quantity - 0.0000001) > line.stock) {
+      setError(`Stock máximo alcanzado para ${line.name} (quedan ${line.stock} ${line.presentationLabel ?? 'unidades'})`);
+      return false;
+    }
+
+    setError(null);
+    setCart((prev) =>
+      prev.map((item) =>
+        item.lineId === lineId
+          ? { ...item, qty: quantity, total: round2(quantity * item.unitPrice) }
+          : item
+      )
+    );
+    return true;
   }
 
   function commitPrice(lineId: string): void {
-    const price = round2(Number(priceDraft));
+    const clean = priceDraft.replace(',', '.').trim();
+    const price = round2(Number(clean));
     if (!Number.isFinite(price) || price <= 0 || price > 1_000_000) {
       setError('El precio debe ser mayor que cero y tener un importe válido.');
       return;
     }
-    setCart((prev) => prev.map((line) => line.lineId === lineId
-      ? { ...line, unitPrice: price, total: round2(line.qty * price) }
-      : line));
+    setCart((prev) =>
+      prev.map((line) =>
+        line.lineId === lineId
+          ? { ...line, unitPrice: price, total: round2(line.qty * price), priceOverridden: true }
+          : line
+      )
+    );
     setEditingPriceLineId(null);
     setPriceDraft('');
     setError(null);
@@ -323,8 +415,24 @@ export function PosSale() {
   const scanner = useScanner((code) => {
     setTerm(code);
     scanCode(code);
-  });
+  }, false);
   const results = term.trim().length >= 2 ? searchIn(term) : [];
+
+  useEffect(() => {
+    const handleGlobalTyping = (event: KeyboardEvent) => {
+      if (event.ctrlKey || event.altKey || event.metaKey || event.isComposing) return;
+      const target = event.target as HTMLElement | null;
+      const editable = target?.matches('input, textarea, select, [contenteditable="true"]');
+      if (editable || document.querySelector('[role="dialog"]')) return;
+      if (event.key.length === 1) {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        setTerm((current) => `${current}${event.key}`);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalTyping);
+    return () => window.removeEventListener('keydown', handleGlobalTyping);
+  }, []);
 
   async function doRucLookup(): Promise<void> {
     if (!RUC_RE.test(rucValue)) {
@@ -406,12 +514,13 @@ export function PosSale() {
         profile,
         uid: user.uid,
         clientDoc,
-        items: cart.map(({ productId, name, qty, unitPrice, total, presentationUnit, factor, barcode }) => ({
+        items: cart.map(({ productId, name, qty, unitPrice, total, presentationId, presentationUnit, factor, barcode }) => ({
           productId,
           name,
           qty,
           unitPrice,
           total,
+          presentationId,
           presentationUnit,
           factor: factor || 1,
           barcode
@@ -451,9 +560,9 @@ export function PosSale() {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col lg:flex-row overflow-hidden bg-slate-100/60">
+    <div className="flex min-h-0 flex-1 flex-col bg-slate-100/60 lg:h-full lg:overflow-hidden lg:flex-row">
       {/* ─── COLUMNA IZQUIERDA: CATÁLOGO Y BÚSQUEDA ───────────────────────────── */}
-      <section className="flex min-w-0 flex-1 flex-col overflow-hidden border-b border-slate-200 lg:border-b-0 lg:border-r bg-white">
+      <section className="flex min-w-0 flex-1 flex-col border-b border-slate-200 bg-white lg:overflow-hidden lg:border-b-0 lg:border-r">
         {/* Banner de Estado de Caja */}
         {!sessionOpen && (
           <div className="flex items-center justify-between gap-3 bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-xs font-semibold text-amber-900">
@@ -482,6 +591,7 @@ export function PosSale() {
                 }}
               >
                 <input
+                  ref={searchInputRef}
                   value={term}
                   onChange={(event) => setTerm(event.target.value)}
                   placeholder="Busca por nombre o escanea cualquier presentación…"
@@ -605,13 +715,19 @@ export function PosSale() {
         )}
 
         {/* Grilla Visual de Productos */}
-        <div className="flex-1 overflow-y-auto p-4">
+        <div className="flex-1 p-4 lg:min-h-0 lg:overflow-y-auto">
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
             {filteredCatalog.map((p) => {
-              const isOutOfStock = p.quantity <= 0;
-              const isLowStock = p.quantity > 0 && p.quantity <= 5;
               const prodDef = products.find((pr) => pr.id === p.productId);
               const extraPres = prodDef?.presentations?.filter((pr) => pr.salePrice > 0) || [];
+              const baseAvailable = extraPres.reduce(
+                (available, presentation, index) => presentation.autoUnpackEnabled
+                  ? available + (p.presentationQuantities?.[presentation.id || `legacy-${index + 1}`] ?? 0) * presentation.factor
+                  : available,
+                p.baseQuantity ?? p.quantity
+              );
+              const isOutOfStock = baseAvailable <= 0;
+              const isLowStock = baseAvailable > 0 && baseAvailable <= 5;
 
               return (
                 <div
@@ -651,7 +767,7 @@ export function PosSale() {
                             : 'bg-emerald-50 text-success'
                         }`}
                       >
-                        {isOutOfStock ? 'Agotado' : `${p.quantity} un.`}
+                        {isOutOfStock ? 'Agotado' : `${baseAvailable} un.`}
                       </span>
                     </div>
 
@@ -659,7 +775,13 @@ export function PosSale() {
                     <div className="flex flex-wrap gap-1 pt-0.5">
                       <button
                         type="button"
-                        onClick={() => addToCart(p)}
+                        onClick={() => addToCart({
+                          ...p,
+                          quantity: baseAvailable,
+                          presentationUnit: prodDef?.unit ?? p.unit ?? 'UN',
+                          presentationLabel: `Unidad base (${prodDef?.unit ?? p.unit ?? 'UN'})`,
+                          factor: 1
+                        })}
                         disabled={isOutOfStock}
                         className="flex min-h-11 flex-1 min-w-[70px] items-center justify-center rounded-lg bg-slate-100 hover:bg-primary hover:text-white px-1.5 py-2 text-[10px] font-bold text-slate-700 transition-colors disabled:opacity-40 text-center"
                         title="Agregar unidad base"
@@ -667,13 +789,15 @@ export function PosSale() {
                         + {prodDef?.unit || 'UN'} (S/ {p.salePrice.toFixed(2)})
                       </button>
 
-                      {extraPres.map((pr, idx) => {
+                      {extraPres.map((pr, index) => {
                         const label = pr.factor && pr.factor > 1 ? `${pr.unit} x${pr.factor}` : pr.unit;
+                        const presentationId = pr.id || `legacy-${index + 1}`;
+                        const presentationStock = p.presentationQuantities?.[presentationId] ?? 0;
                         return (
                           <button
-                            key={idx}
+                            key={presentationId}
                             type="button"
-                            disabled={isOutOfStock}
+                            disabled={presentationStock <= 0}
                             onClick={() =>
                               addToCart({
                                 ...p,
@@ -681,13 +805,19 @@ export function PosSale() {
                                 salePrice: pr.salePrice,
                                 barcode: pr.barcode ?? undefined,
                                 presentationUnit: pr.unit,
-                                factor: pr.factor || 1
+                                presentationId,
+                                presentationLabel: pr.description || label,
+                                factor: pr.factor || 1,
+                                quantity: presentationStock,
+                                allowFractionalSale: pr.allowFractionalSale !== false,
+                                fractionStep: pr.fractionStep ?? 0.5,
+                                searchKey: `${p.productId}_${presentationId}`
                               })
                             }
                             className="flex min-h-11 flex-1 min-w-[70px] items-center justify-center rounded-lg bg-indigo-50 border border-indigo-200 hover:bg-primary hover:text-white px-1.5 py-2 text-[10px] font-bold text-primary transition-colors disabled:opacity-40 text-center"
-                            title={`Agregar ${label}`}
+                            title={presentationStock <= 0 ? `Sin existencias de ${label}` : `Agregar ${label} (${presentationStock} disponibles)`}
                           >
-                            + {label} (S/ {pr.salePrice.toFixed(2)})
+                            + {label} {presentationStock <= 0 ? '(0 disp.)' : `(${presentationStock})`} · S/ {pr.salePrice.toFixed(2)}
                           </button>
                         );
                       })}
@@ -708,9 +838,9 @@ export function PosSale() {
       </section>
 
       {/* ─── COLUMNA DERECHA: PANEL DEL TICKET / CARRITO ───────────────────────── */}
-      <aside className="flex w-full shrink-0 flex-col bg-slate-50/90 lg:w-[420px] xl:w-[460px] border-l border-slate-200 shadow-sm">
+      <aside className="flex w-full shrink-0 flex-col bg-slate-50/90 lg:h-full lg:min-h-0 lg:w-[420px] xl:w-[460px] border-l border-slate-200 shadow-sm">
         {/* Cabecera del Ticket */}
-        <div className="border-b border-slate-200 bg-white p-4 space-y-3">
+        <div className="sticky top-0 z-10 border-b border-slate-200 bg-white p-4 space-y-3 lg:static">
           {/* Segmented Control Boleta / Factura / Nota de Venta */}
           <div className="flex items-center justify-between gap-2">
             <div className="flex flex-1 rounded-xl border border-slate-200 bg-slate-100/80 p-1 text-xs font-bold gap-1">
@@ -768,7 +898,6 @@ export function PosSale() {
                 <span className="hidden sm:inline">Cotizaciones</span>
               </button>
 
-              {cart.length > 0 && (
                 <button
                   type="button"
                   onClick={() => {
@@ -780,12 +909,12 @@ export function PosSale() {
                       // ignore
                     }
                   }}
+                  disabled={cart.length === 0}
                   className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-critical transition-colors"
                   title="Vaciar carrito"
                 >
                   <Trash2 size={16} />
                 </button>
-              )}
             </div>
           </div>
 
@@ -850,7 +979,7 @@ export function PosSale() {
         </div>
 
         {/* Lista de Productos en el Carrito */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-2">
+        <div className="p-4 space-y-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
           {cart.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-slate-400 py-12">
               <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-300">
@@ -885,13 +1014,16 @@ export function PosSale() {
                         <span className="text-xs font-bold text-primary">S/</span>
                         <input
                           autoFocus
-                          type="number"
+                          type="text"
                           inputMode="decimal"
-                          min="0.01"
-                          max="1000000"
-                          step="0.01"
                           value={priceDraft}
-                          onChange={(event) => setPriceDraft(event.target.value)}
+                          onChange={(event) => {
+                            const val = event.target.value;
+                            if (/^[0-9]*[.,]?[0-9]*$/.test(val)) {
+                              setPriceDraft(val);
+                            }
+                          }}
+                          onFocus={(event) => event.currentTarget.select()}
                           onBlur={() => commitPrice(l.lineId)}
                           onKeyDown={(event) => {
                             if (event.key === 'Escape') {
@@ -913,11 +1045,11 @@ export function PosSale() {
                         }}
                         title="Editar el precio solo para esta venta"
                       >
-                        S/ {l.unitPrice.toFixed(2)} c/u · editar
+                        {cartLineDescription(l)} · editar precio
                       </button>
                     )
                   ) : (
-                    <span className="text-[11px] font-mono text-slate-400">S/ {l.unitPrice.toFixed(2)} c/u</span>
+                    <span className="text-[11px] font-mono text-slate-500">{cartLineDescription(l)}</span>
                   )}
                 </div>
 
@@ -927,7 +1059,7 @@ export function PosSale() {
                     aria-label={`Restar ${l.name}`}
                     className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
                     onClick={() => {
-                      const next = round3(l.qty - 1);
+                      const next = round3(l.qty - cartLineStep(l));
                       if (next <= 0) setCart((prev) => prev.filter((item) => item.lineId !== l.lineId));
                       else updateCartQuantity(l.lineId, next);
                     }}
@@ -935,23 +1067,15 @@ export function PosSale() {
                     <Minus size={12} />
                   </button>
 
-                  <input
-                    type="number"
-                    inputMode="decimal"
-                    min="0.001"
-                    max="1000000"
-                    step="0.001"
-                    value={l.qty}
-                    onChange={(event) => updateCartQuantity(l.lineId, event.currentTarget.valueAsNumber)}
-                    onFocus={(event) => event.currentTarget.select()}
-                    className="h-11 w-16 rounded-xl border border-slate-200 bg-white px-1 text-center font-mono text-sm font-extrabold text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-                    aria-label={`Cantidad de ${l.name}`}
+                  <CartQuantityInput
+                    line={l}
+                    onCommit={(nextQty) => updateCartQuantity(l.lineId, nextQty)}
                   />
 
                   <button
                     aria-label={`Sumar ${l.name}`}
                     className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
-                    onClick={() => updateCartQuantity(l.lineId, round3(l.qty + 1))}
+                    onClick={() => updateCartQuantity(l.lineId, round3(l.qty + cartLineStep(l)))}
                   >
                     <Plus size={12} />
                   </button>
@@ -977,7 +1101,7 @@ export function PosSale() {
         </div>
 
         {/* Footer / Panel de Cobro */}
-        <div className="border-t border-slate-200 bg-white p-4 space-y-3.5 shadow-lg">
+        <div className="border-t border-slate-200 bg-white p-4 pb-28 space-y-3.5 shadow-lg lg:shrink-0 lg:pb-4">
           {/* Selector de Método de Pago */}
           <div className="grid grid-cols-5 gap-1.5">
             {PAYMENTS.map(({ id, label, icon: Icon, colorClass }) => {
@@ -1125,7 +1249,7 @@ export function PosSale() {
           )}
 
           {/* Total Grande */}
-          <div className="flex items-center justify-between rounded-2xl bg-slate-950 p-4 text-white shadow-md">
+          <div className="hidden items-center justify-between rounded-2xl bg-slate-950 p-4 text-white shadow-md lg:flex">
             <div>
               <span className="text-xs uppercase font-bold text-slate-400 block tracking-wider">
                 Total a Pagar ({cart.length} {cart.length === 1 ? 'ítem' : 'ítems'})
@@ -1141,13 +1265,28 @@ export function PosSale() {
           <button
             disabled={cart.length === 0 || busy}
             onClick={() => void checkout()}
-            className="group relative flex w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-primary via-indigo-600 to-indigo-500 py-4 text-base font-display font-extrabold text-white shadow-lg shadow-primary/30 transition-all duration-200 hover:shadow-primary/50 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+            className="group relative hidden w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-primary via-indigo-600 to-indigo-500 py-4 text-base font-display font-extrabold text-white shadow-lg shadow-primary/30 transition-all duration-200 hover:shadow-primary/50 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed lg:flex"
           >
             <CheckCircle2 size={22} className="transition-transform group-hover:scale-110" />
             <span>{busy ? 'Procesando venta…' : `Cobrar S/ ${total.toFixed(2)}`}</span>
           </button>
         </div>
       </aside>
+
+      <div className="fixed inset-x-0 bottom-0 z-40 flex items-center gap-3 border-t border-slate-200 bg-white/95 p-3 shadow-2xl backdrop-blur lg:hidden">
+        <div className="min-w-0 flex-1">
+          <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-500">Total · {cart.length} ítems</span>
+          <span className="font-mono text-xl font-extrabold text-slate-950">S/ {total.toFixed(2)}</span>
+        </div>
+        <button
+          type="button"
+          disabled={cart.length === 0 || busy}
+          onClick={() => void checkout()}
+          className="flex min-h-12 min-w-40 items-center justify-center gap-2 rounded-2xl bg-primary px-5 font-display text-sm font-extrabold text-white shadow-lg disabled:opacity-50"
+        >
+          <CheckCircle2 size={19} /> {busy ? 'Procesando…' : 'Cobrar'}
+        </button>
+      </div>
 
       {/* ─── MODAL CONSULTA DNI / RUC ────────────────────────────────────────── */}
       <Modal open={dniModal} title="Identificación del Cliente" onClose={() => setDniModal(false)}>
@@ -1318,3 +1457,106 @@ function round2(n: number): number {
 function round3(n: number): number {
   return Math.round((n + Number.EPSILON) * 1000) / 1000;
 }
+
+function cartLineStep(line: CartLine): number {
+  return line.presentationId && line.allowFractionalSale ? line.fractionStep ?? 0.5 : 1;
+}
+
+function cartLineDescription(line: CartLine): string {
+  if (!line.presentationId) {
+    return `${line.qty} ${line.qty === 1 ? 'unidad' : 'unidades'} × S/ ${line.unitPrice.toFixed(2)}`;
+  }
+  const label = (line.presentationLabel || line.presentationUnit || 'presentación').toLowerCase();
+  const equivalent = round3(line.qty * (line.factor ?? 1));
+  if (!Number.isInteger(line.qty)) {
+    return `${line.qty} ${label} = ${equivalent} unidades · S/ ${line.total.toFixed(2)}`;
+  }
+  return `${line.qty} ${label} · ${equivalent} unidades · S/ ${line.unitPrice.toFixed(2)}`;
+}
+
+interface CartQuantityInputProps {
+  line: CartLine;
+  onCommit: (qty: number) => boolean;
+}
+
+function CartQuantityInput({ line, onCommit }: CartQuantityInputProps) {
+  const [draft, setDraft] = useState(() => String(line.qty));
+  const [isFocused, setIsFocused] = useState(false);
+
+  useEffect(() => {
+    if (!isFocused) {
+      setDraft(String(line.qty));
+    }
+  }, [line.qty, isFocused]);
+
+  const handleCommit = () => {
+    const clean = draft.replace(',', '.').trim();
+    const parsed = parseFloat(clean);
+    if (!clean || !Number.isFinite(parsed) || parsed <= 0) {
+      setDraft(String(line.qty));
+      return;
+    }
+    const success = onCommit(parsed);
+    if (!success) {
+      setDraft(String(line.qty));
+    } else {
+      setDraft(String(round3(parsed)));
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleCommit();
+      e.currentTarget.blur();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setDraft(String(line.qty));
+      e.currentTarget.blur();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const step = cartLineStep(line);
+      const next = round3(line.qty + step);
+      const success = onCommit(next);
+      if (success) {
+        setDraft(String(next));
+      }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const step = cartLineStep(line);
+      const next = round3(line.qty - step);
+      if (next > 0) {
+        const success = onCommit(next);
+        if (success) {
+          setDraft(String(next));
+        }
+      }
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      value={draft}
+      onChange={(e) => {
+        const val = e.target.value;
+        if (/^[0-9]*[.,]?[0-9]*$/.test(val)) {
+          setDraft(val);
+        }
+      }}
+      onFocus={(e) => {
+        setIsFocused(true);
+        e.currentTarget.select();
+      }}
+      onBlur={() => {
+        setIsFocused(false);
+        handleCommit();
+      }}
+      onKeyDown={handleKeyDown}
+      className="h-11 w-16 rounded-xl border border-slate-200 bg-white px-1 text-center font-mono text-sm font-extrabold text-slate-900 outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+      aria-label={`Cantidad de ${line.name}`}
+    />
+  );
+}
+

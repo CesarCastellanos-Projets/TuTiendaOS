@@ -4,7 +4,7 @@ import { onSnapshot } from '../../lib/firestore-listener';
 import { ArrowRight, Ban, Send } from 'lucide-react';
 import { tenantCollection } from '../../lib/tenant-firestore';
 import { cancelTransfer, createTransfer } from '../../lib/inventory';
-import { ProductLines, useProductSearch } from '../../components/ui/ProductPicker';
+import { ProductLines, useProductSearch, type PickLine } from '../../components/ui/ProductPicker';
 import type { Store, Transfer, TransferStatus, Warehouse } from '../../types';
 import { fmtDateTime } from '../../lib/utils';
 import { Modal } from '../../components/ui/Modal';
@@ -17,7 +17,7 @@ export function TransfersPage() {
   const [creating, setCreating] = useState(false);
   const [fromId, setFromId] = useState('');
   const [toId, setToId] = useState('');
-  const [lines, setLines] = useState<{ productId: string; name: string; qty: number; salePrice: number; barcode?: string }[]>([]);
+  const [lines, setLines] = useState<PickLine[]>([]);
   const [statusFilter, setStatusFilter] = useState<TransferStatus | 'todos'>('todos');
   const { search } = useProductSearch();
   const { msg, flash } = useFlash();
@@ -75,7 +75,7 @@ export function TransfersPage() {
         fromLocationType: from.type,
         toLocationId: toId,
         toLocationType: to.type,
-        items: lines.map((l) => ({ productId: l.productId, qtySent: l.qty })),
+        items: lines.map((l) => ({ productId: l.productId, presentationId: l.presentationId, qtySent: l.qty })),
         note: null
       });
       setCreating(false);
@@ -175,7 +175,7 @@ export function TransfersPage() {
                   <li key={idx} className="flex items-center justify-between py-1">
                     <span className="font-medium text-slate-800">{i.name}</span>
                     <span className="font-mono font-bold text-slate-700">
-                      Enviado: {i.qtySent} {i.qtyReceived > 0 && `(Recibido: ${i.qtyReceived})`}
+                      Enviado: {i.qtySent} {i.presentationLabel ?? 'unidades'} {i.qtyReceived > 0 && `(Recibido: ${i.qtyReceived})`}
                     </span>
                   </li>
                 ))}

@@ -2,20 +2,26 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { db } from './firebase';
 import { requireActiveProfile } from './authz';
 import { tenantCollection, tenantDoc } from './tenant';
+import {
+  consumeSaleStock,
+  parsePresentations,
+  positiveQuantity,
+  presentationLabel,
+  readStockState,
+  resolvePresentation,
+  round2,
+  round3,
+  stockPatch,
+  type StockState
+} from './stock-model';
 
 interface RequestedSaleItem {
   productId?: unknown;
   qty?: unknown;
+  presentationId?: unknown;
   presentationUnit?: unknown;
   barcode?: unknown;
   unitPrice?: unknown;
-}
-
-interface ProductPresentation {
-  unit?: unknown;
-  barcode?: unknown;
-  factor?: unknown;
-  salePrice?: unknown;
 }
 
 interface TrustedSaleItem {
@@ -25,18 +31,15 @@ interface TrustedSaleItem {
   unitPrice: number;
   total: number;
   factor: number;
+  presentationId?: string;
+  presentationLabel?: string;
   presentationUnit?: string;
   barcode?: string;
   catalogUnitPrice: number;
   priceOverridden: boolean;
-}
-
-function round2(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
-function round3(value: number): number {
-  return Math.round((value + Number.EPSILON) * 1000) / 1000;
+  baseUnitsSold: number;
+  packagesConsumed: number;
+  remainderToBase: number;
 }
 
 function positiveNumber(value: unknown, field: string): number {
@@ -48,12 +51,7 @@ function positiveNumber(value: unknown, field: string): number {
 }
 
 function saleQuantity(value: unknown): number {
-  const parsed = positiveNumber(value, 'La cantidad');
-  const rounded = round3(parsed);
-  if (parsed > 1_000_000 || Math.abs(parsed - rounded) > 0.0000001) {
-    throw new HttpsError('invalid-argument', 'La cantidad admite como máximo 3 decimales.');
-  }
-  return rounded;
+  return positiveQuantity(value, 'La cantidad');
 }
 
 function salePrice(value: unknown): number {
@@ -177,7 +175,10 @@ export const createSaleRecord = onCall(async (request) => {
 
     const products = new Map(productIds.map((id, index) => [id, productSnaps[index]]));
     const stocks = new Map(productIds.map((id, index) => [id, stockSnaps[index]]));
-    const requiredByProduct = new Map<string, number>();
+    const stockStates = new Map<string, StockState>(
+      productIds.map((id) => [id, readStockState(stocks.get(id)?.data() ?? {})])
+    );
+    const conversionMovements: Array<Record<string, unknown>> = [];
 
     const items: TrustedSaleItem[] = requestedItems.map((requested) => {
       const productId = shortText(requested.productId, 128);
@@ -192,26 +193,35 @@ export const createSaleRecord = onCall(async (request) => {
       }
 
       const qty = saleQuantity(requested.qty);
+      const presentationId = shortText(requested.presentationId, 80);
       const presentationUnit = shortText(requested.presentationUnit, 40);
       const barcode = shortText(requested.barcode, 80);
-      const presentations = Array.isArray(product.presentations)
-        ? product.presentations as ProductPresentation[]
-        : [];
-      const presentation = presentations.find((candidate) =>
-        (presentationUnit && candidate.unit === presentationUnit)
-        || (barcode && candidate.barcode === barcode)
-      );
-      const factor = presentation ? positiveNumber(presentation.factor ?? 1, 'El factor') : 1;
+      const presentations = parsePresentations(product);
+      const presentation = resolvePresentation(product, presentationId, barcode, presentationUnit);
+      const factor = presentation?.factor ?? 1;
       const stock = stockSnap.data()!;
       const catalogPrice = presentation
-        ? positiveNumber(presentation.salePrice, 'El precio')
+        ? presentation.salePrice
         : positiveNumber(stock.salePrice ?? product.salePrice, 'El precio');
       const mayOverridePrice = profile.role === 'admin' || profile.canOverridePrices;
       const unitPrice = mayOverridePrice && requested.unitPrice !== undefined
         ? salePrice(requested.unitPrice)
         : round2(catalogPrice);
-      const baseUnits = round3(qty * factor);
-      requiredByProduct.set(productId, round3((requiredByProduct.get(productId) ?? 0) + baseUnits));
+      const state = stockStates.get(productId)!;
+      const consumed = consumeSaleStock(state, presentations, presentation, qty);
+      for (const conversion of consumed.conversions) {
+        conversionMovements.push({
+          productId,
+          productName: String(product.name),
+          presentationId: conversion.presentation.id,
+          presentationLabel: presentationLabel(conversion.presentation),
+          packagesOpened: conversion.packagesOpened,
+          remainderToBase: conversion.baseUnitsReleased,
+          qty: 0,
+          baseQty: conversion.baseUnitsReleased,
+          reason: conversion.reason
+        });
+      }
 
       return {
         productId,
@@ -220,20 +230,16 @@ export const createSaleRecord = onCall(async (request) => {
         unitPrice,
         total: round2(qty * unitPrice),
         factor,
+        ...(presentation ? { presentationId: presentation.id, presentationLabel: presentationLabel(presentation) } : {}),
         catalogUnitPrice: round2(catalogPrice),
         priceOverridden: Math.abs(unitPrice - catalogPrice) >= 0.005,
+        baseUnitsSold: consumed.baseUnitsSold,
+        packagesConsumed: consumed.packagesConsumed,
+        remainderToBase: consumed.remainderToBase,
         ...(presentationUnit ? { presentationUnit } : {}),
         ...(barcode ? { barcode } : {})
       };
     });
-
-    for (const [productId, required] of requiredByProduct) {
-      const stockSnap = stocks.get(productId);
-      const current = Number(stockSnap?.data()?.quantity ?? 0);
-      if (current + 0.0001 < required) {
-        throw new HttpsError('failed-precondition', `Stock insuficiente de ${String(products.get(productId)?.data()?.name ?? 'producto')}.`);
-      }
-    }
 
     const total = round2(items.reduce((sum, item) => sum + item.total, 0));
     if (type === 'boleta' && total >= Number(company.minBoletaSinDni ?? 700) && !/^\d{8}$/.test(clientDoc.numero)) {
@@ -280,18 +286,37 @@ export const createSaleRecord = onCall(async (request) => {
     };
 
     tx.set(counterRef, { tenantId: profile.tenantId, current: correlativo });
-    for (const [productId, required] of requiredByProduct) {
+    for (const productId of productIds) {
       const stockSnap = stocks.get(productId)!;
-      tx.update(stockSnap.ref, {
-        quantity: round3(Number(stockSnap.data()?.quantity ?? 0) - required),
-        updatedAt: now
+      const product = products.get(productId)!.data()!;
+      tx.update(stockSnap.ref, stockPatch(stockStates.get(productId)!, parsePresentations(product)));
+    }
+    for (const movement of conversionMovements) {
+      tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
+        tenantId: profile.tenantId,
+        type: 'conversion',
+        ...movement,
+        toLocationId: storeId,
+        refId: saleRef.id,
+        userId: profile.uid,
+        userName: profile.displayName,
+        userStoreId: storeId,
+        createdAt: now
       });
+    }
+    for (const item of items) {
       tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
         tenantId: profile.tenantId,
         type: 'venta',
-        productId,
-        productName: String(products.get(productId)?.data()?.name ?? ''),
-        qty: -required,
+        productId: item.productId,
+        productName: item.name,
+        qty: -item.baseUnitsSold,
+        baseQty: -item.baseUnitsSold,
+        presentationId: item.presentationId ?? null,
+        presentationLabel: item.presentationLabel ?? null,
+        presentationQty: item.presentationId ? -item.qty : null,
+        packagesOpened: item.packagesConsumed || null,
+        remainderToBase: item.remainderToBase || null,
         toLocationId: storeId,
         refId: saleRef.id,
         userId: profile.uid,
@@ -342,42 +367,48 @@ export const receiveTransfer = onCall(async (request) => {
     const productSnaps = snapshots.slice(items.length);
     const storeSnap = await tx.get(tenantDoc(profile.tenantId, 'stores', storeId));
     const now = Date.now();
+    const states = new Map<string, StockState>();
+    const products = new Map<string, (typeof productSnaps)[number]>();
+    const stocks = new Map<string, (typeof stockSnaps)[number]>();
     const receivedItems = items.map((item, index) => {
       const productId = String(item.productId);
       const qtySent = Number(item.qtySent);
-      const qtyReceived = Number(quantities[productId] ?? qtySent);
-      if (!Number.isFinite(qtyReceived) || qtyReceived < 0 || qtyReceived > qtySent) {
+      const itemPresentationId = shortText(item.presentationId, 80);
+      const quantityKey = `${productId}:${itemPresentationId || 'base'}`;
+      const qtyReceived = Number(quantities[quantityKey] ?? quantities[productId] ?? qtySent);
+      if (!Number.isInteger(qtyReceived) || qtyReceived < 0 || qtyReceived > qtySent) {
         throw new HttpsError('invalid-argument', `Cantidad recibida inválida para ${String(item.name)}.`);
       }
       if (qtyReceived > 0) {
         const stockSnap = stockSnaps[index];
-        const product = productSnaps[index].data() ?? {};
-        if (stockSnap.exists) {
-          tx.update(stockSnap.ref, {
-            quantity: Number(stockSnap.data()?.quantity ?? 0) + qtyReceived,
-            updatedAt: now
-          });
-        } else {
-          tx.set(stockSnap.ref, {
-            tenantId: profile.tenantId,
-            productId,
-            productName: String(item.name),
-            barcode: product.barcode ?? null,
-            salePrice: Number(product.salePrice ?? 0),
-            locationType: 'store',
-            locationId: profile.storeId,
-            locationName: String(storeSnap.data()?.name ?? ''),
-            quantity: qtyReceived,
-            unit: product.unit ?? null,
-            updatedAt: now
-          });
+        const productSnap = productSnaps[index];
+        if (!productSnap.exists) {
+          throw new HttpsError('failed-precondition', `El producto ${String(item.name)} ya no existe.`);
         }
+        const product = productSnap.data()!;
+        const presentation = itemPresentationId
+          ? resolvePresentation(product, itemPresentationId, '', '')
+          : null;
+        const state = states.get(productId) ?? readStockState(stockSnap.data() ?? {});
+        states.set(productId, state);
+        products.set(productId, productSnap);
+        stocks.set(productId, stockSnap);
+        if (presentation) {
+          state.presentationQuantities[presentation.id] = (state.presentationQuantities[presentation.id] ?? 0) + qtyReceived;
+        } else {
+          state.baseQuantity += qtyReceived;
+        }
+        const factor = presentation?.factor ?? 1;
         tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
           tenantId: profile.tenantId,
           type: 'recepcion',
           productId,
           productName: String(item.name),
-          qty: qtyReceived,
+          qty: round3(qtyReceived * factor),
+          baseQty: round3(qtyReceived * factor),
+          presentationId: presentation?.id ?? null,
+          presentationLabel: presentation ? presentationLabel(presentation) : 'Unidad base',
+          presentationQty: qtyReceived,
           toLocationId: profile.storeId,
           refId: String(transfer.code),
           userId: profile.uid,
@@ -388,6 +419,28 @@ export const receiveTransfer = onCall(async (request) => {
       }
       return { ...item, qtyReceived };
     });
+
+    for (const [productId, state] of states) {
+      const product = products.get(productId)!.data()!;
+      const stockSnap = stocks.get(productId)!;
+      const updatedStock = stockPatch(state, parsePresentations(product));
+      if (stockSnap.exists) {
+        tx.update(stockSnap.ref, updatedStock);
+      } else {
+        tx.set(stockSnap.ref, {
+          tenantId: profile.tenantId,
+          productId,
+          productName: String(product.name),
+          barcode: product.barcode ?? null,
+          salePrice: Number(product.salePrice ?? 0),
+          locationType: 'store',
+          locationId: profile.storeId,
+          locationName: String(storeSnap.data()?.name ?? ''),
+          ...updatedStock,
+          unit: product.unit ?? null
+        });
+      }
+    }
 
     tx.update(transferRef, {
       status: 'recibido',

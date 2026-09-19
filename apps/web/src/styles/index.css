@@ -133,6 +133,10 @@
   animation: laser-sweep 2s ease-in-out infinite;
 }
 
+#ticket-print {
+  display: none;
+}
+
 @media print {
   body * {
     visibility: hidden;
@@ -142,11 +146,28 @@
     visibility: visible;
   }
   #ticket-print {
+    display: block !important;
     position: fixed;
     inset: 0;
-    width: 76mm;
+    width: 80mm;
     background: white;
     color: black;
     font-family: "JetBrains Mono", monospace;
   }
+  #ticket-print[data-width='58mm'] { width: 58mm; }
+  #ticket-print .row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 4px;
+    align-items: start;
+  }
+  #ticket-print .name { overflow-wrap: anywhere; }
+  #ticket-print .mono { font-family: "JetBrains Mono", monospace; white-space: nowrap; }
+  #ticket-print .r { text-align: right; }
+  #ticket-print .total { margin-top: 3px; font-weight: 700; }
+}
+
+@page {
+  size: auto;
+  margin: 2mm;
 }

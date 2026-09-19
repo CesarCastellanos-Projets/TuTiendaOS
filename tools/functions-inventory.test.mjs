@@ -163,12 +163,17 @@ test('POS multi-tienda selecciona local, vende fracciones y el servidor controla
     db.doc(`tenants/${saleTenantId}/products/P1`).set({
       tenantId: saleTenantId, name: 'Lapicero', category: 'Prueba', unit: 'UN',
       barcode: 'BASE-1', salePrice: 1, minStock: 1, active: true,
-      presentations: [{ unit: 'CJA', factor: 12, barcode: 'CAJA-12', salePrice: 10 }]
+      presentations: [{
+        id: 'caja-12', unit: 'CJA', description: 'Caja x12', factor: 12,
+        barcode: 'CAJA-12', salePrice: 10, allowFractionalSale: true,
+        fractionStep: 0.5, autoUnpackEnabled: true, autoUnpackPriority: 1
+      }]
     }),
     db.doc(`tenants/${saleTenantId}/product_stocks/P1_S1`).set({
       tenantId: saleTenantId, productId: 'P1', productName: 'Lapicero', salePrice: 1,
       locationType: 'store', locationId: 'S1', locationName: 'Tienda Uno',
-      quantity: 30, updatedAt: 1
+      baseQuantity: 6, presentationQuantities: { 'caja-12': 2 },
+      quantity: 30, stockModelVersion: 2, updatedAt: 1
     })
   ]);
 
@@ -189,7 +194,7 @@ test('POS multi-tienda selecciona local, vende fracciones y el servidor controla
     storeId: 'S1',
     clientDoc: { tipo: '-', numero: '', nombre: 'Consumidor Final' },
     items: [{
-      productId: 'P1', qty: 0.5, presentationUnit: 'CJA', barcode: 'CAJA-12',
+      productId: 'P1', qty: 0.5, presentationId: 'caja-12', presentationUnit: 'CJA', barcode: 'CAJA-12',
       unitPrice: 8, total: 4
     }],
     paymentMethod: 'efectivo',
@@ -202,7 +207,10 @@ test('POS multi-tienda selecciona local, vende fracciones y el servidor controla
   assert.equal(regularSale.body.result.sale.items[0].unitPrice, 10);
   assert.equal(regularSale.body.result.sale.items[0].total, 5);
   assert.equal(regularSale.body.result.sale.items[0].priceOverridden, false);
-  assert.equal((await db.doc(`tenants/${saleTenantId}/product_stocks/P1_S1`).get()).data().quantity, 24);
+  const stockAfterRegular = (await db.doc(`tenants/${saleTenantId}/product_stocks/P1_S1`).get()).data();
+  assert.equal(stockAfterRegular.quantity, 24);
+  assert.equal(stockAfterRegular.baseQuantity, 12);
+  assert.equal(stockAfterRegular.presentationQuantities['caja-12'], 1);
 
   const multiStoreSale = await callFunction('createSaleRecord', salePayload, refreshedMultiStorePos.idToken);
   assert.equal(multiStoreSale.ok, true);
@@ -210,5 +218,78 @@ test('POS multi-tienda selecciona local, vende fracciones y el servidor controla
   assert.equal(multiStoreSale.body.result.sale.items[0].unitPrice, 8);
   assert.equal(multiStoreSale.body.result.sale.items[0].total, 4);
   assert.equal(multiStoreSale.body.result.sale.items[0].priceOverridden, true);
-  assert.equal((await db.doc(`tenants/${saleTenantId}/product_stocks/P1_S1`).get()).data().quantity, 18);
+  const stockAfterMulti = (await db.doc(`tenants/${saleTenantId}/product_stocks/P1_S1`).get()).data();
+  assert.equal(stockAfterMulti.quantity, 18);
+  assert.equal(stockAfterMulti.baseQuantity, 18);
+  assert.equal(stockAfterMulti.presentationQuantities['caja-12'], 0);
+
+  const unavailablePackage = await callFunction('createSaleRecord', salePayload, refreshedMultiStorePos.idToken);
+  assert.equal(unavailablePackage.ok, false);
+});
+
+test('una operación conserva varias presentaciones del mismo producto sin sobrescribir stock', { timeout: 90000 }, async () => {
+  const scopedTenantId = 'tenant-multiple-presentations';
+  const admin = await createIdentity('admin-multiple-presentations@example.com');
+  const pos = await createIdentity('pos-multiple-presentations@example.com');
+  await Promise.all([
+    db.doc(`users/${admin.localId}`).set({
+      displayName: 'Administrador', email: 'admin-multiple-presentations@example.com',
+      role: 'admin', tenantId: scopedTenantId, active: true
+    }),
+    db.doc(`users/${pos.localId}`).set({
+      displayName: 'Caja', email: 'pos-multiple-presentations@example.com',
+      role: 'pos', tenantId: scopedTenantId, storeId: 'S1', active: true
+    }),
+    db.doc(`tenants/${scopedTenantId}/warehouses/W1`).set({
+      tenantId: scopedTenantId, name: 'Central', code: 'W1', isCentral: true
+    }),
+    db.doc(`tenants/${scopedTenantId}/stores/S1`).set({
+      tenantId: scopedTenantId, name: 'Tienda', code: 'S1', address: ''
+    }),
+    db.doc(`tenants/${scopedTenantId}/products/P1`).set({
+      tenantId: scopedTenantId, name: 'Producto', category: 'Prueba', unit: 'UN',
+      salePrice: 1, minStock: 1, active: true,
+      presentations: [
+        { id: 'caja-12', unit: 'CJA', factor: 12, salePrice: 10, allowFractionalSale: false, fractionStep: 0.5, autoUnpackEnabled: false, autoUnpackPriority: 1 },
+        { id: 'caja-30', unit: 'CJA', factor: 30, salePrice: 22, allowFractionalSale: false, fractionStep: 0.5, autoUnpackEnabled: false, autoUnpackPriority: 2 }
+      ]
+    })
+  ]);
+
+  const ingress = await callFunction('recordStockIngress', {
+    locationId: 'W1', locationType: 'warehouse',
+    items: [
+      { productId: 'P1', presentationId: null, qty: 5 },
+      { productId: 'P1', presentationId: 'caja-12', qty: 2 },
+      { productId: 'P1', presentationId: 'caja-30', qty: 1 }
+    ]
+  }, admin.idToken);
+  assert.equal(ingress.ok, true);
+  const afterIngress = (await db.doc(`tenants/${scopedTenantId}/product_stocks/P1_W1`).get()).data();
+  assert.equal(afterIngress.baseQuantity, 5);
+  assert.deepEqual(afterIngress.presentationQuantities, { 'caja-12': 2, 'caja-30': 1 });
+  assert.equal(afterIngress.quantity, 59);
+
+  const transfer = await callFunction('createInventoryTransfer', {
+    fromLocationId: 'W1', fromLocationType: 'warehouse',
+    toLocationId: 'S1', toLocationType: 'store',
+    items: [
+      { productId: 'P1', presentationId: 'caja-12', qtySent: 1 },
+      { productId: 'P1', presentationId: 'caja-30', qtySent: 1 }
+    ]
+  }, admin.idToken);
+  assert.equal(transfer.ok, true);
+  const afterDispatch = (await db.doc(`tenants/${scopedTenantId}/product_stocks/P1_W1`).get()).data();
+  assert.deepEqual(afterDispatch.presentationQuantities, { 'caja-12': 1, 'caja-30': 0 });
+  assert.equal(afterDispatch.quantity, 17);
+
+  const reception = await callFunction('receiveTransfer', {
+    transferId: transfer.body.result.id,
+    quantities: { 'P1:caja-12': 1, 'P1:caja-30': 1 }
+  }, pos.idToken);
+  assert.equal(reception.ok, true);
+  const destination = (await db.doc(`tenants/${scopedTenantId}/product_stocks/P1_S1`).get()).data();
+  assert.equal(destination.baseQuantity, 0);
+  assert.deepEqual(destination.presentationQuantities, { 'caja-12': 1, 'caja-30': 1 });
+  assert.equal(destination.quantity, 42);
 });

@@ -34,16 +34,20 @@ import {
 } from 'lucide-react';
 import { tenantCollection } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
-import { useStoreCatalog, useCatalogSearch, findInCatalog } from '../../hooks/useStoreCatalog';
+import { useStoreCatalog, useCatalogSearch, findInCatalog, type SearchableCatalogItem } from '../../hooks/useStoreCatalog';
 import { useScanner } from '../../hooks/useScanner';
 import { useCompany } from '../../hooks/useCompany';
 import { fmtDateTime } from '../../lib/utils';
 import { FlashBar, useFlash } from '../../components/ui/Feedback';
 import { Modal } from '../../components/ui/Modal';
-import type { ProductStock, Quotation, QuotationItem } from '../../types';
+import type { Quotation, QuotationItem } from '../../types';
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
+}
+
+function quotationLineKey(item: Pick<QuotationItem, 'productId' | 'presentationId'>): string {
+  return `${item.productId}:${item.presentationId ?? 'base'}`;
 }
 
 interface OtherStockInfo {
@@ -121,14 +125,14 @@ export function WorkerQuotations() {
   const searchResults = term.trim().length >= 1 ? searchIn(term) : [];
 
   // Agregar producto a la lista
-  const addItem = (p: ProductStock) => {
+  const addItem = (p: Omit<SearchableCatalogItem, 'searchKey'> & { searchKey?: string }) => {
     setTerm('');
     setItems((prev) => {
-      const existing = prev.find((i) => i.productId === p.productId);
+      const existing = prev.find((i) => i.productId === p.productId && i.presentationId === p.presentationId);
       if (existing) {
         const nextQty = existing.qty + 1;
         return prev.map((i) =>
-          i.productId === p.productId
+          i.productId === p.productId && i.presentationId === p.presentationId
             ? {
                 ...i,
                 qty: nextQty,
@@ -142,9 +146,12 @@ export function WorkerQuotations() {
         ...prev,
         {
           productId: p.productId,
+          presentationId: p.presentationId,
+          presentationLabel: p.presentationLabel,
+          factor: p.factor ?? 1,
           name: p.productName,
           barcode: p.barcode || '',
-          unit: p.unit || 'UN',
+          unit: p.presentationUnit || p.unit || 'UN',
           unitPrice: p.salePrice,
           qty: 1,
           total: round2(p.salePrice),
@@ -156,14 +163,14 @@ export function WorkerQuotations() {
   };
 
   // Modificar cantidad
-  const updateQty = (productId: string, newQty: number) => {
+  const updateQty = (lineKey: string, newQty: number) => {
     if (newQty <= 0) {
-      removeItem(productId);
+      removeItem(lineKey);
       return;
     }
     setItems((prev) =>
       prev.map((i) =>
-        i.productId === productId
+        quotationLineKey(i) === lineKey
           ? {
               ...i,
               qty: newQty,
@@ -176,8 +183,8 @@ export function WorkerQuotations() {
   };
 
   // Eliminar ítem
-  const removeItem = (productId: string) => {
-    setItems((prev) => prev.filter((i) => i.productId !== productId));
+  const removeItem = (lineKey: string) => {
+    setItems((prev) => prev.filter((i) => quotationLineKey(i) !== lineKey));
   };
 
   // Cálculos de Totales Duales
@@ -253,6 +260,9 @@ export function WorkerQuotations() {
 
       const cleanItems: QuotationItem[] = items.map((i) => ({
         productId: i.productId,
+        presentationId: i.presentationId,
+        presentationLabel: i.presentationLabel,
+        factor: i.factor ?? 1,
         name: i.name,
         barcode: i.barcode || '',
         unit: i.unit || 'UN',
@@ -647,7 +657,7 @@ export function WorkerQuotations() {
                 ) : (
                   searchResults.map((p) => (
                     <button
-                      key={p.productId}
+                      key={p.searchKey}
                       onClick={() => addItem(p)}
                       className="w-full flex items-center justify-between p-2.5 text-left hover:bg-indigo-50/50 rounded-xl transition-colors group"
                     >
@@ -736,7 +746,7 @@ export function WorkerQuotations() {
               <div className="space-y-2">
                 {items.map((item) => (
                   <div
-                    key={item.productId}
+                    key={quotationLineKey(item)}
                     className={`rounded-2xl border bg-white p-3.5 space-y-2.5 shadow-xs transition-all ${
                       item.isAvailable
                         ? 'border-slate-200'
@@ -774,7 +784,7 @@ export function WorkerQuotations() {
                           S/ {item.total.toFixed(2)}
                         </span>
                         <button
-                          onClick={() => removeItem(item.productId)}
+                          onClick={() => removeItem(quotationLineKey(item))}
                           className="text-slate-300 hover:text-critical p-1 transition-colors"
                           title="Quitar ítem"
                         >
@@ -797,7 +807,7 @@ export function WorkerQuotations() {
 
                       <div className="flex items-center gap-2 ml-auto">
                         <button
-                          onClick={() => updateQty(item.productId, item.qty - 1)}
+                          onClick={() => updateQty(quotationLineKey(item), item.qty - 1)}
                           className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
                         >
                           <Minus size={13} />
@@ -807,12 +817,12 @@ export function WorkerQuotations() {
                           min={1}
                           value={item.qty}
                           onChange={(e) =>
-                            updateQty(item.productId, Math.max(1, Math.trunc(Number(e.target.value) || 1)))
+                            updateQty(quotationLineKey(item), Math.max(1, Math.trunc(Number(e.target.value) || 1)))
                           }
                           className="field !h-7 w-12 !p-0 text-center font-mono text-xs font-bold"
                         />
                         <button
-                          onClick={() => updateQty(item.productId, item.qty + 1)}
+                          onClick={() => updateQty(quotationLineKey(item), item.qty + 1)}
                           className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
                         >
                           <Plus size={13} />

@@ -91,7 +91,7 @@ export function ReplenishmentAdminPage() {
               <ul className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
                 {r.items.map((i) => (
                   <li key={i.productId} className="truncate text-xs text-slate-500">
-                    {i.name} · hay <b className="text-slate-900">{i.currentQty}</b> → pide <b className="text-slate-900">{i.requestedQty}</b>
+                    {i.name} ({i.presentationLabel ?? 'Unidad base'}) · hay <b className="text-slate-900">{i.currentQty}</b> → pide <b className="text-slate-900">{i.requestedQty}</b>
                   </li>
                 ))}
               </ul>

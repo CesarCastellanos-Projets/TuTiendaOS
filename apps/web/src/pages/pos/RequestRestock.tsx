@@ -11,6 +11,8 @@ import { FlashBar, useFlash } from '../../components/ui/Feedback';
 
 interface RequestLine {
   productId: string;
+  presentationId: string | null;
+  presentationLabel: string;
   name: string;
   currentQty: number;
   requestedQty: number;
@@ -49,26 +51,46 @@ export function RequestRestock() {
     const s = term.trim().toLowerCase();
     if (s.length < 2) return [];
     const productById = new Map(products.map((product) => [product.id, product]));
-    return catalog.filter((stock) => {
+    return catalog.flatMap((stock) => {
       const product = productById.get(stock.productId);
-      return stock.productName.toLowerCase().includes(s)
-        || String(stock.barcode ?? '').toLowerCase().includes(s)
-        || String(product?.barcode ?? '').toLowerCase().includes(s)
-        || String(product?.internalCode ?? '').toLowerCase().includes(s)
-        || (product?.presentations ?? []).some((presentation) =>
-          String(presentation.barcode ?? '').toLowerCase().includes(s)
-          || presentation.unit.toLowerCase().includes(s)
-          || String(presentation.description ?? '').toLowerCase().includes(s)
-        );
-    }).slice(0, 8);
+      if (!product) return [];
+      const choices = [
+        { stock, presentationId: null, presentationLabel: `Unidad base (${product.unit})`, currentQty: stock.baseQuantity ?? stock.quantity },
+        ...(product.presentations ?? []).map((presentation, index) => ({
+          stock,
+          presentationId: presentation.id || `legacy-${index + 1}`,
+          presentationLabel: presentation.description || `${presentation.unit} x${presentation.factor}`,
+          currentQty: stock.presentationQuantities?.[presentation.id || `legacy-${index + 1}`] ?? 0
+        }))
+      ];
+      return choices.filter((choice) =>
+        stock.productName.toLowerCase().includes(s)
+        || String(choice.presentationLabel).toLowerCase().includes(s)
+        || String(product.barcode ?? '').toLowerCase().includes(s)
+        || String(product.internalCode ?? '').toLowerCase().includes(s)
+        || (product.presentations ?? []).some((presentation) =>
+          presentation.id === choice.presentationId && String(presentation.barcode ?? '').toLowerCase().includes(s)
+        )
+      );
+    }).slice(0, 10);
   }, [term, catalog, products]);
 
-  const add = (p: ProductStock) => {
+  const add = (p: ProductStock | { stock: ProductStock; presentationId: string | null; presentationLabel: string; currentQty: number }) => {
+    const choice = 'stock' in p
+      ? p
+      : { stock: p, presentationId: null, presentationLabel: 'Unidad base', currentQty: p.baseQuantity ?? p.quantity };
     setTerm('');
     setLines((prev) =>
-      prev.some((l) => l.productId === p.productId)
+      prev.some((l) => l.productId === choice.stock.productId && l.presentationId === choice.presentationId)
         ? prev
-        : [...prev, { productId: p.productId, name: p.productName, currentQty: p.quantity, requestedQty: Math.max(p.quantity * 2, 12) }]
+        : [...prev, {
+            productId: choice.stock.productId,
+            presentationId: choice.presentationId,
+            presentationLabel: choice.presentationLabel,
+            name: choice.stock.productName,
+            currentQty: choice.currentQty,
+            requestedQty: Math.max(choice.currentQty * 2, 12)
+          }]
     );
   };
 
@@ -83,6 +105,8 @@ export function RequestRestock() {
         storeName,
         items: lines.map((l) => ({
           productId: l.productId,
+          presentationId: l.presentationId,
+          presentationLabel: l.presentationLabel,
           name: l.name,
           currentQty: Math.trunc(Number(l.currentQty) || 0),
           requestedQty: Math.max(1, Math.trunc(Number(l.requestedQty) || 1))
@@ -138,10 +162,10 @@ export function RequestRestock() {
       {results.length > 0 && (
         <ul className="card divide-y divide-linea overflow-hidden">
           {results.map((p) => (
-            <li key={p.productId}>
+            <li key={`${p.stock.productId}:${p.presentationId ?? 'base'}`}>
               <button onClick={() => add(p)} className="flex w-full justify-between px-3 py-2 text-left text-sm hover:bg-slate-100">
-                <span>{p.productName}</span>
-                <span className="font-mono text-xs">{money(p.salePrice)}</span>
+                <span>{p.stock.productName}<small className="block text-xs text-slate-500">{p.presentationLabel} · hay {p.currentQty}</small></span>
+                <span className="font-mono text-xs">{money(p.stock.salePrice)}</span>
               </button>
             </li>
           ))}
@@ -151,8 +175,8 @@ export function RequestRestock() {
       {lines.length > 0 && (
         <ul className="space-y-1.5">
           {lines.map((l, idx) => (
-            <li key={l.productId} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
-              <span className="min-w-0 flex-1 truncate text-sm">{l.name}</span>
+            <li key={`${l.productId}:${l.presentationId ?? 'base'}`} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+              <span className="min-w-0 flex-1 truncate text-sm">{l.name}<small className="block text-xs text-slate-500">{l.presentationLabel}</small></span>
               <span className="text-xs text-slate-500">hay {l.currentQty}</span>
               <label className="sr-only" htmlFor={`req-${l.productId}`}>Cantidad solicitada</label>
               <input
@@ -170,7 +194,7 @@ export function RequestRestock() {
               <button
                 aria-label={`Quitar ${l.name}`}
                 className="text-sm font-semibold text-critical"
-                onClick={() => setLines(lines.filter((x) => x.productId !== l.productId))}
+                onClick={() => setLines(lines.filter((x) => !(x.productId === l.productId && x.presentationId === l.presentationId)))}
               >
                 Quitar
               </button>

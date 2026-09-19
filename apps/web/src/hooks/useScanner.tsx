@@ -6,7 +6,7 @@ import type { IScannerControls } from '@zxing/browser';
  * - PC: pistola USB actúa como teclado → input siempre enfocado captura Enter.
  * - Móvil PWA: cámara con ZXing cargado dinámicamente bajo demanda.
  */
-export function useScanner(onDetected: (code: string) => void) {
+export function useScanner(onDetected: (code: string) => void, captureKeyboard = true) {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const controlsRef = useRef<IScannerControls | null>(null);
@@ -86,6 +86,7 @@ export function useScanner(onDetected: (code: string) => void) {
 
   // Detector global de pistola / escáner USB en cualquier parte de la pantalla
   useEffect(() => {
+    if (!captureKeyboard) return;
     let buffer = '';
     let lastKeyTime = 0;
 
@@ -121,7 +122,7 @@ export function useScanner(onDetected: (code: string) => void) {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [captureKeyboard]);
 
   return { cameraOpen, error, startCamera, stop, videoId: videoIdRef.current };
 }

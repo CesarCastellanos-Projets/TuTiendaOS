@@ -2,12 +2,24 @@ import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { db } from './firebase';
 import { requireAdmin } from './authz';
 import { tenantCollection, tenantDoc } from './tenant';
+import {
+  parsePresentations,
+  positiveQuantity,
+  presentationLabel,
+  readStockState,
+  resolvePresentation,
+  round3,
+  stockPatch,
+  type StockPresentation,
+  type StockState
+} from './stock-model';
 
 type LocationType = 'store' | 'warehouse';
 
 interface QuantityItem {
   productId: string;
   quantity: number;
+  presentationId: string | null;
 }
 
 const MAX_ITEMS = 100;
@@ -31,13 +43,47 @@ function quantityItems(value: unknown, quantityField: string): QuantityItem[] {
   return value.map((raw) => {
     const item = raw as Record<string, unknown>;
     const productId = shortText(item.productId, 128);
-    const quantity = Number(item[quantityField]);
-    if (!productId || seen.has(productId) || !Number.isFinite(quantity) || quantity <= 0) {
+    const presentationId = shortText(item.presentationId, 80) || null;
+    const key = `${productId}:${presentationId ?? 'base'}`;
+    const quantity = positiveQuantity(item[quantityField]);
+    if (!productId || seen.has(key)) {
       throw new HttpsError('invalid-argument', 'La lista contiene productos o cantidades inválidas.');
     }
-    seen.add(productId);
-    return { productId, quantity };
+    seen.add(key);
+    return { productId, quantity, presentationId };
   });
+}
+
+function selectedPresentation(product: Record<string, unknown>, presentationId: string | null): StockPresentation | null {
+  if (!presentationId) return null;
+  return resolvePresentation(product, presentationId, '', '');
+}
+
+function selectedAvailable(state: StockState, presentation: StockPresentation | null): number {
+  return presentation ? state.presentationQuantities[presentation.id] ?? 0 : state.baseQuantity;
+}
+
+function changeSelectedStock(state: StockState, presentation: StockPresentation | null, delta: number): void {
+  if (presentation) {
+    if (!Number.isInteger(delta)) {
+      throw new HttpsError('invalid-argument', 'Las existencias de empaques deben ser números enteros.');
+    }
+    state.presentationQuantities[presentation.id] = (state.presentationQuantities[presentation.id] ?? 0) + delta;
+    return;
+  }
+  if (!Number.isInteger(delta)) {
+    throw new HttpsError('invalid-argument', 'Las existencias de unidades deben ser números enteros.');
+  }
+  state.baseQuantity += delta;
+}
+
+function movementPresentation(presentation: StockPresentation | null, quantity: number) {
+  return {
+    presentationId: presentation?.id ?? null,
+    presentationLabel: presentation ? presentationLabel(presentation) : 'Unidad base',
+    presentationQty: quantity,
+    baseQty: round3(quantity * (presentation?.factor ?? 1))
+  };
 }
 
 function locationRef(tenantId: string, type: LocationType, id: string) {
@@ -66,6 +112,9 @@ export const recordStockIngress = onCall(async (request) => {
     const stockSnaps = snapshots.slice(1 + items.length);
     if (!targetSnap.exists) throw new HttpsError('not-found', 'La ubicación no existe.');
     const now = Date.now();
+    const states = new Map<string, StockState>();
+    const products = new Map<string, (typeof productSnaps)[number]>();
+    const stocks = new Map<string, (typeof stockSnaps)[number]>();
 
     items.forEach((item, index) => {
       const productSnap = productSnaps[index];
@@ -74,32 +123,20 @@ export const recordStockIngress = onCall(async (request) => {
         throw new HttpsError('failed-precondition', 'Uno de los productos no existe o está inactivo.');
       }
       const product = productSnap.data()!;
-      if (stockSnap.exists) {
-        tx.update(stockSnap.ref, {
-          quantity: Number(stockSnap.data()?.quantity ?? 0) + item.quantity,
-          updatedAt: now
-        });
-      } else {
-        tx.set(stockSnap.ref, {
-          tenantId: profile.tenantId,
-          productId: item.productId,
-          productName: String(product.name),
-          barcode: product.barcode ?? null,
-          salePrice: Number(product.salePrice ?? 0),
-          locationType: targetType,
-          locationId: targetId,
-          locationName: String(targetSnap.data()?.name ?? ''),
-          quantity: item.quantity,
-          unit: product.unit ?? null,
-          updatedAt: now
-        });
-      }
+      const presentation = selectedPresentation(product, item.presentationId);
+      const state = states.get(item.productId) ?? readStockState(stockSnap.data() ?? {});
+      states.set(item.productId, state);
+      products.set(item.productId, productSnap);
+      stocks.set(item.productId, stockSnap);
+      changeSelectedStock(state, presentation, item.quantity);
+      const presentationFields = movementPresentation(presentation, item.quantity);
       tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
         tenantId: profile.tenantId,
         type: 'ingreso',
         productId: item.productId,
         productName: String(product.name),
-        qty: item.quantity,
+        qty: presentationFields.baseQty,
+        ...presentationFields,
         fromLocationId: null,
         toLocationId: targetId,
         reason: null,
@@ -110,6 +147,27 @@ export const recordStockIngress = onCall(async (request) => {
         createdAt: now
       });
     });
+    for (const [productId, state] of states) {
+      const product = products.get(productId)!.data()!;
+      const stockSnap = stocks.get(productId)!;
+      const stockData = stockPatch(state, parsePresentations(product));
+      if (stockSnap.exists) {
+        tx.update(stockSnap.ref, stockData);
+      } else {
+        tx.set(stockSnap.ref, {
+          tenantId: profile.tenantId,
+          productId,
+          productName: String(product.name),
+          barcode: product.barcode ?? null,
+          salePrice: Number(product.salePrice ?? 0),
+          locationType: targetType,
+          locationId: targetId,
+          locationName: String(targetSnap.data()?.name ?? ''),
+          ...stockData,
+          unit: product.unit ?? null
+        });
+      }
+    }
   });
   return { ok: true };
 });
@@ -119,29 +177,38 @@ export const adjustInventory = onCall(async (request) => {
   const data = request.data as Record<string, unknown>;
   const targetId = shortText(data.locationId, 128);
   const productId = shortText(data.productId, 128);
+  const presentationId = shortText(data.presentationId, 80) || null;
   const reason = shortText(data.reason, 250);
   const adjustmentType = data.type;
   const newQty = Number(data.newQty);
   if (!targetId || !productId || !reason || !['ajuste', 'merma'].includes(String(adjustmentType))) {
     throw new HttpsError('invalid-argument', 'Faltan datos del ajuste.');
   }
-  if (!Number.isFinite(newQty) || newQty < 0) {
+  if (!Number.isInteger(newQty) || newQty < 0) {
     throw new HttpsError('invalid-argument', 'La cantidad final no es válida.');
   }
 
   await db.runTransaction(async (tx) => {
     const stockRef = tenantDoc(profile.tenantId, 'product_stocks', `${productId}_${targetId}`);
-    const stockSnap = await tx.get(stockRef);
-    if (!stockSnap.exists) throw new HttpsError('not-found', 'El producto no tiene stock en esa ubicación.');
-    const previous = Number(stockSnap.data()?.quantity ?? 0);
+    const productRef = tenantDoc(profile.tenantId, 'products', productId);
+    const [stockSnap, productSnap] = await Promise.all([tx.get(stockRef), tx.get(productRef)]);
+    if (!stockSnap.exists || !productSnap.exists) throw new HttpsError('not-found', 'El producto no tiene stock en esa ubicación.');
+    const product = productSnap.data()!;
+    const presentations = parsePresentations(product);
+    const presentation = selectedPresentation(product, presentationId);
+    const state = readStockState(stockSnap.data()!);
+    const previous = selectedAvailable(state, presentation);
+    changeSelectedStock(state, presentation, newQty - previous);
     const now = Date.now();
-    tx.update(stockRef, { quantity: newQty, updatedAt: now });
+    tx.update(stockRef, stockPatch(state, presentations));
+    const presentationFields = movementPresentation(presentation, newQty - previous);
     tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
       tenantId: profile.tenantId,
       type: adjustmentType,
       productId,
       productName: String(stockSnap.data()?.productName ?? ''),
-      qty: newQty - previous,
+      qty: presentationFields.baseQty,
+      ...presentationFields,
       fromLocationId: null,
       toLocationId: targetId,
       reason,
@@ -174,29 +241,43 @@ export const createInventoryTransfer = onCall(async (request) => {
     const fromRef = locationRef(profile.tenantId, fromType, fromId);
     const toRef = locationRef(profile.tenantId, toType, toId);
     const stockRefs = items.map((item) => tenantDoc(profile.tenantId, 'product_stocks', `${item.productId}_${fromId}`));
+    const productRefs = items.map((item) => tenantDoc(profile.tenantId, 'products', item.productId));
     const snapshots = await Promise.all([
       tx.get(fromRef),
       tx.get(toRef),
-      ...stockRefs.map((ref) => tx.get(ref))
+      ...stockRefs.map((ref) => tx.get(ref)),
+      ...productRefs.map((ref) => tx.get(ref))
     ]);
     if (!snapshots[0].exists || !snapshots[1].exists) {
       throw new HttpsError('not-found', 'El origen o destino no existe.');
     }
-    const stockSnaps = snapshots.slice(2);
+    const stockSnaps = snapshots.slice(2, 2 + items.length);
+    const productSnaps = snapshots.slice(2 + items.length);
     const now = Date.now();
+    const states = new Map<string, StockState>();
     const transferItems = items.map((item, index) => {
       const stockSnap = stockSnaps[index];
-      const current = Number(stockSnap.data()?.quantity ?? 0);
-      if (!stockSnap.exists || current < item.quantity) {
+      const productSnap = productSnaps[index];
+      if (!stockSnap.exists || !productSnap.exists) {
+        throw new HttpsError('failed-precondition', 'Uno de los productos no tiene stock o catálogo.');
+      }
+      const product = productSnap.data()!;
+      const presentation = selectedPresentation(product, item.presentationId);
+      const state = states.get(item.productId) ?? readStockState(stockSnap.data()!);
+      states.set(item.productId, state);
+      const current = selectedAvailable(state, presentation);
+      if (current < item.quantity) {
         throw new HttpsError('failed-precondition', `Stock insuficiente de ${String(stockSnap.data()?.productName ?? 'producto')}.`);
       }
-      tx.update(stockSnap.ref, { quantity: current - item.quantity, updatedAt: now });
+      changeSelectedStock(state, presentation, -item.quantity);
+      const presentationFields = movementPresentation(presentation, -item.quantity);
       tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
         tenantId: profile.tenantId,
         type: 'transferencia',
         productId: item.productId,
         productName: String(stockSnap.data()?.productName ?? ''),
-        qty: -item.quantity,
+        qty: presentationFields.baseQty,
+        ...presentationFields,
         fromLocationId: fromId,
         toLocationId: null,
         reason: null,
@@ -210,9 +291,17 @@ export const createInventoryTransfer = onCall(async (request) => {
         productId: item.productId,
         name: String(stockSnap.data()?.productName ?? ''),
         qtySent: item.quantity,
-        qtyReceived: 0
+        qtyReceived: 0,
+        presentationId: presentation?.id ?? null,
+        presentationLabel: presentation ? presentationLabel(presentation) : 'Unidad base',
+        factor: presentation?.factor ?? 1,
+        baseEquivalent: round3(item.quantity * (presentation?.factor ?? 1))
       };
     });
+    for (const [productId, state] of states) {
+      const index = items.findIndex((item) => item.productId === productId);
+      tx.update(stockSnaps[index].ref, stockPatch(state, parsePresentations(productSnaps[index].data()!)));
+    }
     tx.set(transferRef, {
       tenantId: profile.tenantId,
       code,
@@ -251,25 +340,36 @@ export const cancelInventoryTransfer = onCall(async (request) => {
       throw new HttpsError('failed-precondition', 'La transferencia no contiene productos válidos.');
     }
     const stockRefs = items.map((item) => tenantDoc(profile.tenantId, 'product_stocks', `${String(item.productId)}_${String(transfer.fromLocationId)}`));
-    const stockSnaps = await Promise.all(stockRefs.map((ref) => tx.get(ref)));
+    const productRefs = items.map((item) => tenantDoc(profile.tenantId, 'products', String(item.productId)));
+    const snapshots = await Promise.all([
+      ...stockRefs.map((ref) => tx.get(ref)),
+      ...productRefs.map((ref) => tx.get(ref))
+    ]);
+    const stockSnaps = snapshots.slice(0, items.length);
+    const productSnaps = snapshots.slice(items.length);
     const now = Date.now();
+    const states = new Map<string, StockState>();
     items.forEach((item, index) => {
+      const productId = String(item.productId);
       const returned = Number(item.qtySent ?? 0) - Number(item.qtyReceived ?? 0);
-      if (!Number.isFinite(returned) || returned < 0 || !stockSnaps[index].exists) {
+      if (!Number.isInteger(returned) || returned < 0 || !stockSnaps[index].exists || !productSnaps[index].exists) {
         throw new HttpsError('failed-precondition', 'La transferencia contiene cantidades inconsistentes.');
       }
       if (returned === 0) return;
       const stockSnap = stockSnaps[index];
-      tx.update(stockSnap.ref, {
-        quantity: Number(stockSnap.data()?.quantity ?? 0) + returned,
-        updatedAt: now
-      });
+      const product = productSnaps[index].data()!;
+      const presentation = selectedPresentation(product, shortText(item.presentationId, 80) || null);
+      const state = states.get(productId) ?? readStockState(stockSnap.data()!);
+      states.set(productId, state);
+      changeSelectedStock(state, presentation, returned);
+      const presentationFields = movementPresentation(presentation, returned);
       tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
         tenantId: profile.tenantId,
         type: 'transferencia',
-        productId: String(item.productId),
+        productId,
         productName: String(item.name ?? stockSnap.data()?.productName ?? ''),
-        qty: returned,
+        qty: presentationFields.baseQty,
+        ...presentationFields,
         fromLocationId: null,
         toLocationId: String(transfer.fromLocationId),
         reason: 'cancelación de transferencia',
@@ -280,6 +380,10 @@ export const cancelInventoryTransfer = onCall(async (request) => {
         createdAt: now
       });
     });
+    for (const [productId, state] of states) {
+      const index = items.findIndex((item) => String(item.productId) === productId);
+      tx.update(stockSnaps[index].ref, stockPatch(state, parsePresentations(productSnaps[index].data()!)));
+    }
     tx.update(transferRef, {
       status: 'cancelado',
       cancelledBy: profile.uid,
@@ -308,6 +412,7 @@ export const attendReplenishmentRequest = onCall(async (request) => {
     const items = quantityItems(
       (replenishment.items as Record<string, unknown>[]).map((item) => ({
         productId: item.productId,
+        presentationId: item.presentationId,
         qtySent: item.requestedQty
       })),
       'qtySent'
@@ -315,29 +420,43 @@ export const attendReplenishmentRequest = onCall(async (request) => {
     const warehouseRef = tenantDoc(profile.tenantId, 'warehouses', warehouseId);
     const storeRef = tenantDoc(profile.tenantId, 'stores', String(replenishment.storeId));
     const stockRefs = items.map((item) => tenantDoc(profile.tenantId, 'product_stocks', `${item.productId}_${warehouseId}`));
+    const productRefs = items.map((item) => tenantDoc(profile.tenantId, 'products', item.productId));
     const snapshots = await Promise.all([
       tx.get(warehouseRef),
       tx.get(storeRef),
-      ...stockRefs.map((ref) => tx.get(ref))
+      ...stockRefs.map((ref) => tx.get(ref)),
+      ...productRefs.map((ref) => tx.get(ref))
     ]);
     if (!snapshots[0].exists || snapshots[0].data()?.isCentral !== true || !snapshots[1].exists) {
       throw new HttpsError('failed-precondition', 'El almacén central o la tienda no son válidos.');
     }
-    const stockSnaps = snapshots.slice(2);
+    const stockSnaps = snapshots.slice(2, 2 + items.length);
+    const productSnaps = snapshots.slice(2 + items.length);
     const now = Date.now();
+    const states = new Map<string, StockState>();
     const transferItems = items.map((item, index) => {
       const stockSnap = stockSnaps[index];
-      const current = Number(stockSnap.data()?.quantity ?? 0);
-      if (!stockSnap.exists || current < item.quantity) {
+      const productSnap = productSnaps[index];
+      if (!stockSnap.exists || !productSnap.exists) {
+        throw new HttpsError('failed-precondition', 'Uno de los productos no tiene stock o catálogo.');
+      }
+      const product = productSnap.data()!;
+      const presentation = selectedPresentation(product, item.presentationId);
+      const state = states.get(item.productId) ?? readStockState(stockSnap.data()!);
+      states.set(item.productId, state);
+      const current = selectedAvailable(state, presentation);
+      if (current < item.quantity) {
         throw new HttpsError('failed-precondition', `Stock insuficiente de ${String(stockSnap.data()?.productName ?? 'producto')}.`);
       }
-      tx.update(stockSnap.ref, { quantity: current - item.quantity, updatedAt: now });
+      changeSelectedStock(state, presentation, -item.quantity);
+      const presentationFields = movementPresentation(presentation, -item.quantity);
       tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
         tenantId: profile.tenantId,
         type: 'transferencia',
         productId: item.productId,
         productName: String(stockSnap.data()?.productName ?? ''),
-        qty: -item.quantity,
+        qty: presentationFields.baseQty,
+        ...presentationFields,
         fromLocationId: warehouseId,
         toLocationId: null,
         reason: 'reposición atendida',
@@ -351,9 +470,17 @@ export const attendReplenishmentRequest = onCall(async (request) => {
         productId: item.productId,
         name: String(stockSnap.data()?.productName ?? ''),
         qtySent: item.quantity,
-        qtyReceived: 0
+        qtyReceived: 0,
+        presentationId: presentation?.id ?? null,
+        presentationLabel: presentation ? presentationLabel(presentation) : 'Unidad base',
+        factor: presentation?.factor ?? 1,
+        baseEquivalent: round3(item.quantity * (presentation?.factor ?? 1))
       };
     });
+    for (const [productId, state] of states) {
+      const index = items.findIndex((item) => item.productId === productId);
+      tx.update(stockSnaps[index].ref, stockPatch(state, parsePresentations(productSnaps[index].data()!)));
+    }
     tx.set(transferRef, {
       tenantId: profile.tenantId,
       code,
