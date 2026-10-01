@@ -28,6 +28,18 @@ service cloud.firestore {
         && data.customUnits.hasOnly(['UN', 'KG', 'LT', 'PAQ', 'CJA', 'DOC', 'DISPLAY', 'TIRA', 'SACHET', 'BOLSA', 'LATA', 'BOTELLA', 'SOBRE']));
     }
 
+    function validTicketDesign(data) {
+      return data is map
+        && data.keys().hasAll(['layout', 'fontSize', 'logoWidth', 'headerAlign', 'showCode', 'showUnitPrice', 'showCashier', 'showClient'])
+        && data.keys().hasOnly(['layout', 'fontSize', 'logoWidth', 'headerAlign', 'showCode', 'showUnitPrice', 'showCashier', 'showClient'])
+        && data.layout in ['detailed', 'compact']
+        && data.fontSize is int && data.fontSize >= 9 && data.fontSize <= 14
+        && data.logoWidth is int && data.logoWidth >= 40 && data.logoWidth <= 180
+        && data.headerAlign in ['left', 'center']
+        && data.showCode is bool && data.showUnitPrice is bool
+        && data.showCashier is bool && data.showClient is bool;
+    }
+
     function validCompany(data) {
       return data.keys().hasAll([
           'ruc', 'razonSocial', 'serieFactura', 'serieBoleta', 'entornoSunat',
@@ -37,7 +49,7 @@ service cloud.firestore {
           'ruc', 'razonSocial', 'direccion', 'regimen', 'serieFactura', 'serieBoleta',
           'serieNota', 'entornoSunat', 'igvRate', 'minBoletaSinDni', 'umbralConsolidacion',
           'certFileName', 'certExpiresAt', 'certIssuer', 'isDemoMode', 'logoUrl', 'slogan',
-          'phone', 'footerText', 'ticketWidth', 'customUnits', 'updatedAt'
+          'phone', 'footerText', 'ticketWidth', 'ticketDesign', 'customUnits', 'updatedAt'
         ])
         && shortString(data.ruc, 11) && shortString(data.razonSocial, 160)
         && shortString(data.serieFactura, 8) && shortString(data.serieBoleta, 8)
@@ -46,6 +58,7 @@ service cloud.firestore {
         && data.umbralConsolidacion is number && data.umbralConsolidacion >= 0
         && data.entornoSunat in ['beta', 'produccion']
         && (!('ticketWidth' in data) || data.ticketWidth in ['58mm', '80mm'])
+        && (!('ticketDesign' in data) || validTicketDesign(data.ticketDesign))
         && (!('direccion' in data) || shortString(data.direccion, 240))
         && (!('regimen' in data) || shortString(data.regimen, 80))
         && (!('serieNota' in data) || shortString(data.serieNota, 8))

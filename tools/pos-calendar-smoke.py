@@ -64,6 +64,11 @@ with sync_playwright() as p:
     quantity.fill('2')
     quantity.press('Enter')
     expect(field).to_have_value('')
+    field.fill('filtro anterior')
+    field.focus()
+    page.keyboard.type('CODE1', delay=100)
+    page.keyboard.press('Enter')
+    expect(page.get_by_role('textbox', name='Cantidad de Producto 0001', exact=True)).to_have_value('1')
     # Calendario compartido: creación, datos de formulario, finalización y permisos.
     page.goto(base_url + '/pos/calendario')
     for width in [320, 390, 768, 1024, 1280, 1600]:
@@ -110,7 +115,10 @@ with sync_playwright() as p:
     # Revocación con la misma sesión abierta.
     admin_page.goto(base_url + '/admin/usuarios')
     row = admin_page.get_by_role('row').filter(has_text='pos-ui@example.com')
-    row.get_by_role('button', name='Permitido', exact=True).click()
+    with admin_page.expect_response(lambda response: response.url.endswith('/setCalendarPermission') and response.request.method == 'POST', timeout=60000) as permission_response:
+        row.get_by_role('button', name='Permitido', exact=True).click()
+    assert permission_response.value.ok, permission_response.value.text()
+    expect(row.get_by_role('button', name='Sin acceso', exact=True)).to_be_visible(timeout=30000)
     expect(page.get_by_text('Tu cuenta no tiene acceso al calendario.', exact=False)).to_be_visible(timeout=30000)
     row.get_by_role('button', name='Sin acceso', exact=True).click()
     expect(page.get_by_role('button', name='Nuevo evento', exact=True)).to_be_visible(timeout=30000)

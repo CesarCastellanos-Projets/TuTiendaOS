@@ -318,6 +318,22 @@ export interface CashSession {
   closedAt?: number;
 }
 
+export interface TicketDesign {
+  layout: 'detailed' | 'compact';
+  fontSize: number;
+  logoWidth: number;
+  headerAlign: 'left' | 'center';
+  showCode: boolean;
+  showUnitPrice: boolean;
+  showCashier: boolean;
+  showClient: boolean;
+}
+
+export const DEFAULT_TICKET_DESIGN: TicketDesign = {
+  layout: 'detailed', fontSize: 11, logoWidth: 120, headerAlign: 'center',
+  showCode: false, showUnitPrice: true, showCashier: true, showClient: true
+};
+
 export interface CompanyConfig {
   ruc: string;
   razonSocial: string;
@@ -340,6 +356,7 @@ export interface CompanyConfig {
   phone?: string;
   footerText?: string;
   ticketWidth?: '80mm' | '58mm';
+  ticketDesign?: TicketDesign;
   customUnits?: string[];
   updatedAt?: number;
 }

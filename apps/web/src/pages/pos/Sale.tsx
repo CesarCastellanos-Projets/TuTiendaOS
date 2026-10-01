@@ -119,7 +119,20 @@ export function PosSale() {
   const [rucValue, setRucValue] = useState('');
   const [dniValue, setDniValue] = useState('');
   const [lookupBusy, setLookupBusy] = useState(false);
-  const [receiptDone, setReceiptDone] = useState<{ code: string; total: number; change: number; html: string } | null>(null);
+  const [receiptDone, setReceiptDone] = useState<{ id: string; code: string; total: number; change: number; html: string } | null>(null);
+  const printedSales = useRef(new Set<string>());
+  const [printingReceipt, setPrintingReceipt] = useState(false);
+  const [printNotice, setPrintNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!receiptDone || printedSales.current.has(receiptDone.id)) return;
+    printedSales.current.add(receiptDone.id);
+    setPrintingReceipt(true);
+    setPrintNotice(null);
+    void printTicket(receiptDone.html)
+      .then(({ missingImages }) => { if (missingImages) setPrintNotice('El logo no pudo cargarse. Revisa el enlace y vuelve a imprimir.'); })
+      .catch(() => setPrintNotice('La venta está registrada. No se pudo abrir la impresión; puedes intentarlo de nuevo.'))
+      .finally(() => setPrintingReceipt(false));
+  }, [receiptDone]);
   const [error, setError] = useState<string | null>(null);
   const [sessionOpen, setSessionOpen] = useState<(CashSession & { id: string }) | null>(null);
   const [busy, setBusy] = useState(false);
@@ -222,7 +235,7 @@ export function PosSale() {
   }, [cartStorageKey, profile.tenantId, storeId, user]);
 
   const finishCheckout = (sale: Sale & { id: string }) => {
-    setReceiptDone({ code: sale.code, total: sale.total, change: sale.changeAmount, html: ticketHtml(sale, company ?? undefined) });
+    setReceiptDone({ id: sale.id, code: sale.code, total: sale.total, change: sale.changeAmount, html: ticketHtml(sale, company ?? undefined) });
     setCart([]); setPaid(''); setClientDoc({ tipo: '-', numero: '', nombre: '' }); setDocType('boleta');
     localStorage.removeItem(cartStorageKey);
     setPendingCheckout(false);
@@ -463,7 +476,7 @@ export function PosSale() {
     blocked: busy || Boolean(receiptDone) || Boolean(presentationProductId),
     onChange: (value) => { setTerm(value); setHighlightedResult(0); },
     onScan: scanCode, onSubmit: submitSearch,
-    isCode: (value) => /^\d{3,}$/.test(value) || searchIn(value).some((item) => [item.barcode, item.internalCode, item.productId].some((code) => code?.toLowerCase() === value.toLowerCase())),
+    isKnownCode: (value) => searchIn(value).some((item) => [item.barcode, item.internalCode, item.productId].some((code) => code?.toLowerCase() === value.toLowerCase())),
     onNavigate: (direction) => setHighlightedResult((current) => Math.max(0, Math.min(results.length - 1, current + direction)))
   });
   const selectedStock = catalog.find((item) => item.productId === presentationProductId);
@@ -1372,12 +1385,20 @@ export function PosSale() {
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3 pt-2">
+            {printNotice && <p role="status" className="text-sm text-amber-800">{printNotice}</p>}
+            <div className="grid grid-cols-1 gap-3 pt-2 sm:grid-cols-2">
               <button
                 className="btn-ghost !py-3 text-xs font-bold"
-                onClick={() => printTicket(receiptDone.html)}
+                disabled={printingReceipt}
+                onClick={() => {
+                  setPrintingReceipt(true); setPrintNotice(null);
+                  void printTicket(receiptDone.html)
+                    .then(({ missingImages }) => { if (missingImages) setPrintNotice('El logo no pudo cargarse. Revisa el enlace y vuelve a imprimir.'); })
+                    .catch(() => setPrintNotice('No se pudo abrir la impresión. Inténtalo de nuevo.'))
+                    .finally(() => setPrintingReceipt(false));
+                }}
               >
-                <Printer size={16} /> Imprimir Ticket
+                <Printer size={16} /> {printingReceipt ? 'Preparando impresión…' : 'Imprimir de nuevo'}
               </button>
               <button
                 className="btn-primary !py-3 text-xs font-bold"
@@ -1429,7 +1450,7 @@ export function PosSale() {
                       <span className="text-[11px] text-slate-400">· {q.items.length} productos</span>
                     </div>
                     <p className="text-xs font-semibold text-slate-700 truncate mt-0.5">
-                      👤 {q.clientName || 'Cliente anónimo'}
+                       {q.clientName || 'Cliente anónimo'}
                     </p>
                     <span className="text-[10px] text-slate-400">Creado por {q.createdByName}</span>
                   </div>

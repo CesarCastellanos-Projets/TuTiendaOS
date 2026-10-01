@@ -130,7 +130,7 @@ export function ReceivingPage() {
                         <span className="font-semibold text-slate-800 block truncate">{i.name}</span>
                         {i.presentationId ? (
                           <span className="inline-flex items-center gap-1 text-[10px] font-bold text-primary">
-                            📦 {i.presentationLabel}
+                             {i.presentationLabel}
                           </span>
                         ) : (
                           <span className="text-[10px] text-slate-400">Unidad suelta</span>
@@ -171,7 +171,7 @@ export function ReceivingPage() {
                       {item.presentationId ? (
                         <>
                           <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 text-[10px] font-extrabold text-primary">
-                            📦 {item.presentationLabel}
+                             {item.presentationLabel}
                           </span>
                           <span className="text-xs text-slate-500">
                             Enviado: <b>{item.qtySent} presentaciones</b> ({item.qtySent * (item.factor ?? 1)} un. base)

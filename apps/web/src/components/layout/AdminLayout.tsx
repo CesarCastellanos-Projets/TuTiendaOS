@@ -162,11 +162,11 @@ export function AdminLayout() {
       </aside>
 
       {/* ─── CONTENEDOR PRINCIPAL Y HEADER MÓVIL ──────────────────────────────── */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="relative flex min-w-0 flex-1 flex-col">
         {/* Barra superior de acento */}
         <div className="tape h-1 w-full" aria-hidden />
 
-        <div className="fixed right-3 top-1.5 z-40 lg:right-5"><CalendarBell /></div>
+        <div className="absolute right-3 top-1.5 z-40 lg:right-5"><CalendarBell /></div>
 
         {/* Header Móvil / Tablet con botón Hamburguesa */}
         <header className="flex h-14 items-center justify-between border-b border-slate-200 bg-white pl-4 pr-16 lg:hidden shadow-xs">
@@ -187,7 +187,7 @@ export function AdminLayout() {
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-slate-700 truncate max-w-[120px]">
+            <span className="hidden max-w-[120px] truncate text-xs font-semibold text-slate-700 sm:block">
               {profile.displayName}
             </span>
             <button

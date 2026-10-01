@@ -36,10 +36,10 @@ Implementación local del 30 de septiembre de 2026. No se publicaron cambios ni 
 - Máximo cinco dispositivos por usuario; registro renovado al entrar y cada doce horas con la app abierta. Expira tras 180 días sin renovación; se retiran tokens inválidos. Cerrar sesión intenta retirar el registro y elimina la suscripción local.
 - Reintentos limitados para fallas transitorias. El transporte push no permite prometer entrega exacta ni recepción si el sistema operativo o navegador la impide. La bandeja interna conserva los avisos.
 
-## Activación en el proyecto real: pendiente
+## Activación en el proyecto real
 
 1. Obtener o generar la clave **pública** Web Push del proyecto Firebase, en Configuración → Cloud Messaging → certificados Web Push. Colocarla en `VITE_FIREBASE_VAPID_KEY` del entorno web y reconstruir.
-2. Publicar hosting, Functions, reglas e índices del proyecto correcto. Esperar a que los índices de grupos de colecciones estén listos antes de activar las Functions programadas.
+2. Functions, reglas e índices publicados en `denzozsaas` el 30 de septiembre de 2026. El preflight real de `saveCalendarEvent` devolvió 204 y permitió `http://localhost:5173`. Para publicar la web con Web Push, falta configurar la clave pública y reconstruir/publicar hosting. Esperar a que los índices de grupos de colecciones estén listos antes de activar las Functions programadas.
 3. Confirmar que el proyecto tenga habilitada Cloud Scheduler y facturación compatible con las Functions programadas. Esta implementación no cambió la facturación ni creó recursos reales.
 4. Permitir notificaciones desde el calendario en cada dispositivo, con HTTPS. Si falta configuración, la interfaz lo comunica; no confirma una activación inexistente.
 5. Verificar una entrega real FCM con la app cerrada, una edición que invalide un aviso y la revocación del POS autorizado. La prueba sintética local no reemplaza esta comprobación.
@@ -84,3 +84,22 @@ Las colecciones nuevas son de escritura exclusiva del servidor. Los eventos exig
 ```
 
 I've set up prototype Security Rules to keep the data in Firestore safe. They are designed to be secure for tenant isolation, current calendar permissions, private notification inboxes, and server-only writes. However, you should review and verify them before broadly sharing your app. If you'd like, I can help you harden these rules.
+
+
+## Correcciones posteriores a la prueba del usuario
+
+- El error CORS provenía de una Function no desplegada (404), no de reglas de Firestore. Se publicaron las siete Functions de calendario, los índices y las reglas. No fue necesario permitir escrituras anónimas.
+- La campana distingue índice pendiente, permisos y conexión; borra el error si vuelve a recibir datos.
+- Las reglas de stock mixto, cantidades enteras y reclasificación están descritas en `stock-compartido-presentaciones.md`. Se publicaron las Functions de ventas, inventario, solicitudes y sus dependencias de caja.
+- Un código conocido admite pausas de hasta 500 ms entre teclas para tolerar lectores más lentos o carga de la pantalla. Los códigos numéricos desconocidos mantienen la detección rápida. Se usan las marcas de tiempo del evento; los nombres escritos rápido siguen tratándose como búsqueda.
+- La web local no tiene `VITE_FIREBASE_VAPID_KEY`: las notificaciones fuera de la app requieren esa clave, compilación/publicación de la web y permiso del navegador. No se verificó una entrega FCM real a un dispositivo cerrado.
+
+
+### Verificación final de las correcciones
+
+- 15 pruebas de Functions y 31 de integración/reglas/helpers/payload: 46 aprobadas. Se repitió la integración de stock mixto tras añadir confirmación de todos los conteos y reparación de medias unidades antiguas.
+- `tools/pos-mixed-stock-smoke.py`: carrito con 10 sueltos y 2 cajas, rechazo de fracciones no permitidas y reposición en dos líneas.
+- `tools/pos-calendar-smoke.py`: lector rápido y con pausas, búsquedas, medio millar, eventos compartidos, bandeja, permisos en vivo y vistas de 320 a 1600 px. La prueba espera la respuesta efectiva al cambiar permisos para cubrir el arranque del emulador.
+- Build de Functions y web, typecheck y lint aprobados. Quedan las advertencias de tamaño de bundle y módulos estáticos/dinámicos ya observadas.
+- En el endpoint real del calendario: OPTIONS 204 con CORS para localhost; POST sin sesión 401 con el mismo encabezado CORS. La tarea programada ya registra ejecuciones en Cloud Functions.
+- Backend de inventario, calendario, reglas e índices desplegados. Los cambios del lector posteriores al push del usuario permanecen locales; no se publicó hosting ni se hizo otro push.

@@ -201,7 +201,7 @@ export function WorkerLookup() {
                       </span>
                       {p.locationName && (
                         <span className="text-[11px] text-slate-400 block truncate mt-0.5">
-                          📍 {p.locationName}
+                           {p.locationName}
                         </span>
                       )}
                     </div>
@@ -289,7 +289,7 @@ function ProductCard({
               </h2>
               {p.locationName && (
                 <span className="text-xs text-slate-500 font-medium block mt-1">
-                  📍 Ubicación: <strong className="text-slate-700">{p.locationName}</strong>
+                   Ubicación: <strong className="text-slate-700">{p.locationName}</strong>
                 </span>
               )}
             </div>

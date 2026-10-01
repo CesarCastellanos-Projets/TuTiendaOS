@@ -77,8 +77,17 @@ export function IngressPage() {
 
         <ProductLines lines={lines} setLines={setLines} searchFn={search} />
 
+        <p className="text-xs text-slate-500">Las presentaciones que permiten apertura se suman al stock suelto. Las cajas sin apertura conservan su cantidad por presentación; su contenido también cuenta en el total equivalente.</p>
+        {lines.length > 0 && <div className="space-y-1 rounded-xl bg-slate-50 p-3 text-sm">
+          {[...new Set(lines.map((line) => line.productId))].map((productId) => {
+            const productLines = lines.filter((line) => line.productId === productId);
+            const total = productLines.reduce((sum, line) => sum + line.qty * line.factor, 0);
+            return <p key={productId}><span className="font-semibold">{productLines[0].name}:</span> {Math.round(total * 1000) / 1000} unidades equivalentes a ingresar</p>;
+          })}
+        </div>}
+
         <button className="btn-brand w-full" disabled={busy} onClick={() => void submit()}>
-          {busy ? 'Registrando…' : `Registrar ingreso${lines.length ? ` (${lines.length} productos)` : ''}`}
+          {busy ? 'Registrando…' : `Registrar ingreso${lines.length ? ` (${lines.length} líneas)` : ''}`}
         </button>
       </div>
 

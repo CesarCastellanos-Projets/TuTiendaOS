@@ -123,7 +123,8 @@ export function CashPage() {
       const closed = response.data;
       setLastClosedSession(closed);
       if (!closed.salesSummary) throw new Error('El cierre no contiene el desglose de ventas.');
-      printTicket(cashCloseTicketHtml({ ...closed, storeName }, closed.salesSummary, company ?? undefined));
+      void printTicket(cashCloseTicketHtml({ ...closed, storeName }, closed.salesSummary, company ?? undefined))
+        .catch(() => flash('La caja está cerrada. No se pudo imprimir; utiliza Reimprimir último Cierre Z.'));
       flash(`Caja cerrada. Total vendido: ${money(closed.salesSummary.totalSales)}`);
       setClosingAmount('');
     } catch (err) {
@@ -136,13 +137,13 @@ export function CashPage() {
   const reprintLastZ = () => {
     if (!lastClosedSession) return;
     if (!lastClosedSession.salesSummary) { flash('El cierre antiguo no tiene desglose verificable para reimprimir.'); return; }
-    printTicket(
+    void printTicket(
       cashCloseTicketHtml(
         { ...lastClosedSession, storeName },
         lastClosedSession.salesSummary!,
         company ?? undefined
       )
-    );
+    ).catch(() => flash('No se pudo abrir la impresión. Inténtalo de nuevo.'));
   };
 
   return (

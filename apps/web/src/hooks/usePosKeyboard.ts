@@ -8,7 +8,7 @@ export function usePosKeyboard(
     onScan: (code: string) => void;
     onSubmit: (value: string) => void;
     onNavigate: (direction: number) => void;
-    isCode: (value: string) => boolean;
+    isKnownCode: (value: string) => boolean;
   }
 ) {
   const latest = useRef(handlers);
@@ -17,6 +17,7 @@ export function usePosKeyboard(
   });
   useEffect(() => {
     let buffer = '';
+    let sequence = '';
     let last = 0;
     let burst = false;
     const handle = (event: KeyboardEvent) => {
@@ -29,6 +30,7 @@ export function usePosKeyboard(
         document.querySelector('[role="dialog"], [data-pos-block-input]')
       ) {
         buffer = '';
+        sequence = '';
         burst = false;
         return;
       }
@@ -39,12 +41,14 @@ export function usePosKeyboard(
         target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')
       ) {
         buffer = '';
+        sequence = '';
         burst = false;
         return;
       }
       if (event.key === 'Escape') {
         latest.current.onChange('');
         buffer = '';
+        sequence = '';
         burst = false;
         return;
       }
@@ -55,13 +59,12 @@ export function usePosKeyboard(
       }
       if (event.key === 'Enter' && (inSearch || buffer)) {
         event.preventDefault();
-        const scanned =
-          burst &&
-          performance.now() - last <= 150 &&
-          field.value.endsWith(buffer) &&
-          latest.current.isCode(buffer);
-        const value = scanned ? buffer : field.value;
+        const recent = event.timeStamp - last <= 500;
+        const known = recent && sequence.length > 0 && field.value.endsWith(sequence) && latest.current.isKnownCode(sequence);
+        const scanned = known || (burst && event.timeStamp - last <= 150 && field.value.endsWith(buffer) && /^\d{3,}$/.test(buffer));
+        const value = scanned ? (known ? sequence : buffer) : field.value;
         buffer = '';
+        sequence = '';
         burst = false;
         if (value.trim()) {
           if (scanned) latest.current.onScan(value);
@@ -71,10 +74,13 @@ export function usePosKeyboard(
       }
       if (event.key.length !== 1) {
         buffer = '';
+        sequence = '';
         burst = false;
         return;
       }
-      const now = performance.now();
+      const now = event.timeStamp;
+      if (now - last > 500) sequence = '';
+      sequence += event.key;
       if (now - last > 65) {
         buffer = '';
         burst = false;

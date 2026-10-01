@@ -67,7 +67,7 @@ export function useScanner(onDetected: (code: string) => void, captureKeyboard =
         setCameraOpen(false);
         const name = (err as Error)?.name ?? '';
         if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-          setError('Permiso de cámara bloqueado. Toca el candado 🔒 en la barra de tu navegador y activa la cámara.');
+          setError('Permiso de cámara bloqueado. Toca el candado  en la barra de tu navegador y activa la cámara.');
         } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
           setError('No se detectó cámara física en este dispositivo.');
         } else if (name === 'NotReadableError' || name === 'TrackStartError') {

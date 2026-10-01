@@ -78,7 +78,7 @@ const PUBLIC_COMPANY_FIELDS = [
   'ruc', 'razonSocial', 'direccion', 'regimen', 'serieFactura', 'serieBoleta',
   'serieNota', 'entornoSunat', 'igvRate', 'minBoletaSinDni',
   'umbralConsolidacion', 'certFileName', 'certExpiresAt', 'certIssuer',
-  'isDemoMode', 'logoUrl', 'slogan', 'phone', 'footerText', 'ticketWidth',
+  'isDemoMode', 'logoUrl', 'slogan', 'phone', 'footerText', 'ticketWidth', 'ticketDesign',
   'customUnits', 'updatedAt'
 ] as const;
 

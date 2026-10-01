@@ -127,7 +127,7 @@ export function ProductLines({
                     {p.presentationId ? (
                       <>
                         <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 text-[11px] font-extrabold text-primary">
-                          📦 {p.presentationLabel}
+                           {p.presentationLabel}
                         </span>
                         <span className="text-[11px] text-slate-500 font-medium">
                           ({p.factor} unidades por presentación)
@@ -165,7 +165,7 @@ export function ProductLines({
                   {l.presentationId ? (
                     <>
                       <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 text-[11px] font-extrabold text-primary">
-                        📦 {l.presentationLabel}
+                         {l.presentationLabel}
                       </span>
                       <span className="text-[11px] font-medium text-slate-500">
                         Total: <b className="font-mono text-slate-700">{l.qty * l.factor}</b> unidades

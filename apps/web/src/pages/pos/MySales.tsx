@@ -87,7 +87,7 @@ export function MySales() {
               <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
                 <button
                   className="btn-ghost !min-h-8 !px-2.5 !py-1 text-xs font-semibold"
-                  onClick={() => printTicket(ticketHtml(s, company ?? undefined))}
+                  onClick={() => { void printTicket(ticketHtml(s, company ?? undefined)).catch(() => flash('No se pudo abrir la impresión. Inténtalo de nuevo.')); }}
                   title="Reimprimir ticket térmico"
                 >
                   <Printer size={13} className="mr-1 inline" />
@@ -119,6 +119,7 @@ export function MySales() {
         <SaleDetailModal
           sale={viewingSale}
           company={company}
+          onPrintError={() => flash('No se pudo abrir la impresión. Inténtalo de nuevo.')}
           onClose={() => setViewingSale(null)}
           onRequestAnulation={() => setRequesting(viewingSale)}
         />
@@ -190,11 +191,13 @@ function SunatBadge({ status }: { status: SunatStatus }) {
 function SaleDetailModal({
   sale,
   company,
+  onPrintError,
   onClose,
   onRequestAnulation
 }: {
   sale: Sale & { id: string };
   company: ReturnType<typeof useCompany>;
+  onPrintError: () => void;
   onClose: () => void;
   onRequestAnulation: () => void;
 }) {
@@ -416,7 +419,7 @@ function SaleDetailModal({
         <div className="p-4 border-t border-slate-100 bg-slate-50/60 flex items-center justify-between gap-2">
           <button
             className="btn-primary !py-2.5 !px-4 text-xs font-bold flex items-center gap-1.5"
-            onClick={() => printTicket(ticketHtml(sale, company ?? undefined))}
+            onClick={() => { void printTicket(ticketHtml(sale, company ?? undefined)).catch(onPrintError); }}
           >
             <Printer size={15} /> Reimprimir Ticket
           </button>

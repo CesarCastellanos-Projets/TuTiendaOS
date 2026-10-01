@@ -1,354 +1,139 @@
-import { useState, useRef, useMemo } from 'react';
-import { setDoc } from 'firebase/firestore';
-import {
-  Printer,
-  Upload,
-  Image,
-  Trash2,
-  Receipt,
-  Check,
-  Building2,
-  FileText
-} from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { runTransaction } from 'firebase/firestore';
+import { Printer, Upload, Image, Trash2, Check } from 'lucide-react';
+import { db } from '../../lib/firebase';
 import { tenantDoc } from '../../lib/tenant-firestore';
 import { useCompany } from '../../hooks/useCompany';
-import { clean } from '../../lib/utils';
-import { DEFAULT_COMPANY, type CompanyConfig, type Sale } from '../../types';
+import { DEFAULT_COMPANY, DEFAULT_TICKET_DESIGN, type CompanyConfig, type Sale, type TicketDesign } from '../../types';
 import { FlashBar, useFlash } from '../../components/ui/Feedback';
-import { ticketHtml, printTicket } from '../../lib/print';
+import { ticketHtml, ticketDesign, ticketLogoSource, printTicket } from '../../lib/print';
+
+interface TicketDraft {
+  logoUrl: string;
+  slogan: string;
+  phone: string;
+  footerText: string;
+  ticketWidth: '80mm' | '58mm';
+  ticketDesign: TicketDesign;
+}
 
 export function TicketDesignerPage() {
   const cfg = useCompany();
-  const [logoUrl, setLogoUrl] = useState<string>(cfg?.logoUrl ?? '');
-  const [slogan, setSlogan] = useState<string>(cfg?.slogan ?? 'Calidad y confianza en cada compra');
-  const [phone, setPhone] = useState<string>(cfg?.phone ?? '+51 987 654 321');
-  const [footerText, setFooterText] = useState<string>(
-    cfg?.footerText ?? '¡Gracias por su compra!\nConserve su ticket para cambios o devoluciones.'
-  );
-  const [ticketWidth, setTicketWidth] = useState<'80mm' | '58mm'>(cfg?.ticketWidth ?? '80mm');
+  const [draft, setDraft] = useState<TicketDraft>({ logoUrl: '', slogan: '', phone: '', footerText: DEFAULT_COMPANY.footerText ?? '', ticketWidth: '80mm', ticketDesign: DEFAULT_TICKET_DESIGN });
+  const dirty = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [previewDocType, setPreviewDocType] = useState<'boleta' | 'factura'>('boleta');
   const [busy, setBusy] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [printing, setPrinting] = useState(false);
+  const [logoError, setLogoError] = useState(false);
   const { msg, flash } = useFlash();
-
-  // Actualizar estados locales cuando carga el config de Firestore
-  useMemo(() => {
-    if (cfg) {
-      if (cfg.logoUrl !== undefined) setLogoUrl(cfg.logoUrl);
-      if (cfg.slogan !== undefined) setSlogan(cfg.slogan);
-      if (cfg.phone !== undefined) setPhone(cfg.phone);
-      if (cfg.footerText !== undefined) setFooterText(cfg.footerText);
-      if (cfg.ticketWidth !== undefined) setTicketWidth(cfg.ticketWidth);
-    }
+  useEffect(() => {
+    if (cfg && !dirty.current) setDraft({ logoUrl: cfg.logoUrl ?? '', slogan: cfg.slogan ?? '', phone: cfg.phone ?? '', footerText: cfg.footerText ?? '', ticketWidth: cfg.ticketWidth ?? '80mm', ticketDesign: ticketDesign(cfg) });
   }, [cfg]);
-
-  // Venta ficticia de muestra para la previsualización en vivo
-  const sampleSale: Sale = useMemo(
-    () => ({
-      id: 'demo-sale-001',
-      code: previewDocType === 'boleta' ? 'B001-00000142' : 'F001-00000089',
-      serie: previewDocType === 'boleta' ? 'B001' : 'F001',
-      correlativo: 142,
-      type: previewDocType,
-      storeId: 'demo-store',
-      storeName: 'Tienda Principal - Central',
-      userId: 'demo-user',
-      userName: 'Rosa Cajero',
-      clientDoc:
-        previewDocType === 'boleta'
-          ? { tipo: 'DNI', numero: '74839201', nombre: 'Carlos Mendoza' }
-          : { tipo: 'RUC', numero: '20601234567', nombre: 'DISTRIBUIDORA LIMA S.A.C.' },
-      items: [
-        { productId: '1', name: 'Gaseosa Cola 500ml', qty: 2, unitPrice: 3.5, total: 7.0 },
-        { productId: '2', name: 'Galletas Chocolate Pack x6', qty: 1, unitPrice: 5.5, total: 5.5 },
-        { productId: '3', name: 'Aceite Vegetal 1L', qty: 1, unitPrice: 9.8, total: 9.8 }
-      ],
-      subtotal: 18.9,
-      igv: 3.4,
-      total: 22.3,
-      paymentMethod: 'efectivo',
-      paidAmount: 30.0,
-      changeAmount: 7.7,
-      consolidated: false,
-      sunatStatus: 'aceptado',
-      status: 'activa',
-      createdAt: Date.now()
-    }),
-    [previewDocType]
-  );
-
-  // Configuración compuesta para el renderizado del ticket
-  const previewCompanyConfig: CompanyConfig = useMemo(
-    () => ({
-      ...(cfg ?? DEFAULT_COMPANY),
-      logoUrl: logoUrl.trim() || undefined,
-      slogan: slogan.trim() || undefined,
-      phone: phone.trim() || undefined,
-      footerText: footerText.trim() || undefined,
-      ticketWidth
-    }),
-    [cfg, logoUrl, slogan, phone, footerText, ticketWidth]
-  );
-
-  const previewHtml = useMemo(
-    () => ticketHtml(sampleSale, previewCompanyConfig),
-    [sampleSale, previewCompanyConfig]
-  );
-
-  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  useEffect(() => setLogoError(false), [draft.logoUrl]);
+  const update = <K extends keyof TicketDraft>(key: K, value: TicketDraft[K]) => {
+    dirty.current = true;
+    setDraft((current) => ({ ...current, [key]: value }));
+  };
+  const updateDesign = <K extends keyof TicketDesign>(key: K, value: TicketDesign[K]) => update('ticketDesign', { ...draft.ticketDesign, [key]: value });
+  const sampleSale = useMemo((): Sale => ({
+    code: previewDocType === 'boleta' ? 'B001-00000142' : 'F001-00000089', serie: previewDocType === 'boleta' ? 'B001' : 'F001', correlativo: 142, type: previewDocType,
+    storeId: 'demo-store', storeName: 'Tienda principal', userId: 'demo-user', userName: 'Rosa Cajera',
+    clientDoc: previewDocType === 'boleta' ? { tipo: 'DNI', numero: '74839201', nombre: 'Carlos Mendoza' } : { tipo: 'RUC', numero: '20601234567', nombre: 'DISTRIBUIDORA LIMA S.A.C.' },
+    items: [
+      { productId: '1', barcode: '7750000000001', name: 'Gaseosa Cola 500ml', presentationUnit: 'UN', qty: 2, unitPrice: 3.5, total: 7 },
+      { productId: '2', barcode: '7750000000002', name: 'Galletas Chocolate', presentationUnit: 'PAQ', presentationId: 'pack6', presentationLabel: 'Paquete x6', factor: 6, qty: 1, unitPrice: 5.5, total: 5.5 },
+      { productId: '3', barcode: '7750000000003', name: 'Aceite Vegetal 1L', presentationUnit: 'UN', qty: 1, unitPrice: 9.8, total: 9.8 }
+    ], subtotal: 18.9, igv: 3.4, igvRate: 0.18, total: 22.3, paymentMethod: 'efectivo', paidAmount: 30, changeAmount: 7.7, consolidated: false, sunatStatus: 'aceptado', status: 'activa', createdAt: Date.now()
+  }), [previewDocType]);
+  const previewConfig: CompanyConfig = { ...(cfg ?? DEFAULT_COMPANY), ...draft };
+  const previewHtml = ticketHtml(sampleSale, previewConfig);
+  const logoSource = ticketLogoSource(draft.logoUrl);
+  const upload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
     if (!file) return;
-    if (file.size > 200 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
-      flash('Error: usa PNG, JPG o WEBP de hasta 200 KB');
-      return;
-    }
+    if (file.size > 200 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) { flash('Error: usa PNG, JPG o WEBP de hasta 200 KB'); return; }
     const reader = new FileReader();
-    reader.onload = () => {
-      setLogoUrl(reader.result as string);
-      flash('Logotipo cargado correctamente');
-    };
+    reader.onload = () => { if (typeof reader.result === 'string') update('logoUrl', reader.result); };
+    reader.onerror = () => flash('Error: no se pudo leer la imagen');
     reader.readAsDataURL(file);
   };
-
-  const removeLogo = () => {
-    setLogoUrl('');
-    if (fileInputRef.current) fileInputRef.current.value = '';
-    flash('Logotipo removido');
-  };
-
-  const handleSave = async () => {
+  const save = async () => {
+    if (!cfg) return;
+    if (draft.logoUrl.trim() && (!logoSource || logoError)) { flash('Error: el logo no carga. Usa un enlace directo a la imagen o súbela desde tu equipo.'); return; }
     setBusy(true);
     try {
-      await setDoc(
-        tenantDoc('config', 'company'),
-        {
-          ...(cfg ?? DEFAULT_COMPANY),
-          logoUrl: logoUrl.trim() || null,
-          slogan: clean(slogan) || null,
-          phone: clean(phone) || null,
-          footerText: clean(footerText) || null,
-          ticketWidth,
-          updatedAt: Date.now()
-        },
-        { merge: true }
-      );
-      flash('Diseño y personalización del ticket guardados con éxito');
-    } catch {
-      flash('Error al guardar la configuración del ticket');
-    } finally {
-      setBusy(false);
-    }
+      const ref = tenantDoc('config', 'company');
+      const patch = { ...draft, logoUrl: logoSource || null, slogan: draft.slogan.trim() || null, phone: draft.phone.trim() || null, footerText: draft.footerText.trim() || null, updatedAt: Date.now() };
+      await runTransaction(db, async (tx) => {
+        const snapshot = await tx.get(ref);
+        if (snapshot.exists()) tx.update(ref, patch);
+        else tx.set(ref, { ...DEFAULT_COMPANY, ...patch });
+      });
+      dirty.current = false;
+      flash('Diseño del ticket guardado');
+    } catch (error) { flash(`Error: ${error instanceof Error ? error.message : 'no se pudo guardar el diseño'}`); }
+    finally { setBusy(false); }
   };
-
-  const handlePrintTest = () => {
-    printTicket(previewHtml);
+  const printTest = async () => {
+    setPrinting(true);
+    try {
+      const result = await printTicket(previewHtml);
+      if (result.missingImages) flash('Error: no se pudo cargar el logo. La impresión se abrió sin la imagen.');
+    } catch { flash('Error: no se pudo abrir la impresión'); }
+    finally { setPrinting(false); }
   };
-
   return (
-    <div className="space-y-4">
-      {/* ─── ENCABEZADO ──────────────────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="font-display text-2xl uppercase tracking-wide">Personalizador de Tickets Térmicos</h1>
-          <p className="text-xs text-slate-500">
-            Personaliza el logotipo, datos de contacto, políticas y formato de las boletas y facturas impresas.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={handlePrintTest}
-            className="btn-ghost !min-h-[40px] text-xs font-bold border-slate-300 bg-white"
-          >
-            <Printer size={15} /> Imprimir Ticket de Prueba
-          </button>
-          <button
-            onClick={() => void handleSave()}
-            disabled={busy}
-            className="btn-brand !min-h-[40px] text-xs font-bold"
-          >
-            <Check size={15} /> {busy ? 'Guardando…' : 'Guardar Diseño'}
-          </button>
+    <div className="space-y-5">
+      <div className="space-y-3">
+        <h1 className="font-display text-2xl uppercase tracking-wide">Diseño de tickets</h1>
+        <p className="text-sm text-slate-500">Personaliza el formato de impresión. La vista previa utiliza el mismo diseño que las ventas.</p>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => void printTest()} disabled={printing} className="btn-ghost"><Printer size={16} />{printing ? 'Preparando impresión…' : 'Imprimir ticket de prueba'}</button>
+          <button onClick={() => void save()} disabled={busy || !cfg} className="btn-brand"><Check size={16} />{busy ? 'Guardando…' : 'Guardar diseño'}</button>
         </div>
       </div>
-
-      {/* ─── GRID DE PERSONALIZACIÓN Y PREVIEW EN VIVO ───────────────────────── */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-start">
-        {/* LADO IZQUIERDO: FORMULARIO DE PERSONALIZACIÓN (7 columnas) */}
-        <div className="space-y-4 lg:col-span-7">
-          {/* Tarjeta: Logotipo de la Empresa */}
-          <div className="card p-5 space-y-4 shadow-xs">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 font-display flex items-center gap-1.5">
-              <Image size={15} className="text-primary" /> Logotipo del Ticket Térmico
-            </h3>
-            <p className="text-xs text-slate-500">
-              Sube una imagen o pega un enlace. Para impresoras térmicas se recomienda un logo en blanco y negro o alto contraste.
-            </p>
-
-            {logoUrl ? (
-              <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-                <div className="flex h-16 w-28 items-center justify-center rounded-xl bg-white border border-slate-200 p-1.5 shadow-xs">
-                  <img src={logoUrl} alt="Logo" className="max-h-full max-w-full object-contain filter grayscale" />
-                </div>
-                <div className="space-y-1">
-                  <p className="text-xs font-bold text-slate-800">Logotipo cargado</p>
-                  <p className="text-[11px] text-slate-400">Se optimizará para impresión monocromática.</p>
-                  <button
-                    type="button"
-                    onClick={removeLogo}
-                    className="flex items-center gap-1 text-xs font-bold text-critical hover:underline pt-1"
-                  >
-                    <Trash2 size={13} /> Quitar logotipo
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50/50 p-6 text-center cursor-pointer hover:border-primary hover:bg-indigo-50/20 transition-all"
-                >
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-slate-500 shadow-xs border border-slate-200">
-                    <Upload size={18} />
-                  </div>
-                  <div>
-                    <p className="text-xs font-bold text-slate-800">Haz clic para subir tu logotipo</p>
-                    <p className="text-[11px] text-slate-400">PNG o JPG (máximo 2 MB)</p>
-                  </div>
-                </div>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleLogoUpload}
-                  className="hidden"
-                />
-
-                <div>
-                  <label className="text-[11px] font-bold text-slate-600 block mb-1">O escribe una URL de imagen:</label>
-                  <input
-                    value={logoUrl}
-                    onChange={(e) => setLogoUrl(e.target.value)}
-                    placeholder="https://ejemplo.com/logo.png"
-                    className="field text-xs font-mono"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Tarjeta: Textos del Encabezado y Contacto */}
-          <div className="card p-5 space-y-4 shadow-xs">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 font-display flex items-center gap-1.5">
-              <Building2 size={15} className="text-primary" /> Textos del Encabezado
-            </h3>
-
-            <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
-              <div className="sm:col-span-2">
-                <label className="label">Eslogan o Giro del Negocio</label>
-                <input
-                  value={slogan}
-                  onChange={(e) => setSlogan(e.target.value)}
-                  placeholder="Ej.: Venta de abarrotes y bebidas al por mayor"
-                  className="field"
-                />
-              </div>
-
-              <div>
-                <label className="label">Teléfono / WhatsApp de Contacto</label>
-                <input
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="Ej.: +51 987 654 321"
-                  className="field"
-                />
-              </div>
-
-              <div>
-                <label className="label">Ancho de Impresión</label>
-                <select
-                  value={ticketWidth}
-                  onChange={(e) => setTicketWidth(e.target.value as '80mm' | '58mm')}
-                  className="field font-bold text-xs"
-                >
-                  <option value="80mm">80mm (Estándar POS / Ticketera Térmica)</option>
-                  <option value="58mm">58mm (Mini Impresora Móvil Bluetooth)</option>
-                </select>
-              </div>
+      <div className="grid min-w-0 grid-cols-1 items-start gap-5 xl:grid-cols-2">
+        <fieldset disabled={busy} className="min-w-0 space-y-4">
+          <section className="card space-y-3 p-4">
+            <h2 className="flex items-center gap-2 font-semibold"><Image size={17} /> Logotipo</h2>
+            <p className="text-sm text-slate-500">Usa una imagen de alto contraste para la ticketera.</p>
+            <label className="label" htmlFor="ticket-logo-url">Enlace directo de la imagen</label>
+            <input id="ticket-logo-url" className="field font-mono text-xs" value={draft.logoUrl.startsWith('data:') ? '' : draft.logoUrl} onChange={(e) => update('logoUrl', e.target.value)} placeholder="https://ejemplo.com/logo.png" />
+            <div className="flex flex-wrap items-center gap-3">
+              <button type="button" className="btn-ghost" onClick={() => fileInputRef.current?.click()}><Upload size={16} /> Subir imagen</button>
+              <input ref={fileInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={upload} className="hidden" />
+              <span className="text-xs text-slate-500">PNG, JPG o WEBP, máximo 200 KB</span>
+              {draft.logoUrl && <button type="button" className="btn-ghost text-critical" onClick={() => { update('logoUrl', ''); if (fileInputRef.current) fileInputRef.current.value = ''; }}><Trash2 size={16} /> Quitar logo</button>}
             </div>
-          </div>
-
-          {/* Tarjeta: Pie de Ticket y Políticas */}
-          <div className="card p-5 space-y-3 shadow-xs">
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 font-display flex items-center gap-1.5">
-              <FileText size={15} className="text-primary" /> Mensaje de Pie de Ticket
-            </h3>
-            <p className="text-xs text-slate-500">
-              Mensaje final, agradecimiento o políticas de garantía/cambio que aparecerán al final del comprobante.
-            </p>
-            <textarea
-              rows={3}
-              value={footerText}
-              onChange={(e) => setFooterText(e.target.value)}
-              placeholder="Ej.: ¡Gracias por su preferencia! - No se aceptan devoluciones de productos abiertos."
-              className="field !h-auto resize-none text-xs"
-            />
-          </div>
-        </div>
-
-        {/* LADO DERECHO: PREVISUALIZADOR EN TIEMPO REAL (5 columnas) */}
-        <div className="space-y-3 lg:col-span-5 sticky top-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-600 font-display flex items-center gap-1.5">
-              <Receipt size={15} className="text-primary" /> Vista Previa del Ticket Térmico
-            </span>
-
-            {/* Toggle Boleta vs Factura */}
-            <div className="flex rounded-xl bg-slate-100 p-1 border border-slate-200">
-              <button
-                type="button"
-                onClick={() => setPreviewDocType('boleta')}
-                className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition-all ${
-                  previewDocType === 'boleta' ? 'bg-primary text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Boleta
-              </button>
-              <button
-                type="button"
-                onClick={() => setPreviewDocType('factura')}
-                className={`rounded-lg px-2.5 py-1 text-[11px] font-bold transition-all ${
-                  previewDocType === 'factura' ? 'bg-primary text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                Factura
-              </button>
+            {logoSource && <div className="flex min-h-20 items-center justify-center rounded-xl border border-slate-200 bg-white p-3"><img src={logoSource} alt="Logo cargado" onLoad={() => setLogoError(false)} onError={() => setLogoError(true)} className="max-h-20 max-w-full object-contain grayscale" /></div>}
+            {draft.logoUrl && (!logoSource || logoError) && <p className="text-sm text-critical">El enlace no carga una imagen. Usa su dirección directa o sube el archivo.</p>}
+          </section>
+          <section className="card space-y-4 p-4">
+            <h2 className="font-semibold">Formato y columnas</h2>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="label">Ancho de impresión<select className="field mt-1" value={draft.ticketWidth} onChange={(e) => update('ticketWidth', e.target.value as TicketDraft['ticketWidth'])}><option value="80mm">80 mm</option><option value="58mm">58 mm</option></select></label>
+              <label className="label">Formato<select className="field mt-1" value={draft.ticketDesign.layout} onChange={(e) => updateDesign('layout', e.target.value as TicketDesign['layout'])}><option value="detailed">Tabla con columnas</option><option value="compact">Lista compacta</option></select></label>
+              <label className="label">Tamaño de texto<input className="field mt-1" type="number" min={9} max={14} step={1} value={draft.ticketDesign.fontSize} onChange={(e) => updateDesign('fontSize', Math.min(14, Math.max(9, Math.round(Number(e.target.value)) || 9)))} /></label>
+              <label className="label">Ancho del logo (px)<input className="field mt-1" type="number" min={40} max={180} step={1} value={draft.ticketDesign.logoWidth} onChange={(e) => updateDesign('logoWidth', Math.min(180, Math.max(40, Math.round(Number(e.target.value)) || 40)))} /></label>
+              <label className="label">Alineación del encabezado<select className="field mt-1" value={draft.ticketDesign.headerAlign} onChange={(e) => updateDesign('headerAlign', e.target.value as TicketDesign['headerAlign'])}><option value="center">Centrado</option><option value="left">Izquierda</option></select></label>
             </div>
-          </div>
-
-          {/* Contenedor del Ticket Físico con estética de papel térmico */}
-          <div className="rounded-3xl bg-slate-800 p-5 shadow-2xl">
-            <div
-              className={`mx-auto bg-white p-4 shadow-md rounded-lg font-mono text-xs text-black transition-all ${
-                ticketWidth === '58mm' ? 'max-w-[240px]' : 'max-w-[300px]'
-              }`}
-              style={{ fontFamily: '"JetBrains Mono", monospace' }}
-            >
-              <div dangerouslySetInnerHTML={{ __html: previewHtml }} />
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {([{ key: 'showCode', label: 'Mostrar código de producto' }, { key: 'showUnitPrice', label: 'Mostrar precio unitario' }, { key: 'showCashier', label: 'Mostrar cajero' }, { key: 'showClient', label: 'Mostrar cliente' }] as const).map(({ key, label }) => <label key={key} className="flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" checked={draft.ticketDesign[key]} onChange={(e) => updateDesign(key, e.target.checked)} />{label}</label>)}
             </div>
-          </div>
-
-          <div className="text-center">
-            <button
-              type="button"
-              onClick={handlePrintTest}
-              className="btn-primary w-full !py-2.5 text-xs font-bold"
-            >
-              <Printer size={15} /> Probar Impresión en Ticketera
-            </button>
-          </div>
-        </div>
+          </section>
+          <section className="card space-y-4 p-4">
+            <h2 className="font-semibold">Textos del ticket</h2>
+            <label className="label">Eslogan<input className="field mt-1" maxLength={250} value={draft.slogan} onChange={(e) => update('slogan', e.target.value)} /></label>
+            <label className="label">Teléfono o WhatsApp<input className="field mt-1" maxLength={40} value={draft.phone} onChange={(e) => update('phone', e.target.value)} /></label>
+            <label className="label">Mensaje de pie de ticket<textarea className="field mt-1" rows={4} maxLength={1000} value={draft.footerText} onChange={(e) => update('footerText', e.target.value)} /></label>
+          </section>
+        </fieldset>
+        <section className="min-w-0 space-y-3 xl:sticky xl:top-4">
+          <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="font-semibold">Vista previa</h2><div className="flex gap-1 rounded-lg bg-slate-100 p-1">{(['boleta', 'factura'] as const).map((type) => <button key={type} className={`min-h-11 rounded-lg px-3 text-sm capitalize ${previewDocType === type ? 'bg-primary text-white' : 'text-slate-600'}`} onClick={() => setPreviewDocType(type)}>{type}</button>)}</div></div>
+          <div className="rounded-2xl bg-slate-800 p-3 sm:p-5"><div className="mx-auto max-w-full bg-white shadow-lg" style={{ width: draft.ticketWidth === '58mm' ? '58mm' : '80mm', padding: '2mm' }} dangerouslySetInnerHTML={{ __html: previewHtml }} /></div>
+        </section>
       </div>
-
       <FlashBar msg={msg} />
     </div>
   );

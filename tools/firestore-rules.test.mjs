@@ -225,3 +225,21 @@ test('POS multi-tienda antiguo conserva calendario y revocación supera claims v
   await env.withSecurityRulesDisabled(async (context) => { await updateDoc(doc(context.firestore(), 'users/pos-a'), { canManageCalendar: false }); });
   await assertFails(getDoc(doc(pos, `tenants/${TENANT_A}/calendar_events/event1`)));
 });
+
+test('diseño del ticket valida cada campo al crear y actualizar y exige administrador de la empresa', async () => {
+  const design = { layout: 'detailed', fontSize: 11, logoWidth: 120, headerAlign: 'center', showCode: true, showUnitPrice: true, showCashier: true, showClient: true };
+  const path = `tenants/${TENANT_A}/config/company`;
+  const admin = doc(env.authenticatedContext('admin-a').firestore(), path);
+  await assertSucceeds(updateDoc(admin, { ticketDesign: design }));
+  for (const invalid of [{ ...design, html: '<script>' }, { ...design, fontSize: 15 }, { ...design, fontSize: 10.5 }, { ...design, logoWidth: 181 }, { ...design, showClient: 'true' }, { ...design, layout: 'custom' }, { ...design, headerAlign: 'right' }, { layout: 'compact' }, null]) {
+    await assertFails(updateDoc(admin, { ticketDesign: invalid }));
+  }
+  await assertFails(updateDoc(admin, { 'ticketDesign.fontSize': 0 }));
+  await assertFails(updateDoc(doc(env.authenticatedContext('pos-a').firestore(), path), { ticketDesign: design }));
+  await assertFails(updateDoc(doc(env.authenticatedContext('admin-b').firestore(), path), { ticketDesign: design }));
+  await assertFails(updateDoc(doc(env.unauthenticatedContext().firestore(), path), { ticketDesign: design }));
+  const data = { ruc: '20123456789', razonSocial: 'Demo', serieFactura: 'F001', serieBoleta: 'B001', entornoSunat: 'beta', igvRate: 0.18, minBoletaSinDni: 700, umbralConsolidacion: 5, updatedAt: 1, ticketDesign: design };
+  await env.withSecurityRulesDisabled(async context => { const { deleteDoc } = await import('firebase/firestore'); await deleteDoc(doc(context.firestore(), path)); });
+  await assertFails(setDoc(admin, { ...data, ticketDesign: { ...design, showCode: 1 } }));
+  await assertSucceeds(setDoc(admin, data));
+});

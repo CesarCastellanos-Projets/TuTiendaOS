@@ -133,41 +133,40 @@
   animation: laser-sweep 2s ease-in-out infinite;
 }
 
-#ticket-print {
-  display: none;
-}
+.thermal-ticket { color: #000; font-family: "Courier New", monospace; line-height: 1.35; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.thermal-ticket .brand { font-weight: 700; font-size: 1.15em; }
+.thermal-ticket .ticket-document { font-weight: 700; margin-top: 3px; }
+.thermal-ticket .ticket-logo { text-align: center; margin-bottom: 8px; }
+.thermal-ticket .ticket-logo img { display: inline-block; max-width: 100%; max-height: 100px; object-fit: contain; filter: grayscale(100%); }
+.thermal-ticket .ticket-logo img[hidden] { display: none; }
+.thermal-ticket hr { border: 0; border-top: 1px dashed #000; margin: 6px 0; }
+.thermal-ticket .row { display: flex; justify-content: space-between; align-items: start; gap: 6px; }
+.thermal-ticket .row > :first-child { min-width: 0; }
+.thermal-ticket .mono { font-family: inherit; white-space: nowrap; }
+.thermal-ticket .r { text-align: right; }
+.thermal-ticket .total { margin-top: 4px; font-weight: 700; font-size: 1.1em; }
+.thermal-ticket small { display: block; font-size: 0.82em; }
+.thermal-ticket .ticket-item { margin: 6px 0; }
+.thermal-ticket .ticket-items { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 0.88em; }
+.thermal-ticket .ticket-items th { font-size: 0.82em; text-align: left; border-bottom: 1px dotted #000; }
+.thermal-ticket .ticket-items td { vertical-align: top; padding: 4px 2px 4px 0; border-bottom: 1px dotted #888; }
+.thermal-ticket .ticket-items .r { text-align: right; }
+.thermal-ticket .item-code { width: 17%; }
+.thermal-ticket .item-qty { width: 10%; }
+.thermal-ticket .item-unit { width: 12%; }
+.thermal-ticket .item-money { width: 16%; }
+.thermal-ticket .foot { text-align: center; white-space: pre-wrap; margin-top: 8px; }
+#ticket-print { display: none; }
 
 @media print {
-  body * {
-    visibility: hidden;
-  }
-  #ticket-print,
-  #ticket-print * {
-    visibility: visible;
-  }
-  #ticket-print {
-    display: block !important;
-    position: fixed;
-    inset: 0;
-    width: 80mm;
-    background: white;
-    color: black;
-    font-family: "JetBrains Mono", monospace;
-  }
-  #ticket-print[data-width='58mm'] { width: 58mm; }
-  #ticket-print .row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    gap: 4px;
-    align-items: start;
-  }
-  #ticket-print .name { overflow-wrap: anywhere; }
-  #ticket-print .mono { font-family: "JetBrains Mono", monospace; white-space: nowrap; }
-  #ticket-print .r { text-align: right; }
-  #ticket-print .total { margin-top: 3px; font-weight: 700; }
+  body { margin: 0; }
+  body * { visibility: hidden; }
+  #root { display: none !important; }
+  #ticket-print, #ticket-print * { visibility: visible; }
+  #ticket-print { display: block !important; position: static; width: 76mm; max-width: 100%; background: white; color: black; }
+  #ticket-print[data-width='58mm'] { width: 54mm; }
+  .thermal-ticket tr, .thermal-ticket .ticket-item, .thermal-ticket .head, .thermal-ticket .total { break-inside: avoid; }
+  .thermal-ticket thead { display: table-header-group; }
 }
 
-@page {
-  size: auto;
-  margin: 2mm;
-}
+@page { size: auto; margin: 2mm; }

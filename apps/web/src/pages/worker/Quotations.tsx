@@ -303,14 +303,14 @@ export function WorkerQuotations() {
 
     return (
       `*COTIZACIÓN — ${companyName}*\n` +
-      `📅 *Fecha:* ${new Date().toLocaleDateString('es-PE')}\n` +
-      (clientName ? `👤 *Cliente:* ${clientName}\n` : '') +
-      `🏢 *Tienda:* ${catalog[0]?.locationName ?? 'Principal'}\n\n` +
+      ` *Fecha:* ${new Date().toLocaleDateString('es-PE')}\n` +
+      (clientName ? ` *Cliente:* ${clientName}\n` : '') +
+      ` *Tienda:* ${catalog[0]?.locationName ?? 'Principal'}\n\n` +
       `*DETALLE DE PRODUCTOS:* \n` +
       lines.join('\n') +
       `\n\n───────────────────\n` +
-      `💰 *TOTAL ESTIMADO (Lista completa):* S/ ${totalAll.toFixed(2)}\n` +
-      `🟢 *TOTAL DISPONIBLE HOY EN TIENDA:* S/ ${totalAvailable.toFixed(2)}\n\n` +
+      ` *TOTAL ESTIMADO (Lista completa):* S/ ${totalAll.toFixed(2)}\n` +
+      ` *TOTAL DISPONIBLE HOY EN TIENDA:* S/ ${totalAvailable.toFixed(2)}\n\n` +
       `¡Los precios están sujetos a disponibilidad! Gracias por su preferencia.`
     );
   };
@@ -489,7 +489,7 @@ export function WorkerQuotations() {
 
                 <div className="text-xs text-slate-600 flex items-center justify-between">
                   <span>
-                    👤 <strong>{q.clientName || 'Cliente anónimo'}</strong> ({q.items.length} productos)
+                     <strong>{q.clientName || 'Cliente anónimo'}</strong> ({q.items.length} productos)
                   </span>
                   <span className="text-[11px] text-slate-400">Por {q.createdByName}</span>
                 </div>
@@ -681,7 +681,7 @@ export function WorkerQuotations() {
               {/* Total Disponible */}
               <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-3">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 block">
-                  🟢 Para llevar hoy
+                   Para llevar hoy
                 </span>
                 <span className="font-mono text-2xl font-extrabold text-emerald-700 block my-0.5">
                   S/ {totalAvailable.toFixed(2)}
@@ -692,7 +692,7 @@ export function WorkerQuotations() {
               {/* Total Completo */}
               <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 block">
-                  📋 Total Pedido Completo
+                   Total Pedido Completo
                 </span>
                 <span className="font-mono text-2xl font-extrabold text-slate-900 block my-0.5">
                   S/ {totalAll.toFixed(2)}

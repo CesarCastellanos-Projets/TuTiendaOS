@@ -162,6 +162,7 @@ export function ProductsPage() {
         current.fractionStep = Math.max(0.001, Math.min(0.999, Number(String(value).replace(',', '.')) || 0.5));
       } else if (field === 'autoUnpackEnabled') {
         current.autoUnpackEnabled = Boolean(value);
+        if (!current.autoUnpackEnabled) current.allowFractionalSale = false;
       } else if (field === 'autoUnpackPriority') {
         current.autoUnpackPriority = Math.max(1, Math.trunc(Number(value) || 1));
       }
@@ -628,29 +629,31 @@ export function ProductsPage() {
                       />
                     </div>
 
-                    <div className="sm:col-span-9 grid grid-cols-1 gap-2 rounded-lg bg-slate-50 p-2 sm:grid-cols-2">
-                      <label className="flex min-h-11 items-center gap-2 text-xs font-semibold text-slate-700 sm:col-span-2">
+                    <div className="sm:col-span-9 space-y-2 rounded-lg bg-slate-50 p-3">
+                      <label className="flex min-h-11 items-center gap-2 text-xs font-semibold text-slate-700">
                         <input type="checkbox" checked={pres.autoUnpackEnabled === true} onChange={(e) => updatePresentationRow(index, 'autoUnpackEnabled', e.target.checked)} />
                         Abrir para vender unidades (compartir stock)
                       </label>
-                      <label className="flex min-h-11 items-center gap-2 text-xs font-semibold text-slate-700">
-                        <input type="checkbox" disabled={!pres.autoUnpackEnabled} checked={pres.autoUnpackEnabled === true && pres.allowFractionalSale === true} onChange={(e) => updatePresentationRow(index, 'allowFractionalSale', e.target.checked)} />
-                        Permitir venta fraccionada
-                      </label>
-                      <label className="text-[10px] font-bold uppercase text-slate-500">
-                        Paso permitido
-                        <input type="number" min="0.001" max="0.999" step="0.001" disabled={!pres.autoUnpackEnabled || !pres.allowFractionalSale} value={pres.fractionStep ?? 0.5} onChange={(e) => updatePresentationRow(index, 'fractionStep', e.target.value)} className="field mt-1 !h-9 text-center text-xs" />
-                      </label>
+                      <div className="grid items-center gap-2 sm:grid-cols-[minmax(0,1fr)_7rem]">
+                        <label className="flex min-h-11 items-center gap-2 text-xs font-semibold text-slate-700">
+                          <input type="checkbox" disabled={!pres.autoUnpackEnabled} checked={pres.autoUnpackEnabled === true && pres.allowFractionalSale === true} onChange={(e) => updatePresentationRow(index, 'allowFractionalSale', e.target.checked)} />
+                          Permitir venta fraccionada
+                        </label>
+                        <label className="text-[10px] font-bold uppercase text-slate-500">
+                          Paso permitido
+                          <input type="number" min="0.001" max="0.999" step="0.001" disabled={!pres.autoUnpackEnabled || !pres.allowFractionalSale} value={pres.fractionStep ?? 0.5} onChange={(e) => updatePresentationRow(index, 'fractionStep', e.target.value)} className="field mt-1 !h-9 text-center text-xs" />
+                        </label>
+                      </div>
                     </div>
 
-                    <div className="flex items-end justify-end sm:col-span-3">
-                      <button type="button" onClick={() => removePresentationRow(index)} className="flex h-11 w-11 items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-critical" title="Eliminar presentación">
-                        <Trash2 size={16} />
+                    <div className="sm:col-span-12 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-indigo-50 px-3 py-2">
+                      <p className="text-xs font-semibold text-indigo-950">
+                        1 {pres.unit} = {pres.factor} {baseUnit} · S/ {(pres.salePrice || 0).toFixed(2)} por {pres.unit.toLowerCase()}
+                      </p>
+                      <button type="button" onClick={() => removePresentationRow(index)} className="flex min-h-11 items-center justify-center gap-2 rounded-xl px-2 text-xs font-semibold text-slate-600 hover:bg-red-50 hover:text-critical">
+                        <Trash2 size={16} /> Quitar presentación
                       </button>
                     </div>
-                    <p className="sm:col-span-12 rounded-lg bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-950">
-                      1 {pres.unit} = {pres.factor} {baseUnit} · S/ {(pres.salePrice || 0).toFixed(2)} por {pres.unit.toLowerCase()}
-                    </p>
                   </div>
                 ))}
               </div>
