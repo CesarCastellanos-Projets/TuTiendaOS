@@ -1,6 +1,7 @@
 import { HttpsError, type CallableRequest } from 'firebase-functions/v2/https';
 import { db } from './firebase';
 import { assertTenantId } from './tenant';
+import { calendarAllowed } from './calendar-model';
 
 export type AppRole = 'admin' | 'pos' | 'trabajador';
 
@@ -12,9 +13,10 @@ export interface ActiveProfile {
   storeId: string | null;
   storeAccess: 'assigned' | 'all';
   canOverridePrices: boolean;
+  canManageCalendar: boolean;
 }
 
-export async function requireActiveProfile(request: CallableRequest): Promise<ActiveProfile> {
+export async function requireActiveProfile(request: CallableRequest, checkInventory = true): Promise<ActiveProfile> {
   if (!request.auth) {
     throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
   }
@@ -33,6 +35,10 @@ export async function requireActiveProfile(request: CallableRequest): Promise<Ac
   } catch {
     throw new HttpsError('permission-denied', 'Tu usuario no tiene una empresa válida asignada.');
   }
+  if (checkInventory) {
+    const maintenance = await db.doc(`tenants/${tenantId}/meta/inventory_maintenance`).get();
+    if (maintenance.data()?.active === true) throw new HttpsError('unavailable', 'Inventario en mantenimiento. Intenta nuevamente al terminar la migración.');
+  }
   const claimedTenantId = request.auth.token.tenantId;
   if (claimedTenantId !== undefined && claimedTenantId !== tenantId) {
     throw new HttpsError('permission-denied', 'La sesión no corresponde a la empresa asignada.');
@@ -49,7 +55,8 @@ export async function requireActiveProfile(request: CallableRequest): Promise<Ac
     tenantId,
     storeId: typeof data.storeId === 'string' ? data.storeId : null,
     storeAccess,
-    canOverridePrices: storeAccess === 'all' && request.auth.token.canOverridePrices === true
+    canOverridePrices: storeAccess === 'all' && request.auth.token.canOverridePrices === true,
+    canManageCalendar: calendarAllowed(data)
   };
 }
 

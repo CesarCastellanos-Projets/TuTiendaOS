@@ -1,0 +1,8 @@
+[
+  {
+    "origin": ["https://denzozsaas.web.app", "https://denzozsaas.firebaseapp.com"],
+    "method": ["GET"],
+    "responseHeader": ["Content-Type"],
+    "maxAgeSeconds": 3600
+  }
+]

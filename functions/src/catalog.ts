@@ -3,7 +3,7 @@ import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { db } from './firebase';
 import { requireAdmin } from './authz';
 import { tenantCollection, tenantDoc } from './tenant';
-import { round2 } from './stock-model';
+import { parsePresentations, round2, round3 } from './stock-model';
 
 function text(value: unknown, max: number): string {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
@@ -27,7 +27,7 @@ export const saveCatalogProduct = onCall(async (request) => {
   const barcode = text(input.barcode, 80);
   const salePrice = round2(Number(input.salePrice));
   const minStock = Number(input.minStock ?? 0);
-  if (!name || !Number.isFinite(salePrice) || salePrice <= 0 || !Number.isInteger(minStock) || minStock < 0) {
+  if (!name || !Number.isFinite(salePrice) || salePrice <= 0 || salePrice > 1_000_000 || !Number.isInteger(minStock) || minStock < 0 || minStock > 1_000_000) {
     throw new HttpsError('invalid-argument', 'Nombre, precio y stock mínimo no son válidos.');
   }
 
@@ -45,11 +45,11 @@ export const saveCatalogProduct = onCall(async (request) => {
     const presentationBarcode = text(source.barcode, 80);
     const fractionStep = Number(source.fractionStep ?? 0.5);
     const priority = Number(source.autoUnpackPriority ?? index + 1);
-    const fractionalSale = source.allowFractionalSale === true;
+    const fractionalSale = source.allowFractionalSale === true && source.autoUnpackEnabled === true;
     if (
-      presentationIds.has(id) || !presentationUnit || !Number.isInteger(factor) || factor <= 1
-      || !Number.isFinite(price) || price <= 0
-      || !Number.isFinite(fractionStep) || fractionStep <= 0 || fractionStep >= 1
+      presentationIds.has(id) || !presentationUnit || !Number.isInteger(factor) || factor <= 1 || factor > 1_000_000
+      || !Number.isFinite(price) || price <= 0 || price > 1_000_000
+      || !Number.isFinite(fractionStep) || fractionStep < 0.001 || fractionStep >= 1 || Math.abs(fractionStep - round3(fractionStep)) > 0.0000001
       || (fractionalSale && !Number.isInteger(Math.round(fractionStep * 1000) * factor / 1000))
       || !Number.isInteger(priority) || priority <= 0
     ) {
@@ -93,6 +93,12 @@ export const saveCatalogProduct = onCall(async (request) => {
   await db.runTransaction(async (tx) => {
     const currentSnap = await tx.get(productRef);
     const current = currentSnap.data() ?? {};
+    for (const old of parsePresentations(current)) {
+      const next = presentations.find((p) => p.id === old.id);
+      if (!next || next.factor !== old.factor) {
+        throw new HttpsError('failed-precondition', 'No elimines ni cambies el factor de una presentación existente: conserva su identidad para stock y transferencias. Puedes agregar una presentación nueva.');
+      }
+    }
     const currentPresentations = Array.isArray(current.presentations)
       ? current.presentations as Record<string, unknown>[]
       : [];

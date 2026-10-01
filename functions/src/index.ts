@@ -8,8 +8,13 @@ import { tenantCollection } from './tenant';
 setGlobalOptions({ region: 'us-central1', maxInstances: 10 });
 const APISPERU_TOKEN = defineString('APISPERU_TOKEN', { default: 'disabled' });
 
-export { createSaleRecord, getCompanyConfig, receiveTransfer } from './operations';
+export { createSaleRecord, resumeSaleRecord, getCompanyConfig, receiveTransfer } from './operations';
+export { saveCustomUnits } from './company';
+export { saveCalendarEvent, completeCalendarEvent, setCalendarPermission, markCalendarNotification, registerCalendarDevice, unregisterCalendarDevice, sendCalendarReminders } from './calendar';
 export { saveCatalogProduct } from './catalog';
+export { openCashSession, closeCashSession, getCashSessionSummary } from './cash';
+export { createQuotationRecord, createReplenishmentRecord, discardQuotation } from './requests';
+export { resolveTransferShortage } from './shortages';
 export {
   adjustInventory,
   attendReplenishmentRequest,
@@ -35,13 +40,14 @@ export {
 export const createUser = onCall(async (request) => {
   const profile = await requireAdmin(request);
 
-  const { email, password, displayName, role, storeId, storeAccess } = request.data as {
+  const { email, password, displayName, role, storeId, storeAccess, canManageCalendar } = request.data as {
     email?: string;
     password?: string;
     displayName?: string;
     role?: string;
     storeId?: string | null;
     storeAccess?: string;
+    canManageCalendar?: boolean;
   };
 
   if (!email || !password || password.length < 6 || !displayName || !role) {
@@ -51,6 +57,7 @@ export const createUser = onCall(async (request) => {
     throw new HttpsError('invalid-argument', 'Rol inválido.');
   }
   const isMultiStorePos = role === 'pos' && storeAccess === 'all';
+  if (canManageCalendar !== undefined && typeof canManageCalendar !== 'boolean') throw new HttpsError('invalid-argument', 'Permiso de calendario inválido.');
   if (((role === 'pos' && !isMultiStorePos) || role === 'trabajador') && !storeId) {
     throw new HttpsError('invalid-argument', 'POS y Trabajador requieren tienda.');
   }
@@ -70,6 +77,7 @@ export const createUser = onCall(async (request) => {
     role,
     storeId: isMultiStorePos ? null : storeId ?? null,
     storeAccess: isMultiStorePos ? 'all' : 'assigned',
+    canManageCalendar: role === 'admin' || (role === 'pos' && (canManageCalendar ?? isMultiStorePos)),
     active: true,
     createdAt: Date.now()
   });
@@ -105,6 +113,7 @@ export const lookupClient = onCall(async (request) => {
       throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
     }
     const profile = await requireActiveProfile(request);
+    if (!['admin', 'pos'].includes(profile.role)) throw new HttpsError('permission-denied', 'Tu rol no puede consultar documentos.');
     const { type, number } = request.data as { type?: 'dni' | 'ruc'; number?: string };
     if ((type !== 'dni' && type !== 'ruc') || !number || !/^\d{8}$|^\d{11}$/.test(number)) {
       throw new HttpsError('invalid-argument', 'Documento inválido.');
@@ -112,12 +121,24 @@ export const lookupClient = onCall(async (request) => {
     if (type === 'dni' && number.length !== 8) throw new HttpsError('invalid-argument', 'DNI debe tener 8 dígitos.');
     if (type === 'ruc' && number.length !== 11) throw new HttpsError('invalid-argument', 'RUC debe tener 11 dígitos.');
 
-    // Caché primero: cero costo de API
+    const now = Date.now();
+    const rateRef = tenantCollection(profile.tenantId, 'lookup_limits').doc(profile.uid);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(rateRef);
+      const current = snap.data() ?? {};
+      const minute = Math.floor(now / 60000);
+      const day = Math.floor(now / 86400000);
+      const minuteCount = current.minute === minute ? Number(current.minuteCount ?? 0) : 0;
+      const dayCount = current.day === day ? Number(current.dayCount ?? 0) : 0;
+      if (minuteCount >= 10 || dayCount >= 100) throw new HttpsError('resource-exhausted', 'Límite de consultas alcanzado. Intenta más tarde.');
+      tx.set(rateRef, { minute, day, minuteCount: minuteCount + 1, dayCount: dayCount + 1 });
+    });
     const cacheId = `${type === 'dni' ? 'DNI' : 'RUC'}-${number}`;
     const clients = tenantCollection(profile.tenantId, 'clients');
     const cached = await clients.doc(cacheId).get();
-    if (cached.exists) {
-      return cached.data();
+    if (cached.exists && now - Number(cached.data()?.updatedAt ?? 0) < 30 * 86400000) {
+      const value = cached.data()!;
+      return { tipo: value.tipo, numero: value.numero, nombre: value.nombre, direccion: value.direccion ?? null };
     }
 
     const apiToken = APISPERU_TOKEN.value().trim();
@@ -158,150 +179,15 @@ export const lookupClient = onCall(async (request) => {
     const result = {
       tipo: type === 'dni' ? 'DNI' : 'RUC',
       numero: number,
-      nombre,
-      direccion: data.direccion ?? null,
+      nombre: nombre.slice(0, 180),
+      direccion: typeof data.direccion === 'string' ? data.direccion.slice(0, 240) : null,
       updatedAt: Date.now()
     };
     await clients.doc(cacheId).set({ ...result, tenantId: profile.tenantId });
     return result;
 });
 
-interface CatalogPresentationInput {
-  id?: string;
-  unit?: string;
-  description?: string;
-  factor?: number | string;
-  salePrice?: number | string;
-  barcode?: string;
-  allowFractionalSale?: boolean;
-  fractionStep?: number | string;
-  autoUnpackEnabled?: boolean;
-  autoUnpackPriority?: number | string;
-}
-
-/** Migra catálogo y stocks al modelo v2 de empaques separados. Solo Admin puede llamar. */
 export const migrateCatalogAndStocks = onCall(async (request) => {
-  const profile = await requireAdmin(request);
-  const tenantRoot = db.collection('tenants').doc(profile.tenantId);
-  const [productsSnapshot, stocksSnapshot] = await Promise.all([
-    tenantRoot.collection('products').get(),
-    tenantRoot.collection('product_stocks').get()
-  ]);
-
-  const batch = db.batch();
-  let productUpdates = 0;
-  let registryWrites = 0;
-  let stockUpdates = 0;
-
-  const productsMap = new Map<string, Record<string, unknown>>();
-
-  function registryId(code: string): string {
-    return Buffer.from(code.toLowerCase(), 'utf8').toString('base64url');
-  }
-
-  for (const doc of productsSnapshot.docs) {
-    const data = doc.data();
-    productsMap.set(doc.id, data);
-    const sourcePresentations = Array.isArray(data.presentations)
-      ? data.presentations as CatalogPresentationInput[]
-      : [];
-    let needsUpdate = false;
-
-    const presentations = sourcePresentations.map((p, index) => {
-      const factor = Number(p.factor) || 1;
-      const unit = String(p.unit ?? 'CJA').trim().toUpperCase();
-      const id = String(p.id ?? '').trim() || `legacy-${index + 1}`;
-      if (!p.id || p.id !== id) needsUpdate = true;
-
-      return {
-        ...p,
-        id,
-        unit,
-        description: String(p.description ?? '').trim() || `${unit} x${factor}`,
-        factor,
-        allowFractionalSale: p.allowFractionalSale !== false,
-        fractionStep: Number(p.fractionStep) > 0 && Number(p.fractionStep) < 1 ? Number(p.fractionStep) : 0.5,
-        autoUnpackEnabled: p.autoUnpackEnabled === true,
-        autoUnpackPriority: Number.isInteger(Number(p.autoUnpackPriority)) ? Number(p.autoUnpackPriority) : index + 1
-      };
-    });
-
-    if (needsUpdate || JSON.stringify(sourcePresentations) !== JSON.stringify(presentations)) {
-      batch.update(doc.ref, { presentations, updatedAt: Date.now() });
-      productUpdates++;
-      data.presentations = presentations;
-    }
-
-    const barcodes = [data.barcode as string | undefined, ...presentations.map((p) => p.barcode)]
-      .map((b) => String(b ?? '').trim())
-      .filter(Boolean);
-
-    for (const code of barcodes) {
-      const regRef = tenantRoot.collection('barcode_registry').doc(registryId(code));
-      batch.set(regRef, {
-        tenantId: profile.tenantId,
-        productId: doc.id,
-        code,
-        updatedAt: Date.now()
-      }, { merge: true });
-      registryWrites++;
-    }
-  }
-
-  for (const doc of stocksSnapshot.docs) {
-    const stock = doc.data();
-    const prod = productsMap.get(stock.productId as string);
-    const presentations = Array.isArray(prod?.presentations)
-      ? prod.presentations as CatalogPresentationInput[]
-      : [];
-
-    const baseQuantity = typeof stock.baseQuantity === 'number'
-      ? stock.baseQuantity
-      : Math.max(0, Number(stock.quantity ?? 0));
-    const presentationQuantities: Record<string, number> = stock.presentationQuantities
-      ? { ...(stock.presentationQuantities as Record<string, number>) }
-      : {};
-
-    // Si tiene presentaciones y no tenía stock de presentaciones inicializado
-    if (presentations.length > 0 && Object.keys(presentationQuantities).length === 0) {
-      const p = presentations[0];
-      const presId = p.id || 'legacy-1';
-      // Inicializamos stock de cajas físicas: 10 para almacén ALM01, 5 para tienda T01, 3 para otras
-      const testBoxes = stock.storeId === 'ALM01' ? 10 : (stock.storeId === 'T01' ? 5 : 3);
-      presentationQuantities[presId] = testBoxes;
-    }
-
-    let totalEquivalent = baseQuantity;
-    for (const p of presentations) {
-      const presId = p.id || 'legacy-1';
-      const qty = presentationQuantities[presId] ?? 0;
-      totalEquivalent += qty * (Number(p.factor) || 1);
-    }
-
-    batch.update(doc.ref, {
-      baseQuantity,
-      presentationQuantities,
-      quantity: totalEquivalent,
-      stockModelVersion: 2,
-      updatedAt: Date.now()
-    });
-    stockUpdates++;
-  }
-
-  const metaCatalogRef = tenantRoot.collection('meta').doc('catalog');
-  batch.set(metaCatalogRef, {
-    tenantId: profile.tenantId,
-    updatedAt: Date.now()
-  }, { merge: true });
-
-  await batch.commit();
-
-  return {
-    success: true,
-    productUpdates,
-    registryWrites,
-    stockUpdates,
-    tenantId: profile.tenantId
-  };
+  await requireAdmin(request);
+  throw new HttpsError('failed-precondition', 'Esta migración fue retirada. Usa tools/migrate-presentation-stock.mjs con credenciales administrativas y revisión del dry-run.');
 });
-

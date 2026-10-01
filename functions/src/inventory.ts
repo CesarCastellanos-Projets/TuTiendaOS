@@ -4,12 +4,15 @@ import { requireAdmin } from './authz';
 import { tenantCollection, tenantDoc } from './tenant';
 import {
   parsePresentations,
+  selectedAvailable,
+  changeSelectedStock,
   positiveQuantity,
   presentationLabel,
   readStockState,
   resolvePresentation,
   round3,
   stockPatch,
+  stockEquivalent,
   type StockPresentation,
   type StockState
 } from './stock-model';
@@ -59,24 +62,6 @@ function selectedPresentation(product: Record<string, unknown>, presentationId: 
   return resolvePresentation(product, presentationId, '', '');
 }
 
-function selectedAvailable(state: StockState, presentation: StockPresentation | null): number {
-  return presentation ? state.presentationQuantities[presentation.id] ?? 0 : state.baseQuantity;
-}
-
-function changeSelectedStock(state: StockState, presentation: StockPresentation | null, delta: number): void {
-  if (presentation) {
-    if (!Number.isInteger(delta)) {
-      throw new HttpsError('invalid-argument', 'Las existencias de empaques deben ser números enteros.');
-    }
-    state.presentationQuantities[presentation.id] = (state.presentationQuantities[presentation.id] ?? 0) + delta;
-    return;
-  }
-  if (!Number.isInteger(delta)) {
-    throw new HttpsError('invalid-argument', 'Las existencias de unidades deben ser números enteros.');
-  }
-  state.baseQuantity += delta;
-}
-
 function movementPresentation(presentation: StockPresentation | null, quantity: number) {
   return {
     presentationId: presentation?.id ?? null,
@@ -124,7 +109,7 @@ export const recordStockIngress = onCall(async (request) => {
       }
       const product = productSnap.data()!;
       const presentation = selectedPresentation(product, item.presentationId);
-      const state = states.get(item.productId) ?? readStockState(stockSnap.data() ?? {});
+      const state = states.get(item.productId) ?? readStockState(stockSnap.data() ?? {}, parsePresentations(product), String(product.unit ?? 'UN'));
       states.set(item.productId, state);
       products.set(item.productId, productSnap);
       stocks.set(item.productId, stockSnap);
@@ -181,10 +166,10 @@ export const adjustInventory = onCall(async (request) => {
   const reason = shortText(data.reason, 250);
   const adjustmentType = data.type;
   const newQty = Number(data.newQty);
-  if (!targetId || !productId || !reason || !['ajuste', 'merma'].includes(String(adjustmentType))) {
+  if (!targetId || !productId || !reason || !['ajuste', 'merma', 'reclasificar'].includes(String(adjustmentType))) {
     throw new HttpsError('invalid-argument', 'Faltan datos del ajuste.');
   }
-  if (!Number.isInteger(newQty) || newQty < 0) {
+  if (!Number.isFinite(newQty) || Math.abs(newQty - round3(newQty)) > 0.0000001 || newQty < 0 || newQty > 1_000_000) {
     throw new HttpsError('invalid-argument', 'La cantidad final no es válida.');
   }
 
@@ -196,22 +181,41 @@ export const adjustInventory = onCall(async (request) => {
     const product = productSnap.data()!;
     const presentations = parsePresentations(product);
     const presentation = selectedPresentation(product, presentationId);
-    const state = readStockState(stockSnap.data()!);
+    const state = readStockState(stockSnap.data()!, parsePresentations(product), String(product.unit ?? 'UN'), adjustmentType === 'reclasificar');
     const previous = selectedAvailable(state, presentation);
-    changeSelectedStock(state, presentation, newQty - previous);
+    const oldStock = stockSnap.data()!;
+    const pendingReconciliation = oldStock.stockModelVersion === 3 || oldStock.requiresReconciliation === true;
+    const reconciledIds = new Set<string>(Array.isArray(oldStock.reconciledPresentationIds) ? oldStock.reconciledPresentationIds.filter((id: unknown): id is string => typeof id === 'string') : []);
+    stockEquivalent(newQty, presentation, state.baseUnit);
+    if (adjustmentType === 'merma' && newQty > previous) throw new HttpsError('invalid-argument', 'Una merma no puede aumentar el stock.');
+    if (adjustmentType === 'reclasificar') {
+      if (!presentation || presentation.autoUnpackEnabled) throw new HttpsError('invalid-argument', 'Selecciona una presentación que se vende cerrada.');
+      const units = stockEquivalent(newQty - previous, presentation, state.baseUnit);
+      if (state.baseQuantity < units) throw new HttpsError('failed-precondition', 'No hay suficientes unidades sin clasificar para ese conteo de cajas.');
+      state.baseQuantity = round3(state.baseQuantity - units);
+      reconciledIds.add(presentation.id);
+    }
+    if (presentation && !presentation.autoUnpackEnabled) state.presentationQuantities[presentation.id] = newQty;
+    else state.baseQuantity = stockEquivalent(newQty, presentation, state.baseUnit);
     const now = Date.now();
-    tx.update(stockRef, stockPatch(state, presentations));
+    const requiresReconciliation = pendingReconciliation && presentations.some((p) => !p.autoUnpackEnabled && !reconciledIds.has(p.id));
+    tx.update(stockRef, {
+      ...stockPatch(state, presentations),
+      requiresReconciliation,
+      reconciledPresentationIds: requiresReconciliation ? [...reconciledIds] : []
+    });
     const presentationFields = movementPresentation(presentation, newQty - previous);
     tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
       tenantId: profile.tenantId,
-      type: adjustmentType,
+      type: adjustmentType === 'reclasificar' ? 'conversion' : adjustmentType,
       productId,
       productName: String(stockSnap.data()?.productName ?? ''),
-      qty: presentationFields.baseQty,
       ...presentationFields,
+      qty: adjustmentType === 'reclasificar' ? 0 : presentationFields.baseQty,
+      baseQty: adjustmentType === 'reclasificar' ? 0 : presentationFields.baseQty,
       fromLocationId: null,
       toLocationId: targetId,
-      reason,
+      reason: adjustmentType === 'reclasificar' ? `Reclasificación sin cambiar el total: ${reason}` : reason,
       refId: null,
       userId: profile.uid,
       userName: profile.displayName,
@@ -263,7 +267,7 @@ export const createInventoryTransfer = onCall(async (request) => {
       }
       const product = productSnap.data()!;
       const presentation = selectedPresentation(product, item.presentationId);
-      const state = states.get(item.productId) ?? readStockState(stockSnap.data()!);
+      const state = states.get(item.productId) ?? readStockState(stockSnap.data()!, parsePresentations(product), String(product.unit ?? 'UN'));
       states.set(item.productId, state);
       const current = selectedAvailable(state, presentation);
       if (current < item.quantity) {
@@ -351,15 +355,16 @@ export const cancelInventoryTransfer = onCall(async (request) => {
     const states = new Map<string, StockState>();
     items.forEach((item, index) => {
       const productId = String(item.productId);
-      const returned = Number(item.qtySent ?? 0) - Number(item.qtyReceived ?? 0);
-      if (!Number.isInteger(returned) || returned < 0 || !stockSnaps[index].exists || !productSnaps[index].exists) {
+      const returned = round3(Number(item.qtySent ?? 0) - Number(item.qtyReceived ?? 0));
+      if (!Number.isFinite(returned) || returned < 0 || !stockSnaps[index].exists || !productSnaps[index].exists) {
         throw new HttpsError('failed-precondition', 'La transferencia contiene cantidades inconsistentes.');
       }
       if (returned === 0) return;
       const stockSnap = stockSnaps[index];
       const product = productSnaps[index].data()!;
       const presentation = selectedPresentation(product, shortText(item.presentationId, 80) || null);
-      const state = states.get(productId) ?? readStockState(stockSnap.data()!);
+      if (presentation && presentation.factor !== Number(item.factor)) throw new HttpsError('failed-precondition', 'El factor cambió desde el envío.');
+      const state = states.get(productId) ?? readStockState(stockSnap.data()!, parsePresentations(product), String(product.unit ?? 'UN'));
       states.set(productId, state);
       changeSelectedStock(state, presentation, returned);
       const presentationFields = movementPresentation(presentation, returned);
@@ -442,7 +447,7 @@ export const attendReplenishmentRequest = onCall(async (request) => {
       }
       const product = productSnap.data()!;
       const presentation = selectedPresentation(product, item.presentationId);
-      const state = states.get(item.productId) ?? readStockState(stockSnap.data()!);
+      const state = states.get(item.productId) ?? readStockState(stockSnap.data()!, parsePresentations(product), String(product.unit ?? 'UN'));
       states.set(item.productId, state);
       const current = selectedAvailable(state, presentation);
       if (current < item.quantity) {

@@ -8,7 +8,9 @@
     "migrate:presentations": "node migrate-presentation-stock.mjs",
     "test:rules": "node --test firestore-rules.test.mjs",
     "test:functions": "node --test functions-inventory.test.mjs",
-    "test:fiscal": "node --test fiscal-payload.test.mjs"
+    "test:fiscal": "node --test fiscal-payload.test.mjs",
+    "test:frontend": "node --test frontend-security.test.mjs",
+    "test:emulators": "node run-emulator-tests.mjs"
   },
   "dependencies": {
     "firebase-admin": "^12.7.0"

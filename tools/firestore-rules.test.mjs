@@ -1,7 +1,7 @@
 import { after, before, beforeEach, test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { assertFails, assertSucceeds, initializeTestEnvironment } from '@firebase/rules-unit-testing';
-import { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import { getBytes, ref, uploadString } from 'firebase/storage';
 
 let env;
@@ -33,7 +33,7 @@ const stock = (tenantId, storeId) => ({
 
 before(async () => {
   env = await initializeTestEnvironment({
-    projectId: 'demo-denzoz-rules',
+    projectId: 'demo-denzoz-ops',
     firestore: { rules: await readFile(new URL('../firestore.rules', import.meta.url), 'utf8') },
     storage: { rules: await readFile(new URL('../storage.rules', import.meta.url), 'utf8') }
   });
@@ -115,9 +115,9 @@ test('ni el administrador puede saltarse las transacciones servidor de inventari
   }));
 });
 
-test('POS solo abre su propia caja y no puede falsificar tenantId', async () => {
+test('el cliente no puede abrir cajas directamente ni falsificar tenantId', async () => {
   const db = env.authenticatedContext('pos-a').firestore();
-  await assertSucceeds(setDoc(doc(db, `tenants/${TENANT_A}/cash_sessions/own`), {
+  await assertFails(setDoc(doc(db, `tenants/${TENANT_A}/cash_sessions/own`), {
     tenantId: TENANT_A, storeId: 'A01', userId: 'pos-a', userName: 'Caja',
     openingAmount: 50, status: 'abierta', openedAt: 1
   }));
@@ -149,15 +149,79 @@ test('un documento de configuración con secretos no se expone al cliente', asyn
 });
 
 test('Storage limita incidencias al tenant y al usuario propietario', async () => {
-  const ownRef = ref(env.authenticatedContext('pos-a').storage(), `tenants/${TENANT_A}/incidents/pos-a/photo.png`);
+  const ownRef = ref(env.authenticatedContext('pos-a').storage(), `tenants/${TENANT_A}/incidents/A01/pos-a/photo.png`);
   await assertSucceeds(uploadString(ownRef, 'imagen', 'raw', { contentType: 'image/png' }));
   await assertSucceeds(getBytes(ownRef));
 
-  const otherTenant = ref(env.authenticatedContext('pos-a').storage(), `tenants/${TENANT_B}/incidents/pos-a/attack.png`);
-  const otherUser = ref(env.authenticatedContext('pos-a').storage(), `tenants/${TENANT_A}/incidents/worker-a/attack.png`);
-  const invalidType = ref(env.authenticatedContext('pos-a').storage(), `tenants/${TENANT_A}/incidents/pos-a/attack.exe`);
+  const otherTenant = ref(env.authenticatedContext('pos-a').storage(), `tenants/${TENANT_B}/incidents/A01/pos-a/attack.png`);
+  const otherUser = ref(env.authenticatedContext('pos-a').storage(), `tenants/${TENANT_A}/incidents/A01/worker-a/attack.png`);
+  const invalidType = ref(env.authenticatedContext('pos-a').storage(), `tenants/${TENANT_A}/incidents/A01/pos-a/attack.exe`);
   await assertFails(uploadString(otherTenant, 'imagen', 'raw', { contentType: 'image/png' }));
   await assertFails(uploadString(otherUser, 'imagen', 'raw', { contentType: 'image/png' }));
   await assertFails(uploadString(invalidType, 'binario', 'raw', { contentType: 'application/octet-stream' }));
   await assertFails(getBytes(ref(env.authenticatedContext('pos-b').storage(), ownRef.fullPath)));
+});
+
+
+test('configuración rechaza ancho de impresión malicioso y mapas críticos son solo servidor', async () => {
+  const admin = env.authenticatedContext('admin-a').firestore();
+  await env.withSecurityRulesDisabled(async (context) => {
+    await setDoc(doc(context.firestore(), `tenants/${TENANT_A}/config/company`), {
+      ruc: '20123456789', razonSocial: 'Demo', serieFactura: 'F001', serieBoleta: 'B001',
+      entornoSunat: 'beta', igvRate: 0.18, minBoletaSinDni: 700, umbralConsolidacion: 5, updatedAt: 1
+    });
+  });
+  await assertFails(updateDoc(doc(admin, `tenants/${TENANT_A}/config/company`), { ticketWidth: '" onmouseover="alert(1)' }));
+  await assertSucceeds(updateDoc(doc(admin, `tenants/${TENANT_A}/config/company`), { ticketWidth: '58mm' }));
+  for (const collection of ['products', 'barcode_registry', 'quotations', 'replenishment_requests', 'cash_sessions']) {
+    await assertFails(setDoc(doc(admin, `tenants/${TENANT_A}/${collection}/forged`), { tenantId: TENANT_A, items: [{ qty: -50 }] }));
+  }
+});
+
+
+test('configuración valida cada unidad personalizada y acepta logo vacío', async () => {
+  const ref = doc(env.authenticatedContext('admin-a').firestore(), `tenants/${TENANT_A}/config/company`);
+  await env.withSecurityRulesDisabled(async (context) => updateDoc(doc(context.firestore(), `tenants/${TENANT_A}/config/company`), { customUnits: Array.from({ length: 50 }, (_, i) => `UN${i}`) }));
+  await assertSucceeds(updateDoc(ref, { logoUrl: null, slogan: null, phone: null, footerText: null }));
+  await assertFails(updateDoc(ref, { customUnits: ['UN', { unit: 'CJA' }] }));
+  await assertFails(updateDoc(ref, { customUnits: ['X'.repeat(41)] }));
+  await assertFails(updateDoc(ref, { customUnits: [''] }));
+});
+
+
+test('calendario compartido protege empresa, rol, permisos y escritura de servidor', async () => {
+  await env.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await updateDoc(doc(db, 'users/pos-a'), { canManageCalendar: true });
+    await setDoc(doc(db, `tenants/${TENANT_A}/calendar_events/event1`), { title: 'Pago', dueDate: '2026-10-01' });
+    await setDoc(doc(db, `tenants/${TENANT_B}/calendar_events/event1`), { title: 'Privado' });
+    await setDoc(doc(db, `tenants/${TENANT_A}/calendar_inboxes/pos-a/notifications/n1`), { active: true, createdAt: 1 });
+  });
+  const pos = env.authenticatedContext('pos-a').firestore();
+  const worker = env.authenticatedContext('worker-a', { canManageCalendar: true }).firestore();
+  const other = env.authenticatedContext('admin-b').firestore();
+  const admin = env.authenticatedContext('admin-a').firestore();
+  await assertSucceeds(getDocs(query(collection(pos, `tenants/${TENANT_A}/calendar_events`), where('dueDate', '>=', '2026-10-01'), where('dueDate', '<', '2026-11-01'), orderBy('dueDate'), limit(51))));
+  await assertSucceeds(getDocs(query(collection(pos, `tenants/${TENANT_A}/calendar_inboxes/pos-a/notifications`), where('active', '==', true), orderBy('createdAt', 'desc'), limit(50))));
+  await assertFails(getDoc(doc(worker, `tenants/${TENANT_A}/calendar_events/event1`)));
+  await assertFails(getDoc(doc(other, `tenants/${TENANT_A}/calendar_events/event1`)));
+  await assertFails(getDoc(doc(admin, `tenants/${TENANT_A}/calendar_inboxes/pos-a/notifications/n1`)));
+  await assertFails(setDoc(doc(pos, `tenants/${TENANT_A}/calendar_events/forged`), { title: 'Inyectado' }));
+  await assertFails(setDoc(doc(admin, `tenants/${TENANT_A}/calendar_events/forged`), { title: 'Inyectado' }));
+  await assertFails(updateDoc(doc(pos, `tenants/${TENANT_A}/calendar_inboxes/pos-a/notifications/n1`), { readAt: 1 }));
+  await assertFails(getDoc(doc(pos, 'calendar_push_devices/token')));
+  await assertFails(updateDoc(doc(pos, 'users/pos-a'), { canManageCalendar: false }));
+  await assertSucceeds(updateDoc(doc(admin, 'users/pos-a'), { canManageCalendar: false }));
+  await assertFails(getDoc(doc(pos, `tenants/${TENANT_A}/calendar_events/event1`)));
+});
+
+test('POS multi-tienda antiguo conserva calendario y revocación supera claims viejos', async () => {
+  await env.withSecurityRulesDisabled(async (context) => {
+    await updateDoc(doc(context.firestore(), 'users/pos-a'), { storeAccess: 'all' });
+    await setDoc(doc(context.firestore(), `tenants/${TENANT_A}/calendar_events/event1`), { title: 'Pago' });
+  });
+  const pos = env.authenticatedContext('pos-a', { canManageCalendar: true }).firestore();
+  await assertSucceeds(getDoc(doc(pos, `tenants/${TENANT_A}/calendar_events/event1`)));
+  await env.withSecurityRulesDisabled(async (context) => { await updateDoc(doc(context.firestore(), 'users/pos-a'), { canManageCalendar: false }); });
+  await assertFails(getDoc(doc(pos, `tenants/${TENANT_A}/calendar_events/event1`)));
 });

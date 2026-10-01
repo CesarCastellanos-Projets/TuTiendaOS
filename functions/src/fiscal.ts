@@ -50,8 +50,10 @@ export function buildFiscalInvoicePayload(
     const item = raw as Record<string, unknown>;
     const quantity = Number(item.qty);
     const price = round2(Number(item.unitPrice));
-    const description = text(item.name, 250);
-    if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price < 0 || !description) {
+    const name = text(item.name, 180);
+    const presentation = text(item.presentationLabel, 80);
+    const description = text(presentation ? `${name} · ${presentation}` : name, 250);
+    if (!Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(price) || price < 0 || !name) {
       throw new FiscalPayloadError('La venta contiene productos fiscales inválidos.');
     }
     const lineTotal = round2(quantity * price);

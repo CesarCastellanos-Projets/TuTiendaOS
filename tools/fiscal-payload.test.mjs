@@ -44,3 +44,15 @@ test('rechaza facturas sin RUC y razón social válidos', () => {
     FiscalPayloadError
   );
 });
+
+
+test('medio millar conserva cantidad, precio por millar e identificación fiscal', () => {
+  const payload = buildFiscalInvoicePayload('sale-half', sale({
+    items: [{ productId: 'P1', name: 'Hojas bond', presentationLabel: 'Millar', factor: 1000, qty: 0.5, unitPrice: 100, total: 50, baseUnitsSold: 500 }],
+    subtotal: 42.37, igv: 7.63, total: 50
+  }));
+  assert.equal(payload.items[0].cantidad, 0.5);
+  assert.equal(payload.items[0].precio, 100);
+  assert.equal(payload.items[0].descripcion, 'Hojas bond · Millar');
+  assert.equal(payload.totals.total, 50);
+});

@@ -2,18 +2,7 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    // ===============================================================
-    // Modelo asumido
-    // ===============================================================
-    // users/{uid}: perfil privado, rol y tenant (roles inmutables para el usuario).
-    // tenants/{tenantId}/products/{id}: catálogo; lectura de la empresa, escritura solo Admin SDK.
-    // barcode_registry/{id}: reserva única de código; solo Admin SDK.
-    // product_stocks/{id}, stock_movements/{id}: inventario y kardex; escritura solo Admin SDK.
-    // sales/{id}, transfers/{id}, counters/{id}, clients/{id}: flujos críticos; creación/mutación por Functions.
-    // config, stores, warehouses: administración validada por esquema y rol admin.
-    // replenishment_requests, incidents, quotations, cash_sessions: escrituras cliente validadas y acotadas.
-    // Todas las rutas de tenant exigen que users/{uid}.tenantId coincida con la ruta.
-    // ===============================================================
+    
     function signedIn() { return request.auth != null; }
     function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)); }
     function activeUser() {
@@ -24,11 +13,20 @@ service cloud.firestore {
     function isAdmin() { return activeUser() && profile().data.role == 'admin'; }
     function isPos() { return activeUser() && profile().data.role == 'pos'; }
     function isWorker() { return activeUser() && profile().data.role == 'trabajador'; }
+    function canUseCalendar() {
+      return isAdmin() || (isPos() && (profile().data.get('canManageCalendar', false) == true
+        || (!('canManageCalendar' in profile().data) && profile().data.get('storeAccess', 'assigned') == 'all')));
+    }
     function userTenantId() { return profile().data.tenantId; }
     function userStoreId() { return profile().data.storeId; }
     function belongsToTenant(tenantId) { return activeUser() && userTenantId() == tenantId; }
     function validTenantData(data, tenantId) { return data.tenantId is string && data.tenantId == tenantId; }
     function shortString(value, maxLength) { return value is string && value.size() <= maxLength; }
+
+    function defaultCustomUnits(data) {
+      return !('customUnits' in data) || (data.customUnits is list && data.customUnits.size() <= 50
+        && data.customUnits.hasOnly(['UN', 'KG', 'LT', 'PAQ', 'CJA', 'DOC', 'DISPLAY', 'TIRA', 'SACHET', 'BOLSA', 'LATA', 'BOTELLA', 'SOBRE']));
+    }
 
     function validCompany(data) {
       return data.keys().hasAll([
@@ -47,15 +45,29 @@ service cloud.firestore {
         && data.minBoletaSinDni is number && data.minBoletaSinDni >= 0
         && data.umbralConsolidacion is number && data.umbralConsolidacion >= 0
         && data.entornoSunat in ['beta', 'produccion']
+        && (!('ticketWidth' in data) || data.ticketWidth in ['58mm', '80mm'])
+        && (!('direccion' in data) || shortString(data.direccion, 240))
+        && (!('regimen' in data) || shortString(data.regimen, 80))
+        && (!('serieNota' in data) || shortString(data.serieNota, 8))
+        && (!('certFileName' in data) || shortString(data.certFileName, 200))
+        && (!('certExpiresAt' in data) || data.certExpiresAt == null || shortString(data.certExpiresAt, 80))
+        && (!('certIssuer' in data) || data.certIssuer == null || shortString(data.certIssuer, 180))
+        && (!('logoUrl' in data) || data.logoUrl == null || shortString(data.logoUrl, 300000))
+        && (!('slogan' in data) || data.slogan == null || shortString(data.slogan, 250))
+        && (!('phone' in data) || data.phone == null || shortString(data.phone, 40))
+        && (!('footerText' in data) || data.footerText == null || shortString(data.footerText, 1000))
+        && data.updatedAt is number && data.updatedAt > 0
+        && (!('isDemoMode' in data) || data.isDemoMode is bool)
         && (!('customUnits' in data) || (data.customUnits is list && data.customUnits.size() <= 50));
     }
 
     function validUser(data) {
       return data.keys().hasAll(['displayName', 'email', 'role', 'active', 'tenantId'])
-        && data.keys().hasOnly(['displayName', 'email', 'role', 'active', 'tenantId', 'storeId', 'storeAccess', 'warehouseId', 'createdAt'])
+        && data.keys().hasOnly(['displayName', 'email', 'role', 'active', 'tenantId', 'storeId', 'storeAccess', 'warehouseId', 'createdAt', 'canManageCalendar'])
         && shortString(data.displayName, 120) && shortString(data.email, 160)
         && shortString(data.tenantId, 63) && data.role in ['admin', 'pos', 'trabajador']
         && data.active is bool
+        && (!('canManageCalendar' in data) || data.canManageCalendar is bool)
         && (!('storeId' in data) || data.storeId == null || shortString(data.storeId, 128))
         && (!('storeAccess' in data)
           || (data.role == 'pos' && data.storeAccess in ['assigned', 'all'])
@@ -78,7 +90,7 @@ service cloud.firestore {
     function validIncident(data, tenantId) {
       return validTenantData(data, tenantId)
         && data.keys().hasAll(['tenantId', 'storeId', 'storeName', 'type', 'description', 'status', 'createdBy', 'createdByName', 'createdAt'])
-        && data.keys().hasOnly(['tenantId', 'storeId', 'storeName', 'productId', 'productName', 'type', 'description', 'photoUrl', 'status', 'createdBy', 'createdByName', 'createdAt', 'resolutionNote', 'resolvedBy', 'resolvedByName', 'resolvedAt'])
+        && data.keys().hasOnly(['tenantId', 'storeId', 'storeName', 'productId', 'productName', 'type', 'description', 'photoUrl', 'photoPath', 'status', 'createdBy', 'createdByName', 'createdAt', 'resolutionNote', 'resolvedBy', 'resolvedByName', 'resolvedAt'])
         && shortString(data.storeId, 128) && shortString(data.storeName, 120)
         && data.type in ['danado', 'vencido', 'sin_etiqueta', 'sin_codigo', 'otro']
         && shortString(data.description, 1000)
@@ -86,6 +98,8 @@ service cloud.firestore {
         && data.status in ['abierta', 'resuelta'] && data.createdAt is number
         && (!('productId' in data) || data.productId == null || shortString(data.productId, 128))
         && (!('productName' in data) || data.productName == null || shortString(data.productName, 180))
+        && (!('photoPath' in data) || data.photoPath == null || (shortString(data.photoPath, 400)
+          && data.photoPath.matches('tenants/' + tenantId + '/incidents/' + data.storeId + '/' + data.createdBy + '/[a-zA-Z0-9_.-]+')))
         && (!('photoUrl' in data) || data.photoUrl == null || shortString(data.photoUrl, 1000))
         && (!('resolutionNote' in data) || data.resolutionNote == null || shortString(data.resolutionNote, 1000));
     }
@@ -135,10 +149,21 @@ service cloud.firestore {
     match /tenants/{tenantId} {
       allow read, write: if false;
 
+      match /calendar_events/{eventId} {
+        allow read: if belongsToTenant(tenantId) && canUseCalendar();
+        allow write: if false;
+      }
+      match /calendar_inboxes/{uid}/notifications/{notificationId} {
+        allow read: if belongsToTenant(tenantId) && canUseCalendar() && request.auth.uid == uid;
+        allow write: if false;
+      }
+
       match /config/{configId} {
         allow read: if belongsToTenant(tenantId)
           && !resource.data.keys().hasAny(['solUser', 'solPassword', 'apiFactUrl', 'apiFactToken']);
-        allow create, update: if belongsToTenant(tenantId) && isAdmin() && validCompany(request.resource.data);
+        allow create: if belongsToTenant(tenantId) && isAdmin() && validCompany(request.resource.data) && defaultCustomUnits(request.resource.data);
+        allow update: if belongsToTenant(tenantId) && isAdmin() && validCompany(request.resource.data)
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['customUnits']) || defaultCustomUnits(request.resource.data));
         allow delete: if false;
       }
       match /stores/{storeId} {
@@ -165,10 +190,11 @@ service cloud.firestore {
       }
       match /products/{productId} {
         allow read: if belongsToTenant(tenantId);
-        allow write: if belongsToTenant(tenantId) && isAdmin();
+        allow write: if false;
       }
       match /barcode_registry/{barcodeId} {
-        allow read, write: if belongsToTenant(tenantId) && isAdmin();
+        allow read: if belongsToTenant(tenantId) && isAdmin();
+        allow write: if false;
       }
       match /meta/{metaId} {
         allow read: if belongsToTenant(tenantId);
@@ -182,11 +208,11 @@ service cloud.firestore {
       }
       match /product_stocks/{stockId} {
         allow read: if belongsToTenant(tenantId);
-        allow write: if belongsToTenant(tenantId) && isAdmin();
+        allow write: if false;
       }
       match /stock_movements/{movementId} {
         allow read: if belongsToTenant(tenantId) && isAdmin();
-        allow write: if belongsToTenant(tenantId) && isAdmin();
+        allow write: if false;
       }
       match /transfers/{transferId} {
         allow get, list: if belongsToTenant(tenantId)
@@ -197,14 +223,7 @@ service cloud.firestore {
         allow get, list: if belongsToTenant(tenantId)
           && (isAdmin() || (isPos() && resource.data.storeId == userStoreId()
             && resource.data.createdBy == request.auth.uid));
-        allow create: if belongsToTenant(tenantId) && isPos()
-          && validReplenishment(request.resource.data, tenantId)
-          && request.resource.data.storeId == userStoreId()
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.status == 'pendiente'
-          && request.resource.data.items is list && request.resource.data.items.size() > 0
-          && request.resource.data.items.size() <= 100;
-        allow update, delete: if false;
+        allow write: if false;
       }
       match /incidents/{incidentId} {
         allow get, list: if belongsToTenant(tenantId)
@@ -213,7 +232,8 @@ service cloud.firestore {
           && validIncident(request.resource.data, tenantId)
           && request.resource.data.storeId == userStoreId()
           && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.status == 'abierta';
+          && request.resource.data.status == 'abierta'
+          && (!('photoUrl' in request.resource.data) || request.resource.data.photoUrl == null);
         allow update: if belongsToTenant(tenantId) && isAdmin()
           && validIncident(request.resource.data, tenantId);
         allow delete: if false;
@@ -241,38 +261,13 @@ service cloud.firestore {
         allow get, list: if belongsToTenant(tenantId)
           && (isAdmin() || (isPos() && resource.data.userId == request.auth.uid
             && resource.data.storeId == userStoreId()));
-        allow create: if belongsToTenant(tenantId) && isPos()
-          && validCashSession(request.resource.data, tenantId)
-          && request.resource.data.userId == request.auth.uid
-          && request.resource.data.storeId == userStoreId()
-          && request.resource.data.status == 'abierta';
-        allow update: if belongsToTenant(tenantId) && isPos()
-          && resource.data.tenantId == tenantId
-          && validCashSession(request.resource.data, tenantId)
-          && resource.data.userId == request.auth.uid && resource.data.storeId == userStoreId()
-          && resource.data.status == 'abierta' && request.resource.data.status == 'cerrada'
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'closedAt', 'closingAmount', 'expectedAmount', 'difference']);
-        allow delete: if false;
+        allow write: if false;
       }
       match /clients/{clientId} { allow read, write: if false; }
       match /quotations/{quotationId} {
         allow get, list: if belongsToTenant(tenantId)
           && (isAdmin() || ((isPos() || isWorker()) && resource.data.storeId == userStoreId()));
-        allow create: if belongsToTenant(tenantId) && (isPos() || isWorker())
-          && validQuotation(request.resource.data, tenantId)
-          && request.resource.data.storeId == userStoreId()
-          && request.resource.data.createdBy == request.auth.uid
-          && request.resource.data.status == 'pendiente'
-          && request.resource.data.items is list && request.resource.data.items.size() > 0
-          && request.resource.data.items.size() <= 100;
-        allow update: if belongsToTenant(tenantId)
-          && validQuotation(request.resource.data, tenantId)
-          && (isAdmin() || ((isPos() || isWorker())
-            && resource.data.storeId == userStoreId()
-            && resource.data.createdBy == request.auth.uid
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
-            && request.resource.data.status in ['pendiente', 'facturada', 'descartada']));
-        allow delete: if false;
+        allow write: if false;
       }
       match /counters/{counterId} { allow read, write: if false; }
       match /{document=**} { allow read, write: if false; }

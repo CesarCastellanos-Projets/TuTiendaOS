@@ -1,4 +1,5 @@
-import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { onCall, HttpsError, type CallableRequest } from 'firebase-functions/v2/https';
+import { createHash } from 'node:crypto';
 import { db } from './firebase';
 import { requireActiveProfile } from './authz';
 import { tenantCollection, tenantDoc } from './tenant';
@@ -7,7 +8,7 @@ import {
   parsePresentations,
   positiveQuantity,
   presentationLabel,
-  readStockState,
+  readStockState, changeSelectedStock,
   resolvePresentation,
   round2,
   round3,
@@ -38,8 +39,6 @@ interface TrustedSaleItem {
   catalogUnitPrice: number;
   priceOverridden: boolean;
   baseUnitsSold: number;
-  packagesConsumed: number;
-  remainderToBase: number;
 }
 
 function positiveNumber(value: unknown, field: string): number {
@@ -67,6 +66,14 @@ function shortText(value: unknown, maxLength: number): string {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
 
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)]));
+  }
+  return value;
+}
+
 const PUBLIC_COMPANY_FIELDS = [
   'ruc', 'razonSocial', 'direccion', 'regimen', 'serieFactura', 'serieBoleta',
   'serieNota', 'entornoSunat', 'igvRate', 'minBoletaSinDni',
@@ -85,15 +92,10 @@ export const getCompanyConfig = onCall(async (request) => {
       .filter((field) => source[field] !== undefined)
       .map((field) => [field, source[field]])
   );
-  const hasLegacySecrets = ['solUser', 'solPassword', 'apiFactUrl', 'apiFactToken']
-    .some((field) => Object.hasOwn(source, field));
-  if (profile.role === 'admin' && hasLegacySecrets) {
-    await snapshot.ref.set({ ...publicConfig, updatedAt: Date.now() });
-  }
   return publicConfig;
 });
 
-export const createSaleRecord = onCall(async (request) => {
+async function registerSale(request: CallableRequest<Record<string, unknown>>) {
   const profile = await requireActiveProfile(request);
   if (profile.role !== 'pos' && profile.role !== 'admin') {
     throw new HttpsError('permission-denied', 'Tu rol no puede registrar ventas.');
@@ -108,6 +110,10 @@ export const createSaleRecord = onCall(async (request) => {
   const requestedItems = Array.isArray(data.items) ? data.items as RequestedSaleItem[] : [];
   if (requestedItems.length === 0 || requestedItems.length > 100) {
     throw new HttpsError('invalid-argument', 'La venta debe tener entre 1 y 100 productos.');
+  }
+  if (requestedItems.some((item) => !item || typeof item !== 'object' || Array.isArray(item))
+    || JSON.stringify(requestedItems).length > 150_000) {
+    throw new HttpsError('invalid-argument', 'Los productos de la venta no son válidos.');
   }
 
   const type = data.type;
@@ -133,6 +139,11 @@ export const createSaleRecord = onCall(async (request) => {
       ? String(company.serieNota ?? 'NV01')
       : String(company.serieBoleta ?? 'B001');
   const igvRate = Number(company.igvRate ?? 0.18);
+  if (!/^[A-Z0-9]{1,8}$/.test(serie) || !Number.isFinite(igvRate) || igvRate < 0 || igvRate > 1
+    || !Number.isFinite(Number(company.minBoletaSinDni ?? 700)) || Number(company.minBoletaSinDni ?? 700) < 0
+    || !Number.isFinite(Number(company.umbralConsolidacion ?? 5)) || Number(company.umbralConsolidacion ?? 5) < 0) {
+    throw new HttpsError('failed-precondition', 'Revisa las series, IGV y umbrales de la empresa.');
+  }
 
   const client = (data.clientDoc ?? {}) as Record<string, unknown>;
   const cashSessionId = shortText(data.cashSessionId, 128);
@@ -145,10 +156,55 @@ export const createSaleRecord = onCall(async (request) => {
     throw new HttpsError('invalid-argument', 'La factura requiere RUC y razón social.');
   }
 
-  const saleRef = tenantCollection(profile.tenantId, 'sales').doc();
+  const requestId = shortText(data.requestId, 80);
+  if (!/^[a-zA-Z0-9_-]{20,80}$/.test(requestId)) {
+    throw new HttpsError('invalid-argument', 'Falta el identificador de la operación.');
+  }
+  if (profile.role === 'pos' && !cashSessionId) {
+    throw new HttpsError('failed-precondition', 'Abre una caja antes de vender.');
+  }
+  if (!['-', 'DNI', 'RUC'].includes(clientDoc.tipo)
+    || (clientDoc.tipo === 'DNI' && !/^\d{8}$/.test(clientDoc.numero))
+    || (clientDoc.tipo === 'RUC' && !/^\d{11}$/.test(clientDoc.numero))
+    || (type === 'factura' && clientDoc.tipo !== 'RUC')) {
+    throw new HttpsError('invalid-argument', 'El tipo y número del documento no coinciden.');
+  }
+  if (paymentMethod === 'transferencia' && !shortText(data.bankName, 80)) {
+    throw new HttpsError('invalid-argument', 'Selecciona el banco de la transferencia.');
+  }
+  const fingerprint = createHash('sha256').update(JSON.stringify(canonical({
+    storeId, items: requestedItems, type, paymentMethod, clientDoc,
+    cashSessionId, paidAmount: data.paidAmount, bankName: data.bankName ?? null,
+    operationNumber: data.operationNumber ?? null
+  }))).digest('hex');
+  const saleRef = tenantCollection(profile.tenantId, 'sales').doc(
+    createHash('sha256').update(`${profile.uid}:${requestId}`).digest('hex')
+  );
+  const reservation = tenantDoc(profile.tenantId, 'sale_requests', saleRef.id);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(reservation);
+    if (snap.data()?.cancelled === true) throw new HttpsError('failed-precondition', 'Esta operación fue cancelada antes del cobro.');
+    if (snap.exists && snap.data()?.fingerprint !== fingerprint) {
+      throw new HttpsError('already-exists', 'Esta operación tiene datos diferentes.');
+    }
+    if (!snap.exists) tx.set(reservation, {
+      userId: profile.uid, storeId, fingerprint, createdAt: Date.now(),
+      input: { requestId, storeId, items: requestedItems, type, paymentMethod, clientDoc,
+        cashSessionId, paidAmount: data.paidAmount, bankName: data.bankName ?? null,
+        operationNumber: data.operationNumber ?? null }
+    });
+  });
   const result = await db.runTransaction(async (tx) => {
+    const [existing, reserved] = await Promise.all([tx.get(saleRef), tx.get(reservation)]);
+    if (existing.exists) {
+      if (existing.data()?.requestFingerprint !== fingerprint) {
+        throw new HttpsError('already-exists', 'Esta operación ya fue usada con otros datos.');
+      }
+      return { id: existing.id, sale: existing.data()! };
+    }
+    if (reserved.data()?.cancelled === true) throw new HttpsError('failed-precondition', 'La operación fue cancelada antes del cobro.');
     const productIds = [...new Set(requestedItems.map((item) => shortText(item.productId, 128)))];
-    if (productIds.some((id) => !id)) {
+    if (productIds.some((id) => !/^[\w-]{1,128}$/.test(id))) {
       throw new HttpsError('invalid-argument', 'Hay un producto inválido.');
     }
     const productRefs = productIds.map((id) => tenantDoc(profile.tenantId, 'products', id));
@@ -176,9 +232,8 @@ export const createSaleRecord = onCall(async (request) => {
     const products = new Map(productIds.map((id, index) => [id, productSnaps[index]]));
     const stocks = new Map(productIds.map((id, index) => [id, stockSnaps[index]]));
     const stockStates = new Map<string, StockState>(
-      productIds.map((id) => [id, readStockState(stocks.get(id)?.data() ?? {})])
+      productIds.map((id) => [id, readStockState(stocks.get(id)?.data() ?? {}, parsePresentations(products.get(id)?.data() ?? {}), String(products.get(id)?.data()?.unit ?? 'UN'))])
     );
-    const conversionMovements: Array<Record<string, unknown>> = [];
 
     const items: TrustedSaleItem[] = requestedItems.map((requested) => {
       const productId = shortText(requested.productId, 128);
@@ -199,30 +254,15 @@ export const createSaleRecord = onCall(async (request) => {
       const presentations = parsePresentations(product);
       const presentation = resolvePresentation(product, presentationId, barcode, presentationUnit);
       const factor = presentation?.factor ?? 1;
-      const stock = stockSnap.data()!;
       const catalogPrice = presentation
         ? presentation.salePrice
-        : positiveNumber(stock.salePrice ?? product.salePrice, 'El precio');
+        : positiveNumber(product.salePrice, 'El precio');
       const mayOverridePrice = profile.role === 'admin' || profile.canOverridePrices;
       const unitPrice = mayOverridePrice && requested.unitPrice !== undefined
         ? salePrice(requested.unitPrice)
         : round2(catalogPrice);
       const state = stockStates.get(productId)!;
       const consumed = consumeSaleStock(state, presentations, presentation, qty);
-      for (const conversion of consumed.conversions) {
-        conversionMovements.push({
-          productId,
-          productName: String(product.name),
-          presentationId: conversion.presentation.id,
-          presentationLabel: presentationLabel(conversion.presentation),
-          packagesOpened: conversion.packagesOpened,
-          remainderToBase: conversion.baseUnitsReleased,
-          qty: 0,
-          baseQty: conversion.baseUnitsReleased,
-          reason: conversion.reason
-        });
-      }
-
       return {
         productId,
         name: String(product.name),
@@ -234,19 +274,22 @@ export const createSaleRecord = onCall(async (request) => {
         catalogUnitPrice: round2(catalogPrice),
         priceOverridden: Math.abs(unitPrice - catalogPrice) >= 0.005,
         baseUnitsSold: consumed.baseUnitsSold,
-        packagesConsumed: consumed.packagesConsumed,
-        remainderToBase: consumed.remainderToBase,
         ...(presentationUnit ? { presentationUnit } : {}),
         ...(barcode ? { barcode } : {})
       };
     });
 
     const total = round2(items.reduce((sum, item) => sum + item.total, 0));
-    if (type === 'boleta' && total >= Number(company.minBoletaSinDni ?? 700) && !/^\d{8}$/.test(clientDoc.numero)) {
+    if (!Number.isFinite(total) || total <= 0 || total > 100_000_000) {
+      throw new HttpsError('invalid-argument', 'El total de la venta es inválido.');
+    }
+    if (type === 'boleta' && total >= Number(company.minBoletaSinDni ?? 700) && (clientDoc.tipo !== 'DNI' || !/^\d{8}$/.test(clientDoc.numero))) {
       throw new HttpsError('invalid-argument', 'La boleta requiere DNI para este importe.');
     }
     const paidAmount = Number(data.paidAmount);
-    if (!Number.isFinite(paidAmount) || (paymentMethod === 'efectivo' && paidAmount < total)) {
+    if (!Number.isFinite(paidAmount) || paidAmount < 0 || paidAmount > 100_000_000
+      || Math.abs(paidAmount - round2(paidAmount)) > 0.0000001
+      || (paymentMethod === 'efectivo' ? paidAmount < total : Math.abs(paidAmount - total) >= 0.005)) {
       throw new HttpsError('invalid-argument', 'El monto pagado es inválido.');
     }
 
@@ -256,6 +299,8 @@ export const createSaleRecord = onCall(async (request) => {
     const subtotal = round2(total / (1 + igvRate));
     const sale = {
       tenantId: profile.tenantId,
+      requestId,
+      requestFingerprint: fingerprint,
       code,
       serie,
       correlativo,
@@ -291,19 +336,6 @@ export const createSaleRecord = onCall(async (request) => {
       const product = products.get(productId)!.data()!;
       tx.update(stockSnap.ref, stockPatch(stockStates.get(productId)!, parsePresentations(product)));
     }
-    for (const movement of conversionMovements) {
-      tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
-        tenantId: profile.tenantId,
-        type: 'conversion',
-        ...movement,
-        toLocationId: storeId,
-        refId: saleRef.id,
-        userId: profile.uid,
-        userName: profile.displayName,
-        userStoreId: storeId,
-        createdAt: now
-      });
-    }
     for (const item of items) {
       tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
         tenantId: profile.tenantId,
@@ -315,8 +347,6 @@ export const createSaleRecord = onCall(async (request) => {
         presentationId: item.presentationId ?? null,
         presentationLabel: item.presentationLabel ?? null,
         presentationQty: item.presentationId ? -item.qty : null,
-        packagesOpened: item.packagesConsumed || null,
-        remainderToBase: item.remainderToBase || null,
         toLocationId: storeId,
         refId: saleRef.id,
         userId: profile.uid,
@@ -330,6 +360,53 @@ export const createSaleRecord = onCall(async (request) => {
   });
 
   return result;
+}
+
+async function safeRegisterSale(request: CallableRequest<Record<string, unknown>>) {
+  try { return await registerSale(request); }
+  catch (error) {
+    if (!(error instanceof HttpsError) || !['invalid-argument', 'failed-precondition', 'resource-exhausted'].includes(error.code)) throw error;
+    const profile = await requireActiveProfile(request);
+    const requestId = shortText(request.data.requestId, 80);
+    if (!/^[a-zA-Z0-9_-]{20,80}$/.test(requestId)) throw error;
+    const id = createHash('sha256').update(`${profile.uid}:${requestId}`).digest('hex');
+    const saleRef = tenantDoc(profile.tenantId, 'sales', id);
+    const reservation = tenantDoc(profile.tenantId, 'sale_requests', id);
+    const existing = await db.runTransaction(async (tx) => {
+      const [sale, pending] = await Promise.all([tx.get(saleRef), tx.get(reservation)]);
+      if (sale.exists) return sale.data()!;
+      tx.set(reservation, { ...pending.data(), userId: profile.uid, cancelled: true, failedAt: Date.now(), failureCode: error.code });
+      return null;
+    });
+    if (existing) return { id, sale: existing };
+    throw error;
+  }
+}
+
+export const createSaleRecord = onCall(safeRegisterSale);
+
+export const resumeSaleRecord = onCall(async (request) => {
+  const profile = await requireActiveProfile(request);
+  const requestId = shortText(request.data?.requestId, 80);
+  if (!/^[a-zA-Z0-9_-]{20,80}$/.test(requestId)) throw new HttpsError('invalid-argument', 'Operación inválida.');
+  const id = createHash('sha256').update(`${profile.uid}:${requestId}`).digest('hex');
+  const existingSale = await tenantDoc(profile.tenantId, 'sales', id).get();
+  if (existingSale.exists) return { id, sale: existingSale.data()! };
+  const ref = tenantDoc(profile.tenantId, 'sale_requests', id);
+  const input = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) {
+      tx.set(ref, { userId: profile.uid, cancelled: true, createdAt: Date.now() });
+      return null;
+    }
+    if (snap.data()?.cancelled) return null;
+    if (snap.data()?.storeId !== profile.storeId && profile.role !== 'admin') {
+      throw new HttpsError('permission-denied', 'Vuelve a la tienda de la operación pendiente.');
+    }
+    return snap.data()?.input as Record<string, unknown>;
+  });
+  if (!input) return { cancelled: true };
+  return safeRegisterSale({ ...request, data: input });
 });
 
 export const receiveTransfer = onCall(async (request) => {
@@ -375,8 +452,10 @@ export const receiveTransfer = onCall(async (request) => {
       const qtySent = Number(item.qtySent);
       const itemPresentationId = shortText(item.presentationId, 80);
       const quantityKey = `${productId}:${itemPresentationId || 'base'}`;
-      const qtyReceived = Number(quantities[quantityKey] ?? quantities[productId] ?? qtySent);
-      if (!Number.isInteger(qtyReceived) || qtyReceived < 0 || qtyReceived > qtySent) {
+      const received = quantities[quantityKey]
+        ?? (items.filter((line) => line.productId === productId).length === 1 ? quantities[productId] : undefined);
+      const qtyReceived = Number(received);
+      if (typeof received !== 'number' || !Number.isFinite(qtyReceived) || Math.abs(qtyReceived - round3(qtyReceived)) > 0.0000001 || qtyReceived < 0 || qtyReceived > qtySent) {
         throw new HttpsError('invalid-argument', `Cantidad recibida inválida para ${String(item.name)}.`);
       }
       if (qtyReceived > 0) {
@@ -389,15 +468,14 @@ export const receiveTransfer = onCall(async (request) => {
         const presentation = itemPresentationId
           ? resolvePresentation(product, itemPresentationId, '', '')
           : null;
-        const state = states.get(productId) ?? readStockState(stockSnap.data() ?? {});
+        if (presentation && presentation.factor !== Number(item.factor)) {
+          throw new HttpsError('failed-precondition', 'El factor de la presentación cambió desde el envío.');
+        }
+        const state = states.get(productId) ?? readStockState(stockSnap.data() ?? {}, parsePresentations(product), String(product.unit ?? 'UN'));
         states.set(productId, state);
         products.set(productId, productSnap);
         stocks.set(productId, stockSnap);
-        if (presentation) {
-          state.presentationQuantities[presentation.id] = (state.presentationQuantities[presentation.id] ?? 0) + qtyReceived;
-        } else {
-          state.baseQuantity += qtyReceived;
-        }
+        changeSelectedStock(state, presentation, qtyReceived);
         const factor = presentation?.factor ?? 1;
         tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
           tenantId: profile.tenantId,
@@ -417,7 +495,7 @@ export const receiveTransfer = onCall(async (request) => {
           createdAt: now
         });
       }
-      return { ...item, qtyReceived };
+      return { ...item, qtyReceived, qtyMissing: round3(qtySent - qtyReceived) };
     });
 
     for (const [productId, state] of states) {
@@ -445,6 +523,7 @@ export const receiveTransfer = onCall(async (request) => {
     tx.update(transferRef, {
       status: 'recibido',
       items: receivedItems,
+      shortageStatus: receivedItems.some((item) => item.qtyMissing > 0) ? 'pendiente' : 'sin_faltantes',
       receivedBy: profile.uid,
       receivedByName: profile.displayName,
       receivedAt: now

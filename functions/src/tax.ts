@@ -318,6 +318,7 @@ async function processCreditNoteToSunat(tenantId: string, saleId: string): Promi
     const document = result.document as Record<string, unknown> | undefined;
     await saleRef.update({
       status: accepted ? 'anulada' : claim.originalStatus,
+      ...(accepted ? { voidedAt: Date.now() } : {}),
       anulationStatus: accepted ? 'anulada' : terminalError ? 'error' : 'nc_pendiente',
       creditNoteStatus: result.status ?? 'pendiente',
       creditNoteMessage: String(result.message ?? (accepted ? 'Nota de crédito aceptada' : 'Nota de crédito pendiente')),
@@ -488,7 +489,7 @@ async function applyMaintenanceResults(tenantId: string, value: unknown): Promis
                 voidedMessage: String(document.message ?? 'Resultado de la comunicación de baja'),
                 voidedRef: String(document.ref ?? ''),
                 ...(status === 'aceptado' || status === 'observado'
-                  ? { status: 'anulada', anulationStatus: 'anulada' }
+                  ? { status: 'anulada', anulationStatus: 'anulada', voidedAt: Date.now() }
                   : {})
               }
             : {

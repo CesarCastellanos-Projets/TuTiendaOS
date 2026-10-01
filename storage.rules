@@ -15,11 +15,20 @@ service firebase.storage {
     }
 
     match /tenants/{tenantId}/incidents/{userId}/{fileName} {
-      allow read: if belongsToTenant(tenantId);
+      allow read: if isAdmin(tenantId) || (belongsToTenant(tenantId) && request.auth.uid == userId);
+      allow write: if false;
+    }
+    match /tenants/{tenantId}/incidents/{storeId}/{userId}/{fileName} {
+      allow read: if isAdmin(tenantId) || (belongsToTenant(tenantId)
+        && profile().data.role in ['pos', 'trabajador'] && profile().data.storeId == storeId);
       allow create: if belongsToTenant(tenantId) && request.auth.uid == userId
+        && profile().data.role in ['pos', 'trabajador'] && profile().data.storeId == storeId
+        && fileName.matches('[a-zA-Z0-9_.-]+')
+        && request.resource.size > 0
         && request.resource.size <= 5 * 1024 * 1024
-        && request.resource.contentType.matches('image/.*');
-      allow update, delete: if isAdmin(tenantId);
+        && request.resource.contentType in ['image/jpeg', 'image/png', 'image/webp'];
+      allow update: if false;
+      allow delete: if isAdmin(tenantId) || (belongsToTenant(tenantId) && request.auth.uid == userId && profile().data.storeId == storeId);
     }
 
     match /tenants/{tenantId}/certificates/{fileName} {
@@ -27,7 +36,8 @@ service firebase.storage {
       allow create: if isAdmin(tenantId)
         && request.resource.size <= 2 * 1024 * 1024
         && request.resource.contentType.matches('application/(x-pkcs12|octet-stream|pkix-cert).*');
-      allow update, delete: if isAdmin(tenantId);
+      allow update: if false;
+      allow delete: if isAdmin(tenantId);
     }
 
     match /{allPaths=**} { allow read, write: if false; }

@@ -1,0 +1,52 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { initializeApp } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+if (process.env.FIRESTORE_EMULATOR_HOST !== '127.0.0.1:8080') throw new Error('Se requiere el emulador local.');
+const db = getFirestore(initializeApp({ projectId: 'demo-denzoz-ops' }));
+
+test('migración conserva cantidades, respalda, bloquea mezclas y detecta códigos duplicados', async () => {
+  const tenantId = 'tenant-migration';
+  const root = db.doc(`tenants/${tenantId}`);
+  const product = root.collection('products').doc('P1');
+  const stock = root.collection('product_stocks').doc('P1_S1');
+  await product.set({ name: 'Producto', salePrice: 7, barcode: 'BASE', presentations: [{ unit: 'CJA', factor: 12, salePrice: 50, barcode: 'BOX' }] });
+  await stock.set({ productId: 'P1', locationId: 'S1', quantity: 24 });
+  const cwd = mkdtempSync(join(tmpdir(), 'denzoz-migration-test-'));
+  const script = fileURLToPath(new URL('./migrate-presentation-stock.mjs', import.meta.url));
+  const run = (args = []) => spawnSync(process.execPath, [script, ...args], {
+    cwd, encoding: 'utf8', env: { ...process.env, GOOGLE_CLOUD_PROJECT: 'demo-denzoz-ops', TENANT_ID: tenantId }
+  });
+  const dry = run(); assert.equal(dry.status, 0, dry.stderr);
+  assert.equal((await stock.get()).data().stockModelVersion, undefined);
+  const applied = run(['--apply', '--maintenance-confirmed']);
+  assert.equal(applied.status, 0, applied.stderr);
+  const migrated = (await stock.get()).data();
+  assert.equal(migrated.quantity, 24); assert.equal(migrated.baseQuantity, 24);
+  assert.deepEqual(migrated.presentationQuantities, {});
+  assert.equal(migrated.stockModelVersion, 4);
+  assert.equal((await root.collection('meta').doc('inventory_maintenance').get()).exists, false);
+  const backupName = readdirSync(cwd).find((name) => name.startsWith('migration-backup-'));
+  assert.ok(backupName);
+  assert.equal(JSON.parse(readFileSync(join(cwd, backupName), 'utf8')).stocks[0].data.quantity, 24);
+  assert.equal(run().status, 0);
+  await stock.set({ productId: 'P1', locationId: 'S1', quantity: 25, baseQuantity: 1, presentationQuantities: { 'legacy-1': 2 }, stockModelVersion: 2 });
+  assert.equal(run().status, 0);
+  assert.equal((await stock.get()).data().baseQuantity, 1);
+  const unify = run(['--apply', '--maintenance-confirmed']);
+  assert.equal(unify.status, 0, unify.stderr);
+  assert.equal((await stock.get()).data().baseQuantity, 1);
+  assert.deepEqual((await stock.get()).data().presentationQuantities, { 'legacy-1': 2 });
+  await stock.update({ stockModelVersion: 1, presentationQuantities: { 'legacy-1': 1 } });
+  const mixed = run(['--apply', '--maintenance-confirmed']);
+  assert.notEqual(mixed.status, 0); assert.ok(mixed.stderr.includes('mixto ambiguo'));
+  await stock.set({ productId: 'P1', locationId: 'S1', quantity: 24 });
+  await root.collection('products').doc('P2').set({ name: 'Duplicado', barcode: 'BASE', presentations: [] });
+  const duplicate = run(); assert.notEqual(duplicate.status, 0);
+  assert.ok(duplicate.stderr.includes('duplicado'));
+});

@@ -19,6 +19,14 @@ Los datos operativos viven bajo `tenants/{tenantId}`. Los nombres denormalizados
 | `tenants/{tenantId}/clients/{tipo}-{doc}` | caché de clientes | llenado por `lookupClient` |
 | `tenants/{tenantId}/counters` | correlativos de serie | incrementos transaccionales aislados por empresa |
 
+## Stock compartido por presentaciones
+
+Todos los productos usan un saldo por ubicación en unidad base. `quantity` y `baseQuantity` guardan el mismo total con `stockModelVersion: 3`; `presentationQuantities` queda vacío. Las presentaciones conservan factor, código, precio y configuración de fracciones, y consumen ese mismo saldo.
+
+Una venta de 0.5 millar con factor 1000 descuenta 500 unidades y cobra 0.5 del precio por millar. Las líneas del mismo producto suman su consumo base antes de validar disponibilidad. Ingresos, transferencias, recepciones, reposiciones, ajustes y faltantes usan la misma equivalencia.
+
+Los registros de versión 2 se leen verificando `sueltas + suma(empaques × factor) = quantity`, y se unifican al escribir la siguiente operación. Una mezcla heredada sin equivalencia verificable se rechaza para conciliación. [Detalle y verificación](stock-compartido-presentaciones.md).
+
 ## Decisiones de costo
 
 1. **Items de venta embebidos** (no colección `sale_items`): un ticket se lee completo con 1 lectura. Un ticket típico < 50 ítems (~10 KB), muy por debajo del límite de 1 MiB. Las reglas limitan `items` a 200 elementos.
@@ -33,3 +41,18 @@ Los datos operativos viven bajo `tenants/{tenantId}`. Los nombres denormalizados
 - `product_stocks`, movimientos, transferencias y ventas se mutan mediante Cloud Functions transaccionales; el cliente no escribe stock.
 - El POS solo puede abrir/cerrar su caja y solicitar la anulación de una venta propia.
 - Las colecciones raíz heredadas quedan denegadas después de la migración.
+
+## Calendario compartido
+
+`users/{uid}.canManageCalendar` es un permiso boolean del POS administrado por el admin. Admin siempre tiene calendario; POS multi-tienda heredado sin el campo conserva acceso, y false lo revoca.
+
+`tenants/{tenantId}/calendar_events/{eventId}` guarda título, descripción, tipo, fecha/hora de Perú, dueAt, estado, repetición, reminderDays, version, autor/editor y cursor de recordatorios. Es común para toda la empresa y solo Functions escribe.
+
+`tenants/{tenantId}/calendar_inboxes/{uid}/notifications/{notificationId}` guarda avisos derivados con eventId/eventVersion, título y fecha denormalizados, estado de lectura/posposición, active, cursor de push y expiresAt. Cada propietario autorizado lee su bandeja; las modificaciones son Functions.
+
+`calendar_push_devices/{sha256(token)}` es privado al servidor, identifica propietario/empresa, token, fecha de renovación y vencimiento. No participa en lecturas de cliente. Los índices y el flujo de activación están en `docs/calendario-y-mejoras-pos.md`.
+
+
+## Stock mixto (versión 4, septiembre de 2026)
+
+El detalle vigente está en `stock-compartido-presentaciones.md`. `baseQuantity` contiene unidades compartidas; `presentationQuantities` conserva cajas cerradas por ID; `quantity` es su total equivalente. Las presentaciones con `autoUnpackEnabled: false` solo se venden enteras desde su propio saldo. La versión 3 con cajas cerradas requiere reclasificación física antes de operar. `adjustInventory` acepta `type: reclasificar` solo para admin y registra conversión con variación total cero.
