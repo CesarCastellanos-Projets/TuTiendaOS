@@ -1,11 +1,12 @@
+import { availableBase, availablePresentation, needsStockReconciliation } from '../../lib/stock-availability';
 import { useMemo, useState, type FormEvent } from 'react';
-import { query, where, getDocs, updateDoc } from 'firebase/firestore';
+import { query, where, getDocs, limit, orderBy, startAfter, documentId, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { Layers, Plus, Search, Trash2, Barcode, Boxes, Tag } from 'lucide-react';
 import { useCompany } from '../../hooks/useCompany';
 import { useProductsCatalog } from '../../hooks/useProductsCatalog';
 import { refreshProductsCatalog } from '../../lib/catalog-repository';
-import { requireCurrentTenantId, tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
+import { requireCurrentTenantId, tenantCollection } from '../../lib/tenant-firestore';
 import { functions } from '../../lib/firebase';
 import { clean, num } from '../../lib/utils';
 import type { Product, ProductPresentation, ProductStock, Unit } from '../../types';
@@ -59,10 +60,10 @@ export function ProductsPage() {
     setBaseUnit(p.unit ?? 'UN');
     setPresentations(
       p.presentations
-        ? p.presentations.map((pr) => ({
+        ? p.presentations.map((pr, index) => ({
             ...pr,
             salePriceInput: pr.salePrice !== undefined ? String(pr.salePrice) : '',
-            id: pr.id || newPresentationId(),
+            id: pr.id || `legacy-${index + 1}`,
             factorInput: String(pr.factor || 1),
             description: pr.description || `${pr.unit} x${pr.factor || 1}`,
             fractionStep: pr.fractionStep ?? 0.5,
@@ -78,9 +79,14 @@ export function ProductsPage() {
     setViewingStockProduct(p);
     setLoadingStocks(true);
     try {
-      const q = query(tenantCollection('product_stocks'), where('productId', '==', p.id));
-      const snap = await getDocs(q);
-      setProductStocks(snap.docs.map((d) => d.data() as ProductStock));
+      const stocks: ProductStock[] = [];
+      let cursor: QueryDocumentSnapshot<DocumentData> | undefined;
+      do {
+        const page = await getDocs(query(tenantCollection('product_stocks'), where('productId', '==', p.id), orderBy(documentId()), ...(cursor ? [startAfter(cursor)] : []), limit(250)));
+        stocks.push(...page.docs.map((doc) => doc.data() as ProductStock));
+        cursor = page.size === 250 ? page.docs.at(-1) : undefined;
+      } while (cursor);
+      setProductStocks(stocks);
     } catch {
       flash('Error al cargar stocks');
     } finally {
@@ -98,10 +104,7 @@ export function ProductsPage() {
     }
     try {
       const newUnits = [...(company?.customUnits ?? DEFAULT_UNITS), u];
-      await updateDoc(tenantDoc('config', 'company'), {
-        customUnits: Array.from(new Set(newUnits)),
-        updatedAt: Date.now()
-      });
+      await httpsCallable(functions, 'saveCustomUnits')({ units: Array.from(new Set(newUnits)) });
       flash(`Nueva unidad "${u}" guardada exitosamente`);
       setCustomUnitInput('');
       setShowAddUnitInput(false);
@@ -204,7 +207,7 @@ export function ProductsPage() {
           barcode: (p.barcode || '').trim() || undefined,
           salePrice: Math.round(priceNum * 100) / 100,
           factor: factorNum,
-          allowFractionalSale: p.allowFractionalSale === true,
+          allowFractionalSale: p.allowFractionalSale === true && p.autoUnpackEnabled === true,
           fractionStep: p.fractionStep ?? 0.5,
           autoUnpackEnabled: p.autoUnpackEnabled === true,
           autoUnpackPriority: p.autoUnpackPriority ?? 1
@@ -391,10 +394,9 @@ export function ProductsPage() {
                       {s.locationType === 'warehouse' ? 'Almacén' : 'Tienda'}
                     </span>
                     <p className="mt-1 text-[11px] text-slate-500">
-                      Sueltas: {s.baseQuantity ?? s.quantity}
-                      {(viewingStockProduct?.presentations ?? []).map((presentation, index) => {
-                        const presentationId = presentation.id || `legacy-${index + 1}`;
-                        return ` · ${presentation.description || presentation.unit}: ${s.presentationQuantities?.[presentationId] ?? 0}`;
+                      {needsStockReconciliation(s, viewingStockProduct?.presentations) ? 'Requiere reclasificar cajas en Ajustes. Total registrado: ' : 'Unidades disponibles: '}{needsStockReconciliation(s, viewingStockProduct?.presentations) ? s.quantity : availableBase(s, viewingStockProduct?.presentations)} {viewingStockProduct?.unit}
+                      {(viewingStockProduct?.presentations ?? []).map((presentation) => {
+                        return ` · Disponible: ${availablePresentation(s, viewingStockProduct?.presentations, presentation)} ${presentation.description || presentation.unit}`;
                       })}
                     </p>
                   </div>
@@ -559,7 +561,7 @@ export function ProductsPage() {
             {presentations.length > 0 && (
               <div className="space-y-2.5">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600 block">
-                  Presentaciones Secundarias (Packs, Cajas, Docenas)
+                  Presentaciones de venta
                 </span>
                 {presentations.map((pres, index) => (
                   <div
@@ -626,26 +628,23 @@ export function ProductsPage() {
                       />
                     </div>
 
-                    <div className="sm:col-span-9 grid grid-cols-1 gap-2 rounded-lg bg-slate-50 p-2 sm:grid-cols-3">
+                    <div className="sm:col-span-9 grid grid-cols-1 gap-2 rounded-lg bg-slate-50 p-2 sm:grid-cols-2">
+                      <label className="flex min-h-11 items-center gap-2 text-xs font-semibold text-slate-700 sm:col-span-2">
+                        <input type="checkbox" checked={pres.autoUnpackEnabled === true} onChange={(e) => updatePresentationRow(index, 'autoUnpackEnabled', e.target.checked)} />
+                        Abrir para vender unidades (compartir stock)
+                      </label>
                       <label className="flex min-h-11 items-center gap-2 text-xs font-semibold text-slate-700">
-                        <input type="checkbox" checked={pres.allowFractionalSale === true} onChange={(e) => updatePresentationRow(index, 'allowFractionalSale', e.target.checked)} />
+                        <input type="checkbox" disabled={!pres.autoUnpackEnabled} checked={pres.autoUnpackEnabled === true && pres.allowFractionalSale === true} onChange={(e) => updatePresentationRow(index, 'allowFractionalSale', e.target.checked)} />
                         Permitir venta fraccionada
                       </label>
                       <label className="text-[10px] font-bold uppercase text-slate-500">
                         Paso permitido
-                        <input type="number" min="0.001" max="0.999" step="0.001" disabled={!pres.allowFractionalSale} value={pres.fractionStep ?? 0.5} onChange={(e) => updatePresentationRow(index, 'fractionStep', e.target.value)} className="field mt-1 !h-9 text-center text-xs" />
-                      </label>
-                      <label className="flex min-h-11 items-center gap-2 text-xs font-semibold text-slate-700">
-                        <input type="checkbox" checked={pres.autoUnpackEnabled === true} onChange={(e) => updatePresentationRow(index, 'autoUnpackEnabled', e.target.checked)} />
-                        Abrir para vender unidades
+                        <input type="number" min="0.001" max="0.999" step="0.001" disabled={!pres.autoUnpackEnabled || !pres.allowFractionalSale} value={pres.fractionStep ?? 0.5} onChange={(e) => updatePresentationRow(index, 'fractionStep', e.target.value)} className="field mt-1 !h-9 text-center text-xs" />
                       </label>
                     </div>
-                    <div className="flex items-end gap-2 sm:col-span-3">
-                      <label className="flex-1 text-[10px] font-bold uppercase text-slate-500">
-                        Prioridad de apertura
-                        <input type="number" min="1" value={pres.autoUnpackPriority ?? index + 1} onChange={(e) => updatePresentationRow(index, 'autoUnpackPriority', e.target.value)} className="field mt-1 !h-9 text-center text-xs" />
-                      </label>
-                      <button type="button" onClick={() => removePresentationRow(index)} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-critical transition-colors" title="Eliminar presentación">
+
+                    <div className="flex items-end justify-end sm:col-span-3">
+                      <button type="button" onClick={() => removePresentationRow(index)} className="flex h-11 w-11 items-center justify-center rounded-xl text-slate-400 hover:bg-red-50 hover:text-critical" title="Eliminar presentación">
                         <Trash2 size={16} />
                       </button>
                     </div>
@@ -656,6 +655,10 @@ export function ProductsPage() {
                 ))}
               </div>
             )}
+
+            <p className="text-xs text-slate-500">
+              Las presentaciones que se pueden abrir comparten el stock en {baseUnit}. Las demás se cuentan como cajas cerradas y se venden completas. Para vender 0.5, habilita apertura y venta fraccionada. Si cambias un saldo compartido a cajas cerradas, registra el conteo en Ajustes → Reclasificar.
+            </p>
 
             {/* Botón para añadir otra fila de presentación */}
             <button

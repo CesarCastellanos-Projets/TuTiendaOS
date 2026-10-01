@@ -1,7 +1,9 @@
 import { useState, Suspense } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { CalendarBell } from '../calendar/CalendarBell';
 import { RouteLoading } from '../RouteLoading';
 import {
+  CalendarDays,
   LayoutDashboard,
   Package,
   Warehouse,
@@ -38,6 +40,7 @@ const NAV = [
   { to: '/admin/tickets', label: 'Diseño de Tickets', icon: Printer },
   { to: '/admin/sunat', label: 'SUNAT y Facturación', icon: FileText },
   { to: '/admin/incidencias', label: 'Incidencias de Piso', icon: TriangleAlert },
+  { to: '/admin/calendario', label: 'Calendario de la empresa', icon: CalendarDays },
   { to: '/admin/usuarios', label: 'Usuarios y Accesos', icon: Users }
 ];
 
@@ -163,8 +166,10 @@ export function AdminLayout() {
         {/* Barra superior de acento */}
         <div className="tape h-1 w-full" aria-hidden />
 
+        <div className="fixed right-3 top-1.5 z-40 lg:right-5"><CalendarBell /></div>
+
         {/* Header Móvil / Tablet con botón Hamburguesa */}
-        <header className="flex h-14 items-center justify-between border-b border-slate-200 bg-white px-4 lg:hidden shadow-xs">
+        <header className="flex h-14 items-center justify-between border-b border-slate-200 bg-white pl-4 pr-16 lg:hidden shadow-xs">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setMobileOpen(true)}
@@ -196,7 +201,7 @@ export function AdminLayout() {
         </header>
 
         {/* Topbar Escritorio */}
-        <header className="hidden h-14 items-center justify-between border-b border-slate-200 bg-white px-8 lg:flex">
+        <header className="hidden h-14 items-center justify-between border-b border-slate-200 bg-white pl-8 pr-20 lg:flex">
           <div className="flex items-center gap-2 text-sm text-slate-600">
             <Building2 size={16} className="text-slate-400" />
             <span className="font-bold text-slate-800">{company?.razonSocial || "D'ENZOZ S.A.C."}</span>

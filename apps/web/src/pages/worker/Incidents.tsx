@@ -11,10 +11,11 @@ import {
 import { onSnapshot } from '../../lib/firestore-listener';
 import { storage } from '../../lib/firebase';
 import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import { deleteObject, ref, uploadBytes } from 'firebase/storage';
 import { useAuth } from '../../lib/auth';
 import type { Incident, IncidentType } from '../../types';
 import { fmtDateTime } from '../../lib/utils';
+import { IncidentPhoto } from '../../components/IncidentPhoto';
 import { Modal } from '../../components/ui/Modal';
 import { EmptyState, FlashBar, useFlash } from '../../components/ui/Feedback';
 
@@ -79,6 +80,7 @@ export function IncidentsWorkerPage() {
                 {i.productName ?? 'General'}
               </p>
               <p className="mt-1 text-sm">{i.description}</p>
+              <IncidentPhoto path={i.photoPath} />
               <p className="mt-1.5 text-xs text-slate-500">
                 {fmtDateTime(i.createdAt)} · por {i.createdByName}
                 {i.status === 'resuelta' ? ` · resuelta: ${i.resolutionNote}` : ''}
@@ -121,14 +123,16 @@ export function IncidentFormModal({
       flash('Error: describe la incidencia');
       return;
     }
+    if (file && (file.size <= 0 || file.size > 5 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp'].includes(file.type))) {
+      flash('Error: adjunta una imagen JPG, PNG o WEBP de hasta 5 MB.'); return;
+    }
     setBusy(true);
+    let photoPath: string | null = null;
+    let saved = false;
     try {
-      let photoUrl: string | null = null;
-      if (file && file.size <= 5 * 1024 * 1024) {
-        const path = `tenants/${profile.tenantId}/incidents/${user.uid}/${Date.now()}_${file.name}`;
-        const storageRef = ref(storage, path);
-        await uploadBytes(storageRef, file);
-        photoUrl = await getDownloadURL(storageRef);
+      if (file) {
+        photoPath = `tenants/${profile.tenantId}/incidents/${profile.storeId}/${user.uid}/${crypto.randomUUID()}`;
+        await uploadBytes(ref(storage, photoPath), file, { contentType: file.type });
       }
       await setDoc(doc(tenantCollection('incidents')), {
         tenantId: profile.tenantId,
@@ -138,17 +142,19 @@ export function IncidentFormModal({
         productName: preset?.productName ?? null,
         type,
         description: description.trim(),
-        photoUrl,
+        photoPath,
         status: 'abierta',
         createdBy: user.uid,
         createdByName: profile.displayName,
         createdAt: Date.now()
       });
+      saved = true;
       flash('Incidencia reportada. Gracias.');
       onClose();
     } catch {
       flash('Error al enviar el reporte');
     } finally {
+      if (photoPath && !saved) await deleteObject(ref(storage, photoPath)).catch(() => undefined);
       setBusy(false);
     }
   };

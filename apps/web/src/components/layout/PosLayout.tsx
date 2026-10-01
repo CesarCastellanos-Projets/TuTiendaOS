@@ -1,8 +1,10 @@
 import { useEffect, useState, Suspense } from 'react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { getDocs, limit, query } from 'firebase/firestore';
+import { CalendarBell } from '../calendar/CalendarBell';
 import { RouteLoading } from '../RouteLoading';
 import {
+  CalendarDays,
   ShoppingCart,
   Vault,
   ReceiptText,
@@ -30,9 +32,12 @@ const POS_NAV = [
 
 export function PosLayout() {
   const profile = useAuth((s) => s.profile)!;
+  const uid = useAuth((s) => s.user?.uid);
   const logout = useAuth((s) => s.logout);
   const setProfileStoreId = useAuth((s) => s.setProfileStoreId);
   const navigate = useNavigate();
+  const location = useLocation();
+  const nav = profile.canManageCalendar ? [...POS_NAV, { to: '/pos/calendario', icon: CalendarDays, label: 'Calendario de la empresa', shortLabel: 'Calendario', desc: 'Fechas y recordatorios compartidos', end: false }] : POS_NAV;
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [stores, setStores] = useState<StoreType[]>([]);
   const [selectingStore, setSelectingStore] = useState(false);
@@ -99,8 +104,8 @@ export function PosLayout() {
         </div>
 
         {/* Centro: Switch Rápido de Pestañas en Pantallas Medianas/Grandes */}
-        <nav className="hidden md:flex items-center gap-1 rounded-xl bg-slate-100/80 p-1 border border-slate-200/80">
-          {POS_NAV.map(({ to, icon: Icon, shortLabel, end }) => (
+        <nav className={`hidden ${canChooseStore ? '2xl:flex' : 'xl:flex'} items-center gap-1 rounded-xl bg-slate-100/80 p-1 border border-slate-200/80`}>
+          {nav.map(({ to, icon: Icon, shortLabel, end }) => (
             <NavLink
               key={to}
               to={to}
@@ -121,6 +126,7 @@ export function PosLayout() {
 
         {/* Lado Derecho: Info del Cajero & Botón Salir */}
         <div className="flex items-center gap-2.5">
+          <CalendarBell />
           {canChooseStore && (
             <label className="relative hidden min-w-0 sm:block">
               <span className="sr-only">Tienda activa</span>
@@ -135,7 +141,7 @@ export function PosLayout() {
               </select>
             </label>
           )}
-          <div className="hidden sm:flex items-center gap-2 rounded-full bg-slate-50 border border-slate-200 px-3 py-1 text-xs">
+          <div className="hidden lg:flex items-center gap-2 rounded-full bg-slate-50 border border-slate-200 px-3 py-1 text-xs">
             <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
             <span className="font-bold text-slate-700 truncate max-w-[140px]">
               {profile.displayName}
@@ -154,7 +160,7 @@ export function PosLayout() {
 
       {/* ─── CONTENIDO PRINCIPAL (Ocupa el 100% de la pantalla sin barras que estorben) ─── */}
       <main className="flex min-w-0 flex-1 flex-col overflow-y-auto lg:min-h-0 lg:overflow-hidden">
-        {canChooseStore && !profile.storeId ? (
+        {canChooseStore && !profile.storeId && location.pathname !== '/pos/calendario' ? (
           <div className="grid flex-1 place-items-center p-4">
             <section className="card w-full max-w-md space-y-4 p-5 text-center">
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-100 text-primary">
@@ -178,14 +184,14 @@ export function PosLayout() {
           </div>
         ) : (
           <Suspense key={profile.storeId} fallback={<RouteLoading />}>
-            <Outlet />
+            <Outlet key={`${profile.tenantId}:${uid}:${profile.storeId}`} />
           </Suspense>
         )}
       </main>
 
       {/* ─── DRAWER LATERAL FLUIDO (Se abre al presionar las 3 líneas) ───────── */}
       {drawerOpen && (
-        <div className="fixed inset-0 z-50 flex animate-in fade-in duration-200">
+        <div role="dialog" aria-modal="true" aria-label="Menú de operaciones" className="fixed inset-0 z-50 flex animate-in fade-in duration-200">
           {/* Backdrop Blur */}
           <div
             onClick={() => setDrawerOpen(false)}
@@ -251,7 +257,7 @@ export function PosLayout() {
 
             {/* Links de Navegación Completos */}
             <nav className="flex-1 space-y-1.5 overflow-y-auto px-4 py-4">
-              {POS_NAV.map(({ to, label, desc, icon: Icon, end }) => (
+              {nav.map(({ to, label, desc, icon: Icon, end }) => (
                 <NavLink
                   key={to}
                   to={to}

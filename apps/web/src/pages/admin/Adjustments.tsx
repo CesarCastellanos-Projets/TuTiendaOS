@@ -12,7 +12,7 @@ export function AdjustmentsPage() {
   const [locations, setLocations] = useState<{ id: string; name: string }[]>([]);
   const [locationId, setLocationId] = useState('');
   const [lines, setLines] = useState<PickLine[]>([]);
-  const [type, setType] = useState<'ajuste' | 'merma'>('ajuste');
+  const [type, setType] = useState<'ajuste' | 'merma' | 'reclasificar'>('ajuste');
   const [reason, setReason] = useState('');
   const [movements, setMovements] = useState<StockMovement[]>([]);
   const { search } = useProductSearch();
@@ -36,7 +36,7 @@ export function AdjustmentsPage() {
       (s) => {
         const list = s.docs
           .map((d) => d.data() as StockMovement)
-          .filter((m) => m.type === 'ajuste' || m.type === 'merma');
+          .filter((m) => m.type === 'ajuste' || m.type === 'merma' || m.type === 'conversion');
         setMovements(list.slice(0, 20));
       }
     );
@@ -53,7 +53,7 @@ export function AdjustmentsPage() {
         locationId,
         productId: lines[0].productId,
         presentationId: lines[0].presentationId,
-        newQty: Math.max(0, Math.trunc(num(String(lines[0].qty)))),
+        newQty: num(String(lines[0].qty)),
         reason,
         type
       });
@@ -84,17 +84,18 @@ export function AdjustmentsPage() {
           </div>
           <div>
             <label className="label">Tipo *</label>
-            <select className="field" value={type} onChange={(e) => setType(e.target.value as 'ajuste' | 'merma')}>
+            <select className="field" value={type} onChange={(e) => setType(e.target.value as 'ajuste' | 'merma' | 'reclasificar')}>
               <option value="ajuste">Ajuste por conteo físico</option>
+              <option value="reclasificar">Reclasificar unidades como cajas cerradas (conservar total)</option>
               <option value="merma">Merma / dañado / vencido</option>
             </select>
           </div>
         </div>
 
         <p className="text-sm text-slate-500">
-          Busca el producto y escribe la <b>cantidad final</b> contada en la ubicación.
+          {type === 'reclasificar' ? 'Selecciona una caja cerrada y escribe cuántas cajas completas contaste. Su contenido se separará del saldo en unidades sin cambiar el total. Para saldos antes unificados, cuenta cada presentación cerrada (incluso cero); las ventas se habilitan al completar todos los conteos.' : 'Escribe la cantidad final de la presentación elegida. Las cajas cerradas se ajustan por separado; las presentaciones que se pueden abrir ajustan solo el saldo compartido.'}
         </p>
-        <ProductLines lines={lines.slice(0, 1)} setLines={setLines} searchFn={search} />
+        <ProductLines allowZero lines={lines.slice(0, 1)} setLines={setLines} searchFn={search} />
 
         <div>
           <label className="label">Motivo *</label>

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { limit, orderBy, query } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '../../lib/firebase';
 import { onSnapshot } from '../../lib/firestore-listener';
 import { ArrowRight, Ban, Send } from 'lucide-react';
 import { tenantCollection } from '../../lib/tenant-firestore';
@@ -15,6 +17,9 @@ export function TransfersPage() {
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [transfers, setTransfers] = useState<(Transfer & { id: string })[]>([]);
   const [creating, setCreating] = useState(false);
+  const [resolving, setResolving] = useState<(Transfer & { id: string }) | null>(null);
+  const [resolution, setResolution] = useState<'devolver' | 'merma'>('devolver');
+  const [reason, setReason] = useState('');
   const [fromId, setFromId] = useState('');
   const [toId, setToId] = useState('');
   const [lines, setLines] = useState<PickLine[]>([]);
@@ -181,7 +186,13 @@ export function TransfersPage() {
                 ))}
               </ul>
 
-              {(t.status === 'pendiente' || t.status === 'en_transito') && (
+              {t.status === 'recibido' && t.items.some((item) => item.qtySent > item.qtyReceived) && (
+                <div className="rounded-lg bg-amber-50 p-3 text-xs">
+                  <p>Faltantes: {t.items.filter((item) => item.qtySent > item.qtyReceived).map((item) => `${item.name}: ${item.qtySent - item.qtyReceived} ${item.presentationLabel ?? 'unidades'}`).join(' · ')}</p>
+                  {(!t.shortageStatus || t.shortageStatus === 'pendiente') ? <button className="btn-ghost mt-2" onClick={() => { setResolving(t); setReason(''); }}>Conciliar faltantes</button> : <p>Resolución: {t.shortageStatus === 'devuelto' ? 'Devuelto al origen' : 'Merma en tránsito'}</p>}
+                </div>
+              )}
+              {(t.status === 'pendiente'  || t.status === 'en_transito') && (
                 <div className="text-right pt-1">
                   <button className="btn-danger !min-h-9 !px-3 !py-1.5 text-xs font-bold" onClick={() => void cancel(t)}>
                     <Ban size={14} /> Cancelar y devolver stock
@@ -239,6 +250,23 @@ export function TransfersPage() {
         </div>
       </Modal>
 
+      <Modal open={resolving !== null} title="Conciliar faltantes" onClose={() => setResolving(null)}>
+        <div className="space-y-3">
+          <select className="field" value={resolution} onChange={(e) => setResolution(e.target.value as 'devolver' | 'merma')}>
+            <option value="devolver">Devolver al origen: mercadería físicamente verificada</option>
+            <option value="merma">Registrar pérdida en tránsito</option>
+          </select>
+          <p className="text-xs text-slate-500">La devolución incrementa el stock de origen. La pérdida registra la merma del tránsito sin volver a descontar el origen.</p>
+          <textarea className="field" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={250} placeholder="Motivo y verificación realizada" />
+          <button className="btn-primary" disabled={busy || reason.trim().length < 3} onClick={() => {
+            if (!resolving) return;
+            setBusy(true);
+            void httpsCallable(functions, 'resolveTransferShortage')({ transferId: resolving.id, action: resolution, reason }).then(() => {
+              setResolving(null); flash('Faltante conciliado');
+            }).catch((err: unknown) => flash(err instanceof Error ? err.message : 'Error al conciliar')).finally(() => setBusy(false));
+          }}>Guardar conciliación</button>
+        </div>
+      </Modal>
       <FlashBar msg={msg} />
     </div>
   );

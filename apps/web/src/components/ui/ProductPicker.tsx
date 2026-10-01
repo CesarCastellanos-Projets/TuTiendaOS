@@ -77,8 +77,10 @@ export function useProductSearch() {
 export function ProductLines({
   lines,
   setLines,
-  searchFn
+  searchFn,
+  allowZero = false
 }: {
+  allowZero?: boolean;
   lines: PickLine[];
   setLines: (l: PickLine[]) => void;
   searchFn: (t: string) => {
@@ -128,12 +130,12 @@ export function ProductLines({
                           📦 {p.presentationLabel}
                         </span>
                         <span className="text-[11px] text-slate-500 font-medium">
-                          ({p.factor} unidades por empaque)
+                          ({p.factor} unidades por presentación)
                         </span>
                       </>
                     ) : (
                       <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[11px] font-bold text-slate-600">
-                        Unidad suelta base
+                        Unidad base
                       </span>
                     )}
                   </div>
@@ -141,7 +143,7 @@ export function ProductLines({
                 <div className="ml-3 shrink-0 text-right font-mono">
                   <span className="text-xs font-bold text-slate-900">S/ {p.salePrice.toFixed(2)}</span>
                   <span className="block text-[10px] text-slate-400 font-medium">
-                    {p.presentationId ? 'por empaque' : 'por unidad'}
+                    {p.presentationId ? 'por presentación' : 'por unidad'}
                   </span>
                 </div>
               </button>
@@ -171,7 +173,7 @@ export function ProductLines({
                     </>
                   ) : (
                     <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[11px] font-bold text-slate-600">
-                      Unidad suelta base
+                      Unidad base
                     </span>
                   )}
                 </div>
@@ -183,16 +185,17 @@ export function ProductLines({
                     htmlFor={`qty-${l.productId}-${l.presentationId ?? 'base'}`}
                     className="block text-[10px] font-bold uppercase tracking-wider text-slate-500"
                   >
-                    {l.presentationId ? 'Cajas / Empaques' : 'Unidades'}
+                    {l.presentationId ? 'Presentaciones' : 'Unidades'}
                   </label>
                   <input
                     id={`qty-${l.productId}-${l.presentationId ?? 'base'}`}
                     type="number"
-                    min={1}
+                    min={allowZero ? 0 : 0.001}
+                    step={0.001}
                     value={l.qty}
                     onChange={(e) => {
                       const next = [...lines];
-                      next[idx] = { ...l, qty: Math.max(1, Math.trunc(Number(e.target.value) || 1)) };
+                      next[idx] = { ...l, qty: Number(e.target.value) };
                       setLines(next);
                     }}
                     className="field !min-h-0 w-24 !px-2 !py-1 text-center font-mono text-sm font-extrabold text-slate-900"

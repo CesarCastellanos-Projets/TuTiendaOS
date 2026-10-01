@@ -98,8 +98,8 @@ export function TicketDesignerPage() {
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) {
-      flash('Error: La imagen no debe superar 2 MB');
+    if (file.size > 200 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+      flash('Error: usa PNG, JPG o WEBP de hasta 200 KB');
       return;
     }
     const reader = new FileReader();

@@ -26,7 +26,7 @@ export async function adjustStock(params: {
   presentationId: string | null;
   newQty: number;
   reason: string;
-  type: 'ajuste' | 'merma';
+  type: 'ajuste' | 'merma' | 'reclasificar';
 }): Promise<void> {
   const callable = httpsCallable<typeof params, { ok: boolean }>(functions, 'adjustInventory');
   await callable(params);

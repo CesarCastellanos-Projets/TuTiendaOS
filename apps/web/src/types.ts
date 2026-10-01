@@ -9,6 +9,7 @@ export interface UserProfile {
   storeId?: string | null;
   storeAccess?: PosStoreAccess;
   canOverridePrices?: boolean;
+  canManageCalendar?: boolean;
   active: boolean;
   createdAt?: number;
 }
@@ -20,6 +21,34 @@ export interface NewUserPayload {
   role: Role;
   storeId: string | null;
   storeAccess?: PosStoreAccess;
+  canManageCalendar?: boolean;
+}
+
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  description: string;
+  type: 'pago' | 'tarea' | 'vencimiento' | 'otro';
+  dueDate: string;
+  dueTime: string;
+  dueAt: number;
+  reminderDays: number[];
+  recurrence: 'none' | 'daily' | 'weekly' | 'monthly';
+  status: 'pendiente' | 'completado' | 'cancelado';
+  version: number;
+  updatedByName?: string;
+}
+
+export interface CalendarNotification {
+  id: string;
+  eventId: string;
+  eventVersion: number;
+  title: string;
+  dueAt: number;
+  dueDate: string;
+  createdAt: number;
+  readAt: number | null;
+  snoozedUntil: number | null;
 }
 
 export type Unit = 'UN' | 'KG' | 'LT' | 'PAQ' | 'CJA' | 'DOC' | string;
@@ -89,7 +118,8 @@ export interface ProductStock {
   quantity: number;
   baseQuantity?: number;
   presentationQuantities?: Record<string, number>;
-  stockModelVersion?: 2;
+  stockModelVersion?: 2 | 3 | 4;
+  requiresReconciliation?: boolean;
   unit?: string | null;
   updatedAt?: number;
 }
@@ -97,6 +127,7 @@ export interface ProductStock {
 export type MovementType = 'venta' | 'ingreso' | 'transferencia' | 'ajuste' | 'merma' | 'recepcion' | 'conversion';
 
 export interface StockMovement {
+  transitLossBaseQty?: number;
   tenantId?: string;
   type: MovementType;
   productId: string;
@@ -123,6 +154,7 @@ export interface TransferItem {
   name: string;
   qtySent: number;
   qtyReceived: number;
+  qtyMissing?: number;
   presentationId?: string | null;
   presentationLabel?: string;
   factor?: number;
@@ -139,6 +171,7 @@ export interface Transfer {
   toLocationId: string;
   toLocationName: string;
   status: TransferStatus;
+  shortageStatus?: 'pendiente' | 'devuelto' | 'merma' | 'sin_faltantes';
   items: TransferItem[];
   createdBy: string;
   createdByName: string;
@@ -184,6 +217,7 @@ export interface Incident {
   type: IncidentType;
   description: string;
   photoUrl?: string | null;
+  photoPath?: string | null;
   status: IncidentStatus;
   createdBy: string;
   createdByName: string;
@@ -277,7 +311,9 @@ export interface CashSession {
   closingAmount?: number;
   expectedAmount?: number;
   difference?: number;
-  status: 'abierta' | 'cerrada';
+  status: 'abierta' | 'cerrando' | 'cerrada';
+  salesSummary?: { totalSales: number; cashSales: number; yapeSales: number; cardSales: number; otherSales: number; salesCount: number };
+  storeName?: string;
   openedAt: number;
   closedAt?: number;
 }

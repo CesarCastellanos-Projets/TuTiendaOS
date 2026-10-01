@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { doc, getDocs, limit, query, setDoc, updateDoc, where, orderBy, getDoc } from 'firebase/firestore';
+import { getDocs, limit, query, where, orderBy, getDoc } from 'firebase/firestore';
 import { onSnapshot } from '../../lib/firestore-listener';
 import { Printer, Vault, CheckCircle2 } from 'lucide-react';
 import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import { useCompany } from '../../hooks/useCompany';
-import type { CashSession, Sale } from '../../types';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '../../lib/firebase';
+import type { CashSession } from '../../types';
 import { fmtDateTime, money, num } from '../../lib/utils';
 import { printTicket, cashCloseTicketHtml } from '../../lib/print';
 import { FlashBar, useFlash } from '../../components/ui/Feedback';
@@ -54,12 +56,14 @@ export function CashPage() {
         tenantCollection('cash_sessions'),
         where('userId', '==', user.uid),
         where('storeId', '==', profile.storeId),
-        where('status', '==', 'abierta'),
+        where('status', 'in', ['abierta', 'cerrando']),
         limit(1)
       ),
       (s) => {
         if (!s.empty) {
-          setSession({ ...(s.docs[0].data() as CashSession), id: s.docs[0].id });
+          const current = s.docs[0].data() as CashSession;
+          setSession({ ...current, id: s.docs[0].id });
+          if (current.status === 'cerrando') setClosingAmount(String(current.closingAmount ?? 0));
         } else {
           setSession(null);
           // Cargar última cerrada para posible reimpresión
@@ -81,68 +85,31 @@ export function CashPage() {
     return () => unsubOpen();
   }, [profile.storeId, user]);
 
-  // Escuchar ventas de la sesión abierta en tiempo real
   useEffect(() => {
     if (!session) return;
-    return onSnapshot(
-      query(
-        tenantCollection('sales'),
-        where('cashSessionId', '==', session.id),
-        where('userId', '==', user?.uid ?? ''),
-        where('storeId', '==', profile.storeId)
-      ),
-      (snap) => {
-        let cash = 0;
-        let yape = 0;
-        let card = 0;
-        let other = 0;
-        let total = 0;
-        let count = 0;
-
-        snap.forEach((d) => {
-          const s = d.data() as Sale;
-          if (s.status !== 'anulada') {
-            count++;
-            total += s.total;
-            if (s.paymentMethod === 'efectivo') cash += s.total;
-            else if (s.paymentMethod === 'yape' || s.paymentMethod === 'plin') yape += s.total;
-            else if (s.paymentMethod === 'tarjeta') card += s.total;
-            else other += s.total;
-          }
-        });
-
-        setSummary({
-          totalSales: total,
-          cashSales: cash,
-          yapeSales: yape,
-          cardSales: card,
-          otherSales: other,
-          salesCount: count
-        });
+    let alive = true;
+    const refresh = async () => {
+      try {
+        const response = await httpsCallable<{ sessionId: string }, SalesSummary>(functions, 'getCashSessionSummary')({ sessionId: session.id });
+        if (alive) setSummary(response.data);
+      } catch (err) {
+        if (alive) flash(err instanceof Error ? err.message : 'No se pudo consultar el resumen');
       }
-    );
-  }, [profile.storeId, session, user]);
+    };
+    const unsub = onSnapshot(query(tenantCollection('sales'), where('cashSessionId', '==', session.id),
+      where('userId', '==', user?.uid ?? ''), where('storeId', '==', profile.storeId), orderBy('createdAt', 'desc'), limit(1)), () => void refresh());
+    const timer = window.setInterval(() => void refresh(), 30000);
+    return () => { alive = false; unsub(); window.clearInterval(timer); };
+  }, [profile.storeId, session, user?.uid, flash]);
 
   const open = async () => {
     if (!user) return;
     setBusy(true);
     try {
-      await setDoc(doc(tenantCollection('cash_sessions')), {
-        tenantId: profile.tenantId,
-        storeId: profile.storeId,
-        userId: user.uid,
-        userName: profile.displayName,
-        openingAmount: num(openingAmount),
-        closingAmount: null,
-        expectedAmount: null,
-        difference: null,
-        status: 'abierta',
-        openedAt: Date.now(),
-        closedAt: null
-      });
+      await httpsCallable(functions, 'openCashSession')({ openingAmount: num(openingAmount) });
       flash('Caja abierta exitosamente.');
-    } catch {
-      flash('Error al abrir caja');
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Error al abrir caja');
     } finally {
       setBusy(false);
     }
@@ -152,35 +119,15 @@ export function CashPage() {
     if (!session || !user) return;
     setBusy(true);
     try {
-      const counted = num(closingAmount);
-      const expected = session.openingAmount + summary.cashSales;
-      const diff = Math.round((counted - expected) * 100) / 100;
-      const closedAt = Date.now();
-
-      await updateDoc(tenantDoc('cash_sessions', session.id), {
-        closingAmount: counted,
-        expectedAmount: Math.round(expected * 100) / 100,
-        difference: diff,
-        status: 'cerrada',
-        closedAt
-      });
-
-      const closedSessionData = {
-        ...session,
-        storeName,
-        closingAmount: counted,
-        expectedAmount: expected,
-        difference: diff,
-        closedAt
-      };
-
-      // Imprimir automáticamente o dejar disponible el ticket de arqueo Z
-      printTicket(cashCloseTicketHtml(closedSessionData, summary, company ?? undefined));
-
-      flash(`Caja cerrada. Total vendido: ${money(summary.totalSales)}`);
+      const response = await httpsCallable<{ sessionId: string; closingAmount: number }, CashSession & { id: string }>(functions, 'closeCashSession')({ sessionId: session.id, closingAmount: num(closingAmount) });
+      const closed = response.data;
+      setLastClosedSession(closed);
+      if (!closed.salesSummary) throw new Error('El cierre no contiene el desglose de ventas.');
+      printTicket(cashCloseTicketHtml({ ...closed, storeName }, closed.salesSummary, company ?? undefined));
+      flash(`Caja cerrada. Total vendido: ${money(closed.salesSummary.totalSales)}`);
       setClosingAmount('');
-    } catch {
-      flash('Error al cerrar caja');
+    } catch (err) {
+      flash(err instanceof Error ? err.message : 'Error al cerrar caja');
     } finally {
       setBusy(false);
     }
@@ -188,17 +135,11 @@ export function CashPage() {
 
   const reprintLastZ = () => {
     if (!lastClosedSession) return;
+    if (!lastClosedSession.salesSummary) { flash('El cierre antiguo no tiene desglose verificable para reimprimir.'); return; }
     printTicket(
       cashCloseTicketHtml(
         { ...lastClosedSession, storeName },
-        {
-          totalSales: (lastClosedSession.expectedAmount ?? 0) - lastClosedSession.openingAmount,
-          cashSales: (lastClosedSession.expectedAmount ?? 0) - lastClosedSession.openingAmount,
-          yapeSales: 0,
-          cardSales: 0,
-          otherSales: 0,
-          salesCount: 0
-        },
+        lastClosedSession.salesSummary!,
         company ?? undefined
       )
     );
@@ -243,7 +184,7 @@ export function CashPage() {
         <div className="card space-y-4 p-5">
           <div className="flex items-center justify-between border-b border-slate-100 pb-3">
             <span className="badge bg-emerald-50 text-success font-bold flex items-center gap-1">
-              <CheckCircle2 size={13} /> Turno Activo (Caja Abierta)
+              <CheckCircle2 size={13} /> {session.status === 'cerrando' ? 'Cierre pendiente: reintenta para terminar' : 'Turno activo (caja abierta)'}
             </span>
             <span className="text-xs text-slate-500 font-mono">Desde {fmtDateTime(session.openedAt)}</span>
           </div>
@@ -288,6 +229,7 @@ export function CashPage() {
               min="0"
               placeholder="0.00"
               value={closingAmount}
+              disabled={session.status === 'cerrando'}
               onChange={(e) => setClosingAmount(e.target.value)}
               className="field font-mono text-lg font-bold"
             />

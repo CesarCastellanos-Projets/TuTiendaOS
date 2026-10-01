@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { onAuthStateChanged, signInWithEmailAndPassword, signOut, type User } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import type { UserProfile } from '../types';
 
@@ -29,7 +29,8 @@ function readProfile(user: User): Promise<UserProfile | null> {
       return {
         ...profile,
         storeAccess: token.claims.posStoreAccess === 'all' ? 'all' : 'assigned',
-        canOverridePrices: token.claims.canOverridePrices === true
+        canOverridePrices: token.claims.canOverridePrices === true,
+        canManageCalendar: profile.role === 'admin' || (profile.role === 'pos' && (profile.canManageCalendar === true || (profile.canManageCalendar === undefined && profile.storeAccess === 'all')))
       } satisfies UserProfile;
     })
     .finally(() => {
@@ -58,8 +59,11 @@ export const useAuth = create<AuthState>((set) => {
     init: () => {
       let active = true;
       let revision = 0;
+      let stopProfile: (() => void) | undefined;
       const unsubscribe = onAuthStateChanged(auth, async (user) => {
         const currentRevision = ++revision;
+        stopProfile?.();
+        stopProfile = undefined;
         if (!user) {
           if (active) set({ user: null, profile: null, loading: false, error: null });
           return;
@@ -80,6 +84,14 @@ export const useAuth = create<AuthState>((set) => {
             return;
           }
           set({ user, profile, loading: false, error: null });
+          stopProfile = onSnapshot(doc(db, 'users', user.uid), (snapshot) => {
+            if (!active || currentRevision !== revision) return;
+            const current = snapshot.data() as UserProfile | undefined;
+            if (!current?.active || current.tenantId !== profile.tenantId || current.role !== profile.role) { void signOut(auth); return; }
+            set({ profile: { ...profile, ...current, canOverridePrices: profile.canOverridePrices,
+              canManageCalendar: current.role === 'admin' || (current.role === 'pos' && (current.canManageCalendar === true || (current.canManageCalendar === undefined && current.storeAccess === 'all'))) } });
+          }, () => set((state) => ({ profile: state.profile ? { ...state.profile, canManageCalendar: false } : null })));
+
         } catch {
           if (active && currentRevision === revision) {
             set({ user, profile: null, loading: false, error: 'No se pudo cargar el perfil. Revisa tu conexión e intenta nuevamente.' });
@@ -90,6 +102,7 @@ export const useAuth = create<AuthState>((set) => {
       return () => {
         active = false;
         unsubscribe();
+        stopProfile?.();
       };
     },
     login: async (email, password) => {
@@ -104,6 +117,8 @@ export const useAuth = create<AuthState>((set) => {
       }
     },
     logout: async () => {
+      const { disableCalendarPush } = await import('./calendar-push');
+      await Promise.race([disableCalendarPush(), new Promise<void>((resolve) => setTimeout(resolve, 2500))]).catch(() => undefined);
       await signOut(auth);
       set({ user: null, profile: null, loading: false, error: null });
     },

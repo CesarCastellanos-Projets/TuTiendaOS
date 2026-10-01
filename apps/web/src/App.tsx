@@ -23,6 +23,9 @@ const TicketDesignerPage = lazy(() => import('./pages/admin/TicketDesigner').the
 const ReceiptsPage = lazy(() => import('./pages/admin/Receipts').then((m) => ({ default: m.ReceiptsPage })));
 const IncidentsAdminPage = lazy(() => import('./pages/admin/Incidents').then((m) => ({ default: m.IncidentsAdminPage })));
 
+const AdminCalendar = lazy(() => import('./pages/admin/Calendar').then((m) => ({ default: m.AdminCalendar })));
+const PosCalendar = lazy(() => import('./pages/pos/Calendar').then((m) => ({ default: m.PosCalendar })));
+
 const PosSale = lazy(() => import('./pages/pos/Sale').then((m) => ({ default: m.PosSale })));
 const ReceivingPage = lazy(() => import('./pages/pos/Receiving').then((m) => ({ default: m.ReceivingPage })));
 const CashPage = lazy(() => import('./pages/pos/Cash').then((m) => ({ default: m.CashPage })));
@@ -56,6 +59,7 @@ const router = createBrowserRouter([
           { path: 'reposicion', element: <ReplenishmentAdminPage /> },
           { path: 'incidencias', element: <IncidentsAdminPage /> },
           { path: 'usuarios', element: <UsersPage /> },
+          { path: 'calendario', element: <AdminCalendar /> },
           { path: 'comprobantes', element: <ReceiptsPage /> },
           { path: 'tickets', element: <TicketDesignerPage /> },
           { path: 'sunat', element: <SunatConfigPage /> }
@@ -74,6 +78,7 @@ const router = createBrowserRouter([
           { path: 'recepcion', element: <ReceivingPage /> },
           { path: 'recepciones', element: <ReceivingPage /> },
           { path: 'caja', element: <CashPage /> },
+          { path: 'calendario', element: <PosCalendar /> },
           { path: 'mis-ventas', element: <MySales /> },
           { path: 'ventas', element: <MySales /> },
           { path: 'reposicion', element: <RequestRestock /> },
@@ -102,7 +107,9 @@ const router = createBrowserRouter([
 
 function RootRedirect() {
   const profile = useAuth((s) => s.profile);
-  if (!profile) return <Navigate to="/login" replace />;
+  const calendar = new URLSearchParams(window.location.search).get('calendar') === '1';
+  if (!profile) return <Navigate to={calendar ? '/login?calendar=1' : '/login'} replace />;
+  if (calendar && profile.canManageCalendar) return <Navigate to={profile.role === 'admin' ? '/admin/calendario' : '/pos/calendario'} replace />;
   return <Navigate to={homeFor(profile.role)} replace />;
 }
 

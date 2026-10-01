@@ -1,18 +1,23 @@
 import { useEffect, useMemo, useState } from 'react';
+import { availableBase, availablePresentation } from '../lib/stock-availability';
 import { onSnapshot } from '../lib/firestore-listener';
-import { stocksByLocation } from '../lib/inventory';
+import { documentId, getDocs, limit, orderBy, query, startAfter, where, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { cacheCatalog, localDb } from '../lib/catalog-cache';
 import { getProductsCatalog, syncProductsCatalog, type ProductWithId } from '../lib/catalog-repository';
-import { requireCurrentTenantId } from '../lib/tenant-firestore';
+import { requireCurrentTenantId, tenantCollection } from '../lib/tenant-firestore';
 import { useAuth } from '../lib/auth';
 import { useProductsCatalog } from './useProductsCatalog';
 import type { ProductStock } from '../types';
+import { normalizeSearch, searchScore } from '../lib/catalog-search';
 
 export interface SearchableCatalogItem extends ProductStock {
+  searchText?: string;
+  internalCode?: string;
   presentationUnit?: string;
   presentationId?: string;
   presentationLabel?: string;
   factor?: number;
+  autoUnpackEnabled?: boolean;
   allowFractionalSale?: boolean;
   fractionStep?: number;
   searchKey: string;
@@ -32,22 +37,61 @@ export function useStoreCatalog(storeId: string | undefined): {
   useEffect(() => {
     if (!storeId || !tenantId) return;
     let alive = true;
+    let syncing = false;
+    let again = false;
+    let initialized = false;
+    let watermark = 0;
+    const stockMap = new Map<string, ProductStock>();
+    setItems([]);
 
     void localDb.products.where('[tenantId+locationId]').equals([tenantId, storeId]).toArray().then((cached) => {
-      if (!alive || cached.length === 0) return;
+      if (!alive || initialized || cached.length === 0) return;
       setItems(cached.map(({ id: _id, cachedAt: _c, ...p }) => p));
       setOffline(!navigator.onLine);
     });
 
+    const sync = async () => {
+      if (!alive) return;
+      if (syncing) { again = true; return; }
+      syncing = true;
+      try {
+        do {
+          again = false;
+          const initial = !initialized;
+          const next = initial ? new Map<string, ProductStock>() : new Map(stockMap);
+          let cursor: QueryDocumentSnapshot<DocumentData> | undefined;
+          let newest = watermark;
+          do {
+            const constraints = initial
+              ? [where('locationId', '==', storeId), orderBy(documentId())]
+              : [where('locationId', '==', storeId), where('updatedAt', '>=', Math.max(0, watermark - 60000)), orderBy('updatedAt'), orderBy(documentId())];
+            const page = await getDocs(query(tenantCollection('product_stocks'), ...constraints, ...(cursor ? [startAfter(cursor)] : []), limit(300)));
+            if (!alive) return;
+            for (const doc of page.docs) {
+              const stock = doc.data() as ProductStock;
+              next.set(stock.productId, stock);
+              newest = Math.max(newest, Number(stock.updatedAt ?? 0));
+            }
+            cursor = page.size === 300 ? page.docs.at(-1) : undefined;
+          } while (cursor);
+          stockMap.clear(); next.forEach((stock, id) => stockMap.set(id, stock));
+          watermark = newest; initialized = true;
+          const fresh = [...stockMap.values()];
+          setItems(fresh); setOffline(false);
+          if (initial) {
+            await localDb.transaction('rw', localDb.products, async () => {
+              await localDb.products.where('[tenantId+locationId]').equals([tenantId, storeId]).delete();
+              await cacheCatalog(tenantId, fresh);
+            });
+          } else await cacheCatalog(tenantId, fresh);
+        } while (again && alive);
+      } catch { if (alive) setOffline(true); }
+      finally { syncing = false; }
+    };
+    void sync();
     const unsubStocks = onSnapshot(
-      stocksByLocation(storeId),
-      (snap) => {
-        if (!alive) return;
-        const fresh = snap.docs.map((d) => d.data() as ProductStock);
-        setItems(fresh);
-        setOffline(false);
-        void cacheCatalog(tenantId, fresh);
-      },
+      query(tenantCollection('product_stocks'), where('locationId', '==', storeId), orderBy('updatedAt', 'desc'), limit(1)),
+      () => void sync(),
       () => {
         if (alive) setOffline(true);
       }
@@ -59,7 +103,14 @@ export function useStoreCatalog(storeId: string | undefined): {
     };
   }, [storeId, tenantId]);
 
-  return { items, products, offline };
+  const currentItems = useMemo(() => {
+    const byId = new Map(products.map((product) => [product.id, product]));
+    return items.filter((stock) => byId.get(stock.productId)?.active === true).map((stock) => {
+      const product = byId.get(stock.productId)!;
+      return { ...stock, productName: product.name, salePrice: product.salePrice, barcode: product.barcode, unit: product.unit };
+    });
+  }, [items, products]);
+  return { items: currentItems, products, offline };
 }
 
 export async function findInCatalog(
@@ -72,7 +123,7 @@ export async function findInCatalog(
 
   const tenantId = requireCurrentTenantId();
   await syncProductsCatalog(tenantId).catch(() => undefined);
-  const products = getProductsCatalog(tenantId);
+  const products = getProductsCatalog(tenantId).filter((product) => product.active);
 
   // Vercel Best Practice (js-index-maps): Map para resolución O(1) de stocks por productId
   const stockMap = new Map<string, ProductStock>();
@@ -102,9 +153,9 @@ export async function findInCatalog(
           presentationId,
           presentationLabel: matchPres.description || label,
           factor: matchPres.factor || 1,
-          allowFractionalSale: matchPres.allowFractionalSale !== false,
+          allowFractionalSale: matchPres.allowFractionalSale === true,
           fractionStep: matchPres.fractionStep ?? 0.5,
-          quantity: foundStock?.presentationQuantities?.[presentationId] ?? 0,
+          quantity: availablePresentation(foundStock, p.presentations, matchPres),
           locationId: foundStock?.locationId ?? _storeId,
           locationName: foundStock?.locationName ?? '',
           locationType: 'store',
@@ -128,15 +179,17 @@ export async function findInCatalog(
       return {
         productId: p.id,
         productName: foundStock?.productName ?? p.name,
-        salePrice: foundStock?.salePrice ?? p.salePrice,
+        salePrice: p.salePrice,
         barcode: p.barcode ?? code.trim(),
         presentationUnit: p.unit ?? 'UN',
         factor: 1,
-        quantity: foundStock?.baseQuantity ?? foundStock?.quantity ?? 0,
+        quantity: availableBase(foundStock, p.presentations),
         locationId: foundStock?.locationId ?? _storeId,
         locationName: foundStock?.locationName ?? '',
         locationType: 'store',
-        searchKey: `${p.id}_base`
+        searchKey: `${p.id}_base`,
+        searchText: `${p.name} ${p.brand ?? ''} ${p.category}`,
+        internalCode: p.internalCode
       };
     }
   }
@@ -174,13 +227,7 @@ export function useCatalogSearch(items: ProductStock[]) {
 
     for (const p of productsList) {
       const stock = stockMap.get(p.id);
-      const looseQuantity = stock?.baseQuantity ?? stock?.quantity ?? 0;
-      const baseStockQty = (p.presentations ?? []).reduce(
-        (total, presentation) => presentation.autoUnpackEnabled
-          ? total + (stock?.presentationQuantities?.[presentation.id] ?? 0) * presentation.factor
-          : total,
-        looseQuantity
-      );
+      const baseStockQty = availableBase(stock, p.presentations);
 
       // Presentación base
       list.push({
@@ -217,8 +264,10 @@ export function useCatalogSearch(items: ProductStock[]) {
           factor: pres.factor || 1,
           allowFractionalSale: pres.allowFractionalSale === true,
           fractionStep: pres.fractionStep ?? 0.5,
-          quantity: stock?.presentationQuantities?.[presentationId] ?? 0,
-          searchKey: `${p.id}_${presentationId}`
+          quantity: availablePresentation(stock, p.presentations, pres),
+          searchKey: `${p.id}_${presentationId}`,
+          searchText: `${p.name} ${p.brand ?? ''} ${p.category} ${pres.description ?? ''} ${label}`,
+          internalCode: p.internalCode
         });
       }
     }
@@ -226,18 +275,12 @@ export function useCatalogSearch(items: ProductStock[]) {
     return list;
   }, [stockMap, productsList]);
 
-  return useMemo(
-    () => (term: string): SearchableCatalogItem[] => {
-      const s = term.trim().toLowerCase();
-      if (!s) return [];
-      return allSearchable
-        .filter((p) => {
-          const nameMatch = p.productName.toLowerCase().includes(s);
-          const barcodeMatch = String(p.barcode ?? '').toLowerCase().includes(s);
-          return nameMatch || barcodeMatch;
-        })
-        .slice(0, 20);
-    },
-    [allSearchable]
-  );
+  return useMemo(() => {
+    const index = allSearchable.map((item) => ({ item, name: normalizeSearch(item.searchText ?? item.productName), codes: [item.barcode ?? '', item.internalCode ?? '', item.productId].filter(Boolean) }));
+    return (term: string): SearchableCatalogItem[] => index
+      .map((entry) => ({ ...entry, score: searchScore(term, entry.name, entry.codes) }))
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score || a.item.productName.localeCompare(b.item.productName, 'es'))
+      .slice(0, 40).map((entry) => entry.item);
+  }, [allSearchable]);
 }

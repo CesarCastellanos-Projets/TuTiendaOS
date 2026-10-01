@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { query, where } from 'firebase/firestore';
+import { query, where, limit } from 'firebase/firestore';
 import { onSnapshot } from '../../lib/firestore-listener';
 import { ArrowDownToLine, CheckCircle2, Truck } from 'lucide-react';
 import { tenantCollection } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import { receiveTransferItems } from '../../lib/inventory';
-import type { Transfer } from '../../types';
+import { useProductsCatalog } from '../../hooks/useProductsCatalog';
+import { baseQuantityStep } from '../../lib/stock-availability';
+import type { Transfer, TransferItem } from '../../types';
 import { fmtDateTime } from '../../lib/utils';
 import { Modal } from '../../components/ui/Modal';
 import { EmptyState, FlashBar, useFlash } from '../../components/ui/Feedback';
@@ -14,6 +16,12 @@ export function ReceivingPage() {
   const profile = useAuth((s) => s.profile)!;
   const user = useAuth((s) => s.user);
   const storeId = profile.storeId!;
+  const products = useProductsCatalog();
+  const quantityStep = (item: TransferItem) => {
+    const product = products.find((p) => p.id === item.productId);
+    const presentation = product?.presentations?.find((p, index) => (p.id || `legacy-${index + 1}`) === item.presentationId);
+    return item.presentationId ? (presentation?.autoUnpackEnabled ? 1 / (item.factor ?? 1) : 1) : baseQuantityStep(product?.unit);
+  };
   const [transfers, setTransfers] = useState<(Transfer & { id: string })[]>([]);
   const [receivingTransfer, setReceivingTransfer] = useState<(Transfer & { id: string }) | null>(null);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
@@ -25,7 +33,7 @@ export function ReceivingPage() {
       query(
         tenantCollection('transfers'),
         where('toLocationId', '==', storeId),
-        where('status', 'in', ['pendiente', 'en_transito'])
+        where('status', 'in', ['pendiente', 'en_transito']), limit(100)
       ),
       (s) => setTransfers(s.docs.map((d) => ({ ...(d.data() as Transfer), id: d.id })))
     );
@@ -45,7 +53,7 @@ export function ReceivingPage() {
 
     for (const item of receivingTransfer.items) {
       const rec = quantities[`${item.productId}:${item.presentationId ?? 'base'}`] ?? 0;
-      if (rec < 0 || rec > item.qtySent) {
+      if (!Number.isFinite(rec) || rec < 0 || rec > item.qtySent || Math.abs(rec / quantityStep(item) - Math.round(rec / quantityStep(item))) > 0.000001) {
         flash(`Error: La cantidad recibida de ${item.name} debe estar entre 0 y ${item.qtySent}`);
         return;
       }
@@ -129,7 +137,7 @@ export function ReceivingPage() {
                         )}
                       </div>
                       <b className="font-mono text-slate-900 shrink-0">
-                        {i.qtySent} {i.presentationId ? 'empaques' : 'un.'}
+                        {i.qtySent} {i.presentationId ? 'presentaciones' : 'un.'}
                       </b>
                     </li>
                   ))}
@@ -166,7 +174,7 @@ export function ReceivingPage() {
                             📦 {item.presentationLabel}
                           </span>
                           <span className="text-xs text-slate-500">
-                            Enviado: <b>{item.qtySent} empaques</b> ({item.qtySent * (item.factor ?? 1)} un. base)
+                            Enviado: <b>{item.qtySent} presentaciones</b> ({item.qtySent * (item.factor ?? 1)} un. base)
                           </span>
                         </>
                       ) : (
@@ -183,15 +191,16 @@ export function ReceivingPage() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <label className="text-xs font-bold text-slate-600">
-                      {item.presentationId ? 'Empaques:' : 'Unidades:'}
+                      {item.presentationId ? 'Presentaciones:' : 'Unidades:'}
                     </label>
                     <input
                       type="number"
                       min={0}
                       max={item.qtySent}
+                      step={quantityStep(item)}
                       value={quantities[quantityKey] ?? item.qtySent}
                       onChange={(e) => {
-                        const val = Math.max(0, Math.min(item.qtySent, Math.trunc(Number(e.target.value) || 0)));
+                        const val = Number(e.target.value);
                         setQuantities({ ...quantities, [quantityKey]: val });
                       }}
                       className="field !min-h-0 w-20 !px-2 !py-1 text-center font-mono text-sm font-extrabold"

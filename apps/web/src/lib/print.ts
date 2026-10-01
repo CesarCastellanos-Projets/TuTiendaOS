@@ -11,7 +11,7 @@ export function ticketHtml(sale: Sale, cfg?: CompanyConfig): string {
     )
     .join('');
 
-  return `<div data-ticket-width="${cfg?.ticketWidth ?? '80mm'}">
+  return `<div data-ticket-width="${cfg?.ticketWidth === '58mm' ? '58mm' : '80mm'}">
   <div class="head">
     ${cfg?.logoUrl ? `<div style="text-align:center;margin-bottom:6px;"><img src="${esc(cfg.logoUrl)}" style="max-height:48px;max-width:140px;display:inline-block;filter:grayscale(100%);" alt="Logo" /></div>` : ''}
     <div class="brand">${esc(cfg?.razonSocial ?? "D'ENZOZ")}</div>
@@ -80,7 +80,7 @@ export function cashCloseTicketHtml(
   const diff = session.difference ?? 0;
   const diffLabel = diff === 0 ? 'CUADRADO' : diff > 0 ? `SOBRANTE +${diff.toFixed(2)}` : `FALTANTE ${diff.toFixed(2)}`;
 
-  return `<div data-ticket-width="${cfg?.ticketWidth ?? '80mm'}">
+  return `<div data-ticket-width="${cfg?.ticketWidth === '58mm' ? '58mm' : '80mm'}">
   <div class="head">
     <div class="brand">${esc(cfg?.razonSocial ?? "D'ENZOZ")}</div>
     ${cfg?.ruc ? `<div>RUC ${esc(cfg.ruc)}</div>` : ''}

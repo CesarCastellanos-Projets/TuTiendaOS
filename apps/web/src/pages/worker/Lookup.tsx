@@ -1,3 +1,4 @@
+import { availableBase, availablePresentation } from '../../lib/stock-availability';
 import { useEffect, useState } from 'react';
 import { Camera, PackageX, Search, TriangleAlert, WifiOff, ScanLine, X, AlertCircle, Layers } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
@@ -186,7 +187,7 @@ export function WorkerLookup() {
           ) : (
             <ul className="divide-y divide-slate-100 max-h-96 overflow-y-auto">
               {results.map((p) => (
-                <li key={p.productId}>
+                <li key={p.searchKey}>
                   <button
                     onClick={() => {
                       setSelected(p);
@@ -206,7 +207,7 @@ export function WorkerLookup() {
                     </div>
                     <div className="flex items-center gap-2.5 shrink-0">
                       <span className={`badge text-[10px] font-bold ${p.quantity <= 5 ? 'bg-red-50 text-critical border border-red-200' : 'bg-emerald-50 text-success border border-emerald-200'}`}>
-                        {p.quantity} un.
+                        {p.quantity} {p.presentationUnit ?? 'UN'}
                       </span>
                       <span className="price-tag font-mono text-sm font-extrabold text-slate-900">
                         {money(p.salePrice)}
@@ -230,7 +231,7 @@ export function WorkerLookup() {
 
       {selected && selected.productId !== '' && (
         <ProductCard
-          p={selected}
+          p={catalog.find((stock) => stock.productId === selected.productId) ?? { ...selected, quantity: 0 }}
           product={products.find((prod) => prod.id === selected.productId)}
           onClose={() => setSelected(null)}
         />
@@ -373,8 +374,7 @@ function ProductCard({
                 {presentations.map((pres, idx) => {
                   const factor = pres.factor || 1;
                   const presentationId = pres.id || `legacy-${idx + 1}`;
-                  const cajasDisponibles = p.presentationQuantities?.[presentationId] ?? 0;
-                  const sobrante = p.baseQuantity ?? p.quantity;
+                  const disponible = availablePresentation(p, presentations, pres);
 
                   return (
                     <div
@@ -396,8 +396,8 @@ function ProductCard({
                           </span>
                         )}
                         <span className="text-[11px] text-emerald-700 font-medium block mt-1">
-                          Cerradas: <strong>{cajasDisponibles} {pres.description || pres.unit}</strong>
-                          {sobrante > 0 ? ` · Sueltas: ${sobrante} ${baseUnit}` : ''}
+                          Disponible: <strong>{disponible} {pres.description || pres.unit}</strong>
+                          {pres.autoUnpackEnabled ? ` · Saldo compartido: ${availableBase(p, presentations)} ${baseUnit}` : ' · Solo cajas cerradas'}
                         </span>
                       </div>
                       <div className="text-right shrink-0">

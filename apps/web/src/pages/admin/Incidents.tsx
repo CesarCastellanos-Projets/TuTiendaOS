@@ -5,6 +5,7 @@ import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import type { Incident, IncidentStatus } from '../../types';
 import { fmtDateTime } from '../../lib/utils';
+import { IncidentPhoto } from '../../components/IncidentPhoto';
 import { Modal } from '../../components/ui/Modal';
 import { EmptyState, FlashBar, useFlash } from '../../components/ui/Feedback';
 
@@ -84,6 +85,7 @@ export function IncidentsAdminPage() {
                 )}
               </div>
               <p className="mt-2 text-sm">{i.description}</p>
+              <IncidentPhoto path={i.photoPath} />
               {i.resolutionNote && (
                 <p className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-success">
                   Resolución: {i.resolutionNote} — {i.resolvedByName}

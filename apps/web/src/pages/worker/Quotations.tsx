@@ -1,13 +1,14 @@
+import { remainingPresentation, initialSaleQuantity, saleQuantityError } from '../../lib/stock-availability';
 import { useState, useMemo, useEffect } from 'react';
 import {
-  doc,
   getDocs,
   limit,
   orderBy,
   query,
-  setDoc,
   where
 } from 'firebase/firestore';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '../../lib/firebase';
 import { onSnapshot } from '../../lib/firestore-listener';
 import {
   Calculator,
@@ -63,7 +64,7 @@ export function WorkerQuotations() {
   const company = useCompany();
   const storeId = profile.storeId || 'tienda-principal';
 
-  const { items: catalog } = useStoreCatalog(storeId);
+  const { items: catalog, products } = useStoreCatalog(storeId);
   const searchIn = useCatalogSearch(catalog);
   const { msg, flash } = useFlash();
 
@@ -71,7 +72,21 @@ export function WorkerQuotations() {
   const [tab, setTab] = useState<'crear' | 'historial'>('crear');
 
   // Estado de la cotización actual
-  const [items, setItems] = useState<QuotationItem[]>([]);
+  const [draftItems, setItems] = useState<QuotationItem[]>([]);
+  const items = useMemo(() => {
+    const allocated: QuotationItem[] = [];
+    return draftItems.map((item) => {
+      const product = products.find((value) => value.id === item.productId);
+      const presentation = (product?.presentations ?? []).find((value, index) => (value.id || `legacy-${index + 1}`) === item.presentationId);
+      const factor = presentation?.factor ?? 1;
+      const availableQty = remainingPresentation(catalog.find((stock) => stock.productId === item.productId), product, allocated, item.productId, item.presentationId);
+      const isAvailable = Boolean(product) && (!item.presentationId || Boolean(presentation))
+        && !saleQuantityError(item.qty, presentation, product?.unit) && item.qty <= availableQty;
+      if (isAvailable) allocated.push(item);
+      const unitPrice = presentation?.salePrice ?? product?.salePrice ?? item.unitPrice;
+      return { ...item, factor, availableQty, isAvailable, unitPrice, total: round2(item.qty * unitPrice) };
+    });
+  }, [draftItems, catalog, products]);
   const [clientName, setClientName] = useState('');
   const [clientPhone, setClientPhone] = useState('');
   const [note, setNote] = useState('');
@@ -127,10 +142,11 @@ export function WorkerQuotations() {
   // Agregar producto a la lista
   const addItem = (p: Omit<SearchableCatalogItem, 'searchKey'> & { searchKey?: string }) => {
     setTerm('');
+    const quantity = initialSaleQuantity(p.quantity, p.presentationId ? { factor: p.factor ?? 1, autoUnpackEnabled: p.autoUnpackEnabled, allowFractionalSale: p.allowFractionalSale, fractionStep: p.fractionStep } : null, p.presentationUnit) || 1;
     setItems((prev) => {
       const existing = prev.find((i) => i.productId === p.productId && i.presentationId === p.presentationId);
       if (existing) {
-        const nextQty = existing.qty + 1;
+        const nextQty = Math.round((existing.qty + quantity) * 1000) / 1000;
         return prev.map((i) =>
           i.productId === p.productId && i.presentationId === p.presentationId
             ? {
@@ -153,8 +169,8 @@ export function WorkerQuotations() {
           barcode: p.barcode || '',
           unit: p.presentationUnit || p.unit || 'UN',
           unitPrice: p.salePrice,
-          qty: 1,
-          total: round2(p.salePrice),
+          qty: quantity,
+          total: round2(quantity * p.salePrice),
           availableQty: p.quantity,
           isAvailable: p.quantity >= 1
         }
@@ -164,10 +180,7 @@ export function WorkerQuotations() {
 
   // Modificar cantidad
   const updateQty = (lineKey: string, newQty: number) => {
-    if (newQty <= 0) {
-      removeItem(lineKey);
-      return;
-    }
+    if (!Number.isFinite(newQty) || newQty < 0) return;
     setItems((prev) =>
       prev.map((i) =>
         quotationLineKey(i) === lineKey
@@ -195,10 +208,7 @@ export function WorkerQuotations() {
 
     for (const item of items) {
       all += item.total;
-      if (item.availableQty > 0) {
-        const coveredQty = Math.min(item.qty, item.availableQty);
-        avail += coveredQty * item.unitPrice;
-      }
+      if (item.isAvailable) avail += item.total;
       if (item.isAvailable) {
         avCount += 1;
       }
@@ -252,46 +262,20 @@ export function WorkerQuotations() {
       flash('Error: Agrega al menos un producto');
       return null;
     }
+    for (const item of items) {
+      const product = products.find((value) => value.id === item.productId);
+      const presentation = (product?.presentations ?? []).find((value, index) => (value.id || `legacy-${index + 1}`) === item.presentationId);
+      const validation = saleQuantityError(item.qty, presentation, product?.unit);
+      if (validation || (item.presentationId && !presentation)) { flash(validation ?? 'Presentación inválida.'); return null; }
+    }
     setBusy(true);
     try {
-      const quoteCode = `COT-${Date.now().toString().slice(-6)}`;
-      const storeName = catalog[0]?.locationName ?? 'Tienda Principal';
-      const quoteRef = doc(tenantCollection('quotations'));
-
-      const cleanItems: QuotationItem[] = items.map((i) => ({
-        productId: i.productId,
-        presentationId: i.presentationId,
-        presentationLabel: i.presentationLabel,
-        factor: i.factor ?? 1,
-        name: i.name,
-        barcode: i.barcode || '',
-        unit: i.unit || 'UN',
-        unitPrice: Number(i.unitPrice.toFixed(2)),
-        qty: Math.max(1, Math.trunc(i.qty)),
-        total: Number(i.total.toFixed(2)),
-        availableQty: i.availableQty,
-        isAvailable: Boolean(i.isAvailable)
-      }));
-
-      const quoteData: Quotation = {
-        tenantId: profile.tenantId,
-        id: quoteRef.id,
-        code: quoteCode,
-        clientName: clientName.trim() || 'Cliente Cotización',
-        clientPhone: clientPhone.trim() || '',
-        storeId,
-        storeName,
-        items: cleanItems,
-        totalAll: Number(totalAll.toFixed(2)),
-        totalAvailable: Number(totalAvailable.toFixed(2)),
-        note: note.trim() || '',
-        createdBy: user.uid,
-        createdByName: profile?.displayName || user.displayName || user.email || 'Trabajador',
-        status: 'pendiente',
-        createdAt: Date.now()
-      };
-
-      await setDoc(quoteRef, quoteData);
+      const response = await httpsCallable<Record<string, unknown>, Quotation>(functions, 'createQuotationRecord')({
+        storeId, items: items.map((i) => ({ productId: i.productId, presentationId: i.presentationId ?? null, qty: i.qty })),
+        clientName: clientName.trim(), clientPhone: clientPhone.trim(), note: note.trim()
+      });
+      setItems(response.data.items);
+      const quoteCode = response.data.code;
       flash(`Cotización ${quoteCode} guardada exitosamente`);
       return quoteCode;
     } catch (err) {
@@ -814,10 +798,11 @@ export function WorkerQuotations() {
                         </button>
                         <input
                           type="number"
-                          min={1}
+                          min={0.001}
+                          step={0.001}
                           value={item.qty}
                           onChange={(e) =>
-                            updateQty(quotationLineKey(item), Math.max(1, Math.trunc(Number(e.target.value) || 1)))
+                            updateQty(quotationLineKey(item), Number(e.target.value))
                           }
                           className="field !h-7 w-12 !p-0 text-center font-mono text-xs font-bold"
                         />

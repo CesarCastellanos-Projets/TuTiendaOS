@@ -17,6 +17,7 @@ interface SaleInput {
   storeName: string;
   profile: UserProfile;
   uid: string;
+  requestId: string;
   clientDoc: Sale['clientDoc'];
   items: SaleItem[];
   paymentMethod: Sale['paymentMethod'];
@@ -28,17 +29,51 @@ interface SaleInput {
   type: 'boleta' | 'factura' | 'nota';
 }
 
+export function pendingSaleKey(tenantId: string, uid: string, storeId: string): string {
+  return `denzoz_pending_sale_v1_${tenantId}_${uid}_${storeId}`;
+}
+
+export function hasPendingSale(tenantId: string, uid: string, storeId: string): boolean {
+  try { return localStorage.getItem(pendingSaleKey(tenantId, uid, storeId)) !== null; }
+  catch { return false; }
+}
+
+function definitiveFailure(error: unknown): boolean {
+  const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+  return ['functions/invalid-argument', 'functions/failed-precondition', 'functions/resource-exhausted'].includes(code);
+}
+
+export async function resumePendingSale(tenantId: string, uid: string, storeId: string): Promise<(Sale & { id: string }) | null> {
+  const key = pendingSaleKey(tenantId, uid, storeId);
+  const requestId = localStorage.getItem(key);
+  if (!requestId) return null;
+  try {
+    const response = await httpsCallable<{ requestId: string }, CreateSaleResult | { cancelled: true }>(functions, 'resumeSaleRecord')({ requestId });
+    localStorage.removeItem(key);
+    return 'cancelled' in response.data ? null : { ...response.data.sale, id: response.data.id };
+  } catch (error) {
+    if (definitiveFailure(error)) localStorage.removeItem(key);
+    throw error;
+  }
+}
+
 interface CreateSaleResult {
   id: string;
   sale: Sale;
 }
 
 export async function createSale(input: SaleInput): Promise<Sale & { id: string }> {
+  const key = pendingSaleKey(input.profile.tenantId, input.uid, input.storeId);
+  if (localStorage.getItem(key)) throw new Error('Resuelve el cobro pendiente antes de iniciar otra venta.');
+  const requestId = input.requestId;
+  localStorage.setItem(key, requestId);
   const callable = httpsCallable<
-    Omit<SaleInput, 'company' | 'profile' | 'uid' | 'storeName'>,
+    Omit<SaleInput, 'company' | 'profile' | 'uid' | 'storeName'> & { requestId: string },
     CreateSaleResult
   >(functions, 'createSaleRecord');
-  const response = await callable({
+  try {
+    const response = await callable({
+    requestId,
     storeId: input.storeId,
     clientDoc: input.clientDoc,
     items: input.items,
@@ -50,7 +85,12 @@ export async function createSale(input: SaleInput): Promise<Sale & { id: string 
     cashSessionId: input.cashSessionId,
     type: input.type
   });
-  return { ...response.data.sale, id: response.data.id };
+    localStorage.removeItem(key);
+    return { ...response.data.sale, id: response.data.id };
+  } catch (error) {
+    if (definitiveFailure(error)) localStorage.removeItem(key);
+    throw error;
+  }
 }
 
 export function paginatedSales(storeId: string, pageSize = 25) {

@@ -6,6 +6,8 @@ import { db } from '../../lib/firebase';
 import { useAuth } from '../../lib/auth';
 import { tenantCollection } from '../../lib/tenant-firestore';
 import type { NewUserPayload, PosStoreAccess, Role, Store, UserProfile } from '../../types';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '../../lib/firebase';
 import { createSystemUser } from '../../lib/admin-users';
 import { clean } from '../../lib/utils';
 import { Modal } from '../../components/ui/Modal';
@@ -24,6 +26,7 @@ export function UsersPage() {
   const [busy, setBusy] = useState(false);
   const [newRole, setNewRole] = useState<Role | ''>('');
   const [posStoreAccess, setPosStoreAccess] = useState<PosStoreAccess>('assigned');
+  const [calendarAccess, setCalendarAccess] = useState(false);
   const { msg, flash } = useFlash();
   const tenantId = useAuth((state) => state.profile?.tenantId);
 
@@ -51,7 +54,8 @@ export function UsersPage() {
       displayName: clean(fd.get('displayName')),
       role,
       storeId: role === 'admin' || storeAccess === 'all' ? null : clean(fd.get('storeId')) || null,
-      storeAccess
+      storeAccess,
+      canManageCalendar: role === 'admin' || (role === 'pos' && calendarAccess)
     };
     if (payload.password.length < 6) {
       flash('Error: la clave debe tener al menos 6 caracteres');
@@ -67,6 +71,7 @@ export function UsersPage() {
       setCreating(false);
       setNewRole('');
       setPosStoreAccess('assigned');
+      setCalendarAccess(false);
       flash('Usuario creado');
     } catch (err) {
       flash(`Error: ${err instanceof Error ? err.message : 'no se pudo crear'}`);
@@ -101,6 +106,7 @@ export function UsersPage() {
               <th className="th">Correo</th>
               <th className="th">Rol</th>
               <th className="th">Tienda</th>
+              <th className="th">Calendario</th>
               <th className="th text-right">Estado</th>
             </tr>
           </thead>
@@ -111,6 +117,11 @@ export function UsersPage() {
                 <td className="td text-sm">{u.email}</td>
                 <td className="td">{u.role === 'pos' && u.storeAccess === 'all' ? 'Cajero POS multi-tienda' : ROLE_LABEL[u.role]}</td>
                 <td className="td">{u.role === 'pos' && u.storeAccess === 'all' ? 'Elige dentro del POS' : stores.find((s) => s.id === u.storeId)?.name ?? '—'}</td>
+                <td className="td">{u.role === 'admin' ? 'Incluido' : u.role === 'pos' ? <button className="btn-ghost text-xs" onClick={async () => {
+                  const enabled = !(u.canManageCalendar === true || (u.canManageCalendar === undefined && u.storeAccess === 'all'));
+                  try { await httpsCallable(functions, 'setCalendarPermission')({ uid: u.id, enabled }); flash(enabled ? 'Acceso al calendario activado' : 'Acceso al calendario retirado'); }
+                  catch (error) { flash(`Error: ${error instanceof Error ? error.message : 'no se pudo actualizar'}`); }
+                }}>{u.canManageCalendar === true || (u.canManageCalendar === undefined && u.storeAccess === 'all') ? 'Permitido' : 'Sin acceso'}</button> : '—'}</td>
                 <td className="td text-right">
                   <button onClick={() => void toggleActive(u)} className={`badge ${u.active ? 'bg-emerald-50 text-success' : 'bg-slate-100 text-slate-500'}`}>
                     {u.active ? 'activo' : 'inactivo'}
@@ -129,6 +140,7 @@ export function UsersPage() {
           setCreating(false);
           setNewRole('');
           setPosStoreAccess('assigned');
+      setCalendarAccess(false);
         }}
       >
         <form onSubmit={create} className="space-y-3">
@@ -153,6 +165,7 @@ export function UsersPage() {
               onChange={(event) => {
                 setNewRole(event.target.value as Role | '');
                 setPosStoreAccess('assigned');
+      setCalendarAccess(false);
               }}
               className="field"
             >
@@ -167,7 +180,7 @@ export function UsersPage() {
               <label className="label">Tipo de acceso POS *</label>
               <select
                 value={posStoreAccess}
-                onChange={(event) => setPosStoreAccess(event.target.value as PosStoreAccess)}
+                onChange={(event) => { setPosStoreAccess(event.target.value as PosStoreAccess); setCalendarAccess(event.target.value === 'all'); }}
                 className="field"
               >
                 <option value="assigned">POS fijo — trabaja en una sola tienda</option>
@@ -175,6 +188,7 @@ export function UsersPage() {
               </select>
             </div>
           )}
+          {newRole === 'pos' && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={calendarAccess} onChange={(event) => setCalendarAccess(event.target.checked)} />Administrar calendario y recibir recordatorios de la empresa</label>}
           {(newRole === 'trabajador' || (newRole === 'pos' && posStoreAccess === 'assigned')) && (
             <div>
               <label className="label">Tienda asignada *</label>

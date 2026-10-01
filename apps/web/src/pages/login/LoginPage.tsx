@@ -24,7 +24,10 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  if (!loading && user && profile) return <Navigate to={homeFor(profile.role)} replace />;
+  if (!loading && user && profile) {
+    const calendar = new URLSearchParams(window.location.search).get('calendar') === '1' && profile.canManageCalendar;
+    return <Navigate to={calendar ? profile.role === 'admin' ? '/admin/calendario' : '/pos/calendario' : homeFor(profile.role)} replace />;
+  }
 
   const authenticate = async (targetEmail: string, targetPass: string) => {
     setBusy(true);

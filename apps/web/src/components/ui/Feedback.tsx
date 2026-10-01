@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 
 export function useFlash(): { msg: string | null; flash: (m: string) => void } {
   const [msg, setMsg] = useState<string | null>(null);
@@ -7,10 +7,8 @@ export function useFlash(): { msg: string | null; flash: (m: string) => void } {
     const t = setTimeout(() => setMsg(null), 3500);
     return () => clearTimeout(t);
   }, [msg]);
-  return {
-    msg,
-    flash: (m: string) => setMsg(m)
-  };
+  const flash = useCallback((m: string) => setMsg(m), []);
+  return { msg, flash };
 }
 
 export function FlashBar({ msg }: { msg: string | null }): ReactNode {

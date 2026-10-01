@@ -8,6 +8,9 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
       registerType: 'autoUpdate',
       includeAssets: ['icon.svg'],
       manifest: {
@@ -24,16 +27,7 @@ export default defineConfig({
           { src: '/icon-maskable.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' }
         ]
       },
-      workbox: {
-        navigateFallbackDenylist: [/^\/api/],
-        runtimeCaching: [
-          {
-            urlPattern: ({ request }) => request.destination === 'font',
-            handler: 'CacheFirst',
-            options: { cacheName: 'fonts', expiration: { maxEntries: 10, maxAgeSeconds: 31536000 } }
-          }
-        ]
-      }
+      injectManifest: { globPatterns: ['**/*.{js,css,html,svg,woff2}'] }
     })
   ],
   build: {
