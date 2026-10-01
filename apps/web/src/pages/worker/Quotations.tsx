@@ -1,3 +1,6 @@
+import { EditableNumberInput } from '../../components/ui/EditableNumberInput';
+import { createQuotationPdf } from '../../lib/quotation-pdf';
+import { canShareQuotation, downloadQuotation, isMobileShareDevice, openQuotationWhatsApp, quotationPhone } from '../../lib/share-quotation';
 import { remainingPresentation, initialSaleQuantity, saleQuantityError } from '../../lib/stock-availability';
 import { useState, useMemo, useEffect } from 'react';
 import {
@@ -100,6 +103,24 @@ export function WorkerQuotations() {
 
   // Modal WhatsApp
   const [whatsappModal, setWhatsappModal] = useState(false);
+  const [quotationPdf, setQuotationPdf] = useState<{ file: File; url: string } | null>(null);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const [sharingPdf, setSharingPdf] = useState(false);
+  const [shareNotice, setShareNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!whatsappModal || !company) { setQuotationPdf(null); return; }
+    let active = true;
+    let url: string | null = null;
+    setQuotationPdf(null); setPdfError(null); setShareNotice(null);
+    void createQuotationPdf({ items, clientName, storeName: catalog[0]?.locationName ?? 'Principal', note, createdAt: Date.now() }, company)
+      .then((file) => {
+        if (!active) return;
+        url = URL.createObjectURL(file);
+        setQuotationPdf({ file, url });
+      })
+      .catch((error: unknown) => { if (active) setPdfError(error instanceof Error ? error.message : 'No se pudo crear el PDF.'); });
+    return () => { active = false; if (url) URL.revokeObjectURL(url); };
+  }, [whatsappModal, company, items, clientName, catalog, note]);
 
   // Historial de cotizaciones
   const [savedQuotes, setSavedQuotes] = useState<Quotation[]>([]);
@@ -288,42 +309,24 @@ export function WorkerQuotations() {
     }
   };
 
-  // Generar texto para WhatsApp
-  const generateWhatsAppMessage = () => {
-    const lines = items.map((i) => {
-      const statusTag = i.isAvailable
-        ? '✓ Disponible'
-        : i.availableQty > 0
-        ? `(Solo hay ${i.availableQty} en tienda)`
-        : '✕ Sin stock hoy';
-      return `• *${i.qty}x* ${i.name} — S/ ${i.total.toFixed(2)} _[${statusTag}]_`;
-    });
-
-    const companyName = company?.razonSocial || "D'ENZOZ";
-
-    return (
-      `*COTIZACIÓN — ${companyName}*\n` +
-      ` *Fecha:* ${new Date().toLocaleDateString('es-PE')}\n` +
-      (clientName ? ` *Cliente:* ${clientName}\n` : '') +
-      ` *Tienda:* ${catalog[0]?.locationName ?? 'Principal'}\n\n` +
-      `*DETALLE DE PRODUCTOS:* \n` +
-      lines.join('\n') +
-      `\n\n───────────────────\n` +
-      ` *TOTAL ESTIMADO (Lista completa):* S/ ${totalAll.toFixed(2)}\n` +
-      ` *TOTAL DISPONIBLE HOY EN TIENDA:* S/ ${totalAvailable.toFixed(2)}\n\n` +
-      `¡Los precios están sujetos a disponibilidad! Gracias por su preferencia.`
-    );
+  const sharePdf = async () => {
+    if (!quotationPdf) return;
+    if (!canShareQuotation(quotationPdf.file)) { openPdfWhatsApp(); return; }
+    setSharingPdf(true);
+    try {
+      await navigator.share({ files: [quotationPdf.file], title: 'Cotización en PDF' });
+    } catch (error) {
+      if (!(error instanceof Error && error.name === 'AbortError')) setShareNotice('No se pudo compartir el archivo. Puedes descargarlo y adjuntarlo en WhatsApp.');
+    } finally { setSharingPdf(false); }
   };
-
-  // Abrir WhatsApp con el mensaje
-  const sendWhatsApp = () => {
-    const text = encodeURIComponent(generateWhatsAppMessage());
-    const cleanPhone = clientPhone.replace(/\D/g, '');
-    const url = cleanPhone.length >= 9
-      ? `https://wa.me/51${cleanPhone.slice(-9)}?text=${text}`
-      : `https://wa.me/?text=${text}`;
-    window.open(url, '_blank');
-    setWhatsappModal(false);
+  const openPdfWhatsApp = (desktopApp = false) => {
+    if (!quotationPdf) return;
+    try {
+      quotationPhone(clientPhone);
+      downloadQuotation(quotationPdf.file);
+      const opened = openQuotationWhatsApp(clientPhone, desktopApp);
+      setShareNotice(opened ? 'PDF descargado. Adjunta ese archivo como documento en el chat de WhatsApp.' : 'PDF descargado. El navegador bloqueó la ventana; abre WhatsApp y adjunta el archivo.');
+    } catch (error) { setShareNotice(error instanceof Error ? error.message : 'No se pudo abrir WhatsApp.'); }
   };
 
   // Imprimir cotización térmica / papel
@@ -796,7 +799,7 @@ export function WorkerQuotations() {
                         >
                           <Minus size={13} />
                         </button>
-                        <input
+                        <EditableNumberInput
                           type="number"
                           min={0.001}
                           step={0.001}
@@ -829,7 +832,7 @@ export function WorkerQuotations() {
                   className="btn-primary !min-h-12 bg-emerald-600 hover:bg-emerald-700 border-none flex items-center justify-center gap-2 text-xs font-extrabold shadow-md shadow-emerald-600/20"
                 >
                   <Share2 size={16} />
-                  <span>Enviar WhatsApp</span>
+                  <span>Compartir PDF</span>
                 </button>
                 <button
                   onClick={printQuotation}
@@ -923,44 +926,32 @@ export function WorkerQuotations() {
       {/* ─── MODAL: ENVIAR POR WHATSAPP ─────────────────────────────────────── */}
       <Modal
         open={whatsappModal}
-        title="Enviar Cotización por WhatsApp"
+        title="Compartir cotización en PDF"
         onClose={() => setWhatsappModal(false)}
       >
         <div className="space-y-4">
-          <p className="text-xs text-slate-500">
-            Ingresa el número de WhatsApp del cliente o ábrelo directamente para elegir el contacto:
-          </p>
-
-          <div className="space-y-2">
-            <label className="text-xs font-bold text-slate-700">Número de WhatsApp</label>
-            <input
-              type="tel"
-              value={clientPhone}
-              onChange={(e) => setClientPhone(e.target.value)}
-              placeholder="Ej: 987654321"
-              className="field font-mono font-bold text-base"
-            />
+          <p className="text-sm text-slate-500">La cotización se comparte como un PDF con el logo y los datos de la empresa. En el selector de aplicaciones, elige WhatsApp y el contacto.</p>
+          <label className="label">Número de WhatsApp (opcional)
+            <input type="tel" value={clientPhone} onChange={(e) => setClientPhone(e.target.value)} placeholder="987654321 o número con código de país" className="field mt-1 font-mono" />
+          </label>
+          {pdfError ? <p role="alert" className="text-sm text-critical">{pdfError}</p> : quotationPdf ? (
+            <div className="space-y-2">
+              <p className="break-all text-sm font-semibold">{quotationPdf.file.name}</p>
+              <iframe title="Vista previa de la cotización PDF" src={quotationPdf.url} className="h-72 w-full rounded-xl border border-slate-200" />
+              <a href={quotationPdf.url} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-primary">Ver PDF completo</a>
+            </div>
+          ) : <p role="status" className="text-sm text-slate-500">Preparando PDF…</p>}
+          {shareNotice && <p role="status" className="text-sm text-slate-700">{shareNotice}</p>}
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <button disabled={!quotationPdf || sharingPdf} onClick={() => void sharePdf()} className="btn-primary"><Share2 size={15} />{sharingPdf ? 'Compartiendo…' : 'Compartir PDF'}</button>
+            <button disabled={!quotationPdf} onClick={() => { if (quotationPdf) downloadQuotation(quotationPdf.file); }} className="btn-ghost">Descargar PDF</button>
+            {!isMobileShareDevice() && <>
+              <button disabled={!quotationPdf || sharingPdf} onClick={() => openPdfWhatsApp()} className="btn-ghost">WhatsApp Web</button>
+              <button disabled={!quotationPdf || sharingPdf} onClick={() => openPdfWhatsApp(true)} className="btn-ghost">WhatsApp para PC</button>
+            </>}
           </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-600 font-mono whitespace-pre-wrap max-h-48 overflow-y-auto">
-            {generateWhatsAppMessage()}
-          </div>
-
-          <div className="flex gap-2">
-            <button
-              onClick={() => setWhatsappModal(false)}
-              className="btn-ghost flex-1 text-xs font-bold"
-            >
-              Cancelar
-            </button>
-            <button
-              onClick={sendWhatsApp}
-              className="btn-primary flex-1 bg-emerald-600 hover:bg-emerald-700 border-none text-xs font-extrabold flex items-center justify-center gap-1.5"
-            >
-              <Share2 size={15} />
-              <span>Abrir WhatsApp</span>
-            </button>
-          </div>
+          {!isMobileShareDevice() && <p className="text-xs text-slate-500">En WhatsApp Web o para PC, adjunta el PDF descargado. Se reutiliza la ventana abierta desde este sistema cuando el navegador lo permite. Usa la opción para PC si tienes WhatsApp instalado.</p>}
+          <button onClick={() => setWhatsappModal(false)} className="btn-ghost w-full">Cerrar</button>
         </div>
       </Modal>
     </div>

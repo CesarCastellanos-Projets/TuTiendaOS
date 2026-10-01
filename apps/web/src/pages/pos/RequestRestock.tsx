@@ -1,3 +1,4 @@
+import { EditableNumberInput } from '../../components/ui/EditableNumberInput';
 import { availableBase, baseQuantityStep } from '../../lib/stock-availability';
 import { useStoreCatalog } from '../../hooks/useStoreCatalog';
 import { useMemo, useState } from 'react';
@@ -162,7 +163,7 @@ export function RequestRestock() {
               <span className="min-w-0 flex-1 truncate text-sm">{l.name}<small className="block text-xs text-slate-500">{l.presentationLabel}</small></span>
               <span className="text-xs text-slate-500">hay {l.currentQty}</span>
               <label className="sr-only" htmlFor={`req-${l.productId}-${l.presentationId ?? 'base'}`}>Cantidad solicitada</label>
-              <input
+              <EditableNumberInput
                 id={`req-${l.productId}-${l.presentationId ?? 'base'}`}
                 type="number"
                 min={0.001}

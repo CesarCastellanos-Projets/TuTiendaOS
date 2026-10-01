@@ -58,7 +58,7 @@ export function IngressPage() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="mx-auto w-full max-w-2xl space-y-4">
       <h1 className="font-display text-2xl uppercase tracking-wide">Ingreso de mercadería</h1>
 
       <div className="card max-w-2xl space-y-4 p-4">

@@ -1,3 +1,4 @@
+import { EditableNumberInput } from '../../components/ui/EditableNumberInput';
 import { useEffect, useState } from 'react';
 import { query, where, limit } from 'firebase/firestore';
 import { onSnapshot } from '../../lib/firestore-listener';
@@ -193,7 +194,7 @@ export function ReceivingPage() {
                     <label className="text-xs font-bold text-slate-600">
                       {item.presentationId ? 'Presentaciones:' : 'Unidades:'}
                     </label>
-                    <input
+                    <EditableNumberInput
                       type="number"
                       min={0}
                       max={item.qtySent}

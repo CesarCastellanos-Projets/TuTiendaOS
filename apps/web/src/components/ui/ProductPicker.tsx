@@ -1,3 +1,4 @@
+import { EditableNumberInput } from './EditableNumberInput';
 import { useMemo, useState } from 'react';
 import { useProductsCatalog } from '../../hooks/useProductsCatalog';
 import type { Product, ProductPresentation } from '../../types';
@@ -187,7 +188,7 @@ export function ProductLines({
                   >
                     {l.presentationId ? 'Presentaciones' : 'Unidades'}
                   </label>
-                  <input
+                  <EditableNumberInput
                     id={`qty-${l.productId}-${l.presentationId ?? 'base'}`}
                     type="number"
                     min={allowZero ? 0 : 0.001}

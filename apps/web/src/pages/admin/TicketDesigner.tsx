@@ -1,3 +1,4 @@
+import { EditableNumberInput } from '../../components/ui/EditableNumberInput';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { runTransaction } from 'firebase/firestore';
 import { Printer, Upload, Image, Trash2, Check } from 'lucide-react';
@@ -114,8 +115,8 @@ export function TicketDesignerPage() {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label className="label">Ancho de impresión<select className="field mt-1" value={draft.ticketWidth} onChange={(e) => update('ticketWidth', e.target.value as TicketDraft['ticketWidth'])}><option value="80mm">80 mm</option><option value="58mm">58 mm</option></select></label>
               <label className="label">Formato<select className="field mt-1" value={draft.ticketDesign.layout} onChange={(e) => updateDesign('layout', e.target.value as TicketDesign['layout'])}><option value="detailed">Tabla con columnas</option><option value="compact">Lista compacta</option></select></label>
-              <label className="label">Tamaño de texto<input className="field mt-1" type="number" min={9} max={14} step={1} value={draft.ticketDesign.fontSize} onChange={(e) => updateDesign('fontSize', Math.min(14, Math.max(9, Math.round(Number(e.target.value)) || 9)))} /></label>
-              <label className="label">Ancho del logo (px)<input className="field mt-1" type="number" min={40} max={180} step={1} value={draft.ticketDesign.logoWidth} onChange={(e) => updateDesign('logoWidth', Math.min(180, Math.max(40, Math.round(Number(e.target.value)) || 40)))} /></label>
+              <label className="label">Tamaño de texto<EditableNumberInput className="field mt-1" type="number" min={9} max={14} step={1} value={draft.ticketDesign.fontSize} onChange={(e) => updateDesign('fontSize', Math.min(14, Math.max(9, Math.round(Number(e.target.value)) || 9)))} /></label>
+              <label className="label">Ancho del logo (px)<EditableNumberInput className="field mt-1" type="number" min={40} max={180} step={1} value={draft.ticketDesign.logoWidth} onChange={(e) => updateDesign('logoWidth', Math.min(180, Math.max(40, Math.round(Number(e.target.value)) || 40)))} /></label>
               <label className="label">Alineación del encabezado<select className="field mt-1" value={draft.ticketDesign.headerAlign} onChange={(e) => updateDesign('headerAlign', e.target.value as TicketDesign['headerAlign'])}><option value="center">Centrado</option><option value="left">Izquierda</option></select></label>
             </div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">

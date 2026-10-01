@@ -1,3 +1,4 @@
+import { EditableNumberInput } from '../../components/ui/EditableNumberInput';
 import { availableBase, availablePresentation, needsStockReconciliation } from '../../lib/stock-availability';
 import { useMemo, useState, type FormEvent } from 'react';
 import { query, where, getDocs, limit, orderBy, startAfter, documentId, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
@@ -641,7 +642,7 @@ export function ProductsPage() {
                         </label>
                         <label className="text-[10px] font-bold uppercase text-slate-500">
                           Paso permitido
-                          <input type="number" min="0.001" max="0.999" step="0.001" disabled={!pres.autoUnpackEnabled || !pres.allowFractionalSale} value={pres.fractionStep ?? 0.5} onChange={(e) => updatePresentationRow(index, 'fractionStep', e.target.value)} className="field mt-1 !h-9 text-center text-xs" />
+                          <EditableNumberInput min="0.001" max="0.999" step="0.001" disabled={!pres.autoUnpackEnabled || !pres.allowFractionalSale} value={pres.fractionStep ?? 0.5} onChange={(e) => updatePresentationRow(index, 'fractionStep', e.target.value)} className="field mt-1 !h-9 text-center text-xs" />
                         </label>
                       </div>
                     </div>
