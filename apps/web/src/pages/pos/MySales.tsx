@@ -8,6 +8,7 @@ import { useCompany } from '../../hooks/useCompany';
 import type { Sale, SunatStatus } from '../../types';
 import { fmtDateTime, money } from '../../lib/utils';
 import { printTicket, ticketHtml } from '../../lib/print';
+import { PAYMENT_LABELS, salePayments } from '../../lib/payments';
 import { EmptyState, FlashBar, useFlash } from '../../components/ui/Feedback';
 
 export function MySales() {
@@ -302,8 +303,9 @@ function SaleDetailModal({
               </span>
               <p className="font-bold text-sm text-slate-800 uppercase mt-0.5 flex items-center gap-1.5">
                 <CreditCard size={14} className="text-primary" />
-                {sale.paymentMethod}
+                {PAYMENT_LABELS[sale.paymentMethod]}
               </p>
+              {salePayments(sale).map((part) => <p key={part.method} className="mt-1 text-xs text-slate-600">{PAYMENT_LABELS[part.method]}: {money(part.amount)}{part.operationNumber ? ` · Op. ${part.operationNumber}` : ''}</p>)}
               {sale.bankName && (
                 <span className="text-[11px] text-slate-500 block mt-0.5">
                   Banco: {sale.bankName}

@@ -26,6 +26,7 @@ self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') void self.skipWaiting();
 });
 self.addEventListener('notificationclick', (event) => {
+  const replenishment = event.notification.data?.kind === 'replenishment';
   event.notification.close();
   event.stopImmediatePropagation();
   event.waitUntil(
@@ -33,23 +34,24 @@ self.addEventListener('notificationclick', (event) => {
       const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       const client = clients.find((item) => new URL(item.url).origin === self.location.origin);
       if (client) {
-        if (new URL(client.url).pathname === '/login') await client.navigate('/?calendar=1');
-        else client.postMessage({ type: 'OPEN_CALENDAR' });
+        if (new URL(client.url).pathname === '/login') await client.navigate(replenishment ? '/?replenishment=1' : '/?calendar=1');
+        else client.postMessage({ type: replenishment ? 'OPEN_REPLENISHMENT' : 'OPEN_CALENDAR' });
         await client.focus();
-      } else await self.clients.openWindow('/?calendar=1');
+      } else await self.clients.openWindow(replenishment ? '/?replenishment=1' : '/?calendar=1');
     })()
   );
 });
 if ('PushManager' in self && 'Notification' in self && 'indexedDB' in self) {
   const messaging = getMessaging(initializeApp(firebaseConfig));
   onBackgroundMessage(messaging, async (payload) => {
-    if (payload.data?.kind !== 'calendar') return;
-    await self.registration.showNotification("D'ENZOZ · Calendario", {
-      body: 'Tienes un recordatorio pendiente. Abre el calendario para revisarlo.',
+    const replenishment = payload.data?.kind === 'replenishment';
+    if (payload.data?.kind !== 'calendar' && !replenishment) return;
+    await self.registration.showNotification(replenishment ? "D'ENZOZ · Reposiciones" : "D'ENZOZ · Calendario", {
+      body: replenishment ? 'Hay una solicitud de reposición pendiente de aprobación.' : 'Tienes un recordatorio pendiente. Abre el calendario para revisarlo.',
       icon: '/icon.svg',
       badge: '/icon.svg',
-      tag: payload.data.notificationId,
-      data: { kind: 'calendar' }
+      tag: `${payload.data?.kind}:${payload.data?.notificationId}`,
+      data: { kind: replenishment ? 'replenishment' : 'calendar' }
     });
   });
 }

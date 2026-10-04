@@ -28,8 +28,8 @@ function readProfile(user: User): Promise<UserProfile | null> {
       const profile = snapshot.data() as UserProfile;
       return {
         ...profile,
-        storeAccess: token.claims.posStoreAccess === 'all' ? 'all' : 'assigned',
-        canOverridePrices: token.claims.canOverridePrices === true,
+        storeAccess: profile.storeAccess === 'all' && token.claims.posStoreAccess === 'all' ? 'all' : 'assigned',
+        canOverridePrices: profile.storeAccess === 'all' && token.claims.posStoreAccess === 'all' && token.claims.canOverridePrices === true,
         canManageCalendar: profile.role === 'admin' || (profile.role === 'pos' && (profile.canManageCalendar === true || (profile.canManageCalendar === undefined && profile.storeAccess === 'all')))
       } satisfies UserProfile;
     })
@@ -88,7 +88,7 @@ export const useAuth = create<AuthState>((set) => {
             if (!active || currentRevision !== revision) return;
             const current = snapshot.data() as UserProfile | undefined;
             if (!current?.active || current.tenantId !== profile.tenantId || current.role !== profile.role) { void signOut(auth); return; }
-            set({ profile: { ...profile, ...current, canOverridePrices: profile.canOverridePrices,
+            set({ profile: { ...profile, ...current, storeAccess: profile.storeAccess === 'all' && current.storeAccess === 'all' ? 'all' : 'assigned', canOverridePrices: profile.canOverridePrices && current.storeAccess === 'all',
               canManageCalendar: current.role === 'admin' || (current.role === 'pos' && (current.canManageCalendar === true || (current.canManageCalendar === undefined && current.storeAccess === 'all'))) } });
           }, () => set((state) => ({ profile: state.profile ? { ...state.profile, canManageCalendar: false } : null })));
 

@@ -44,7 +44,7 @@ export async function requireActiveProfile(request: CallableRequest, checkInvent
     throw new HttpsError('permission-denied', 'La sesión no corresponde a la empresa asignada.');
   }
 
-  const storeAccess = data.role === 'pos' && request.auth.token.posStoreAccess === 'all'
+  const storeAccess = data.role === 'pos' && data.storeAccess === 'all' && request.auth.token.posStoreAccess === 'all'
     ? 'all'
     : 'assigned';
 
@@ -64,6 +64,14 @@ export async function requireAdmin(request: CallableRequest): Promise<ActiveProf
   const profile = await requireActiveProfile(request);
   if (profile.role !== 'admin') {
     throw new HttpsError('permission-denied', 'Solo el administrador puede realizar esta acción.');
+  }
+  return profile;
+}
+
+export async function requireReplenishmentApprover(request: CallableRequest): Promise<ActiveProfile> {
+  const profile = await requireActiveProfile(request);
+  if (profile.role !== 'admin' && !(profile.role === 'pos' && profile.storeAccess === 'all')) {
+    throw new HttpsError('permission-denied', 'Solo el administrador o un POS multitiendas puede aprobar reposiciones.');
   }
   return profile;
 }

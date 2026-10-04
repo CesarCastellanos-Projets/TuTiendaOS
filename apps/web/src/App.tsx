@@ -24,6 +24,9 @@ const ReceiptsPage = lazy(() => import('./pages/admin/Receipts').then((m) => ({ 
 const IncidentsAdminPage = lazy(() => import('./pages/admin/Incidents').then((m) => ({ default: m.IncidentsAdminPage })));
 
 const AdminCalendar = lazy(() => import('./pages/admin/Calendar').then((m) => ({ default: m.AdminCalendar })));
+const AdminStatistics = lazy(() => import('./pages/admin/Statistics').then((m) => ({ default: m.AdminStatistics })));
+const PosStatistics = lazy(() => import('./pages/pos/Statistics').then((m) => ({ default: m.PosStatistics })));
+const ApproveReplenishmentPage = lazy(() => import('./pages/pos/ApproveReplenishment').then((m) => ({ default: m.ApproveReplenishmentPage })));
 const PosCalendar = lazy(() => import('./pages/pos/Calendar').then((m) => ({ default: m.PosCalendar })));
 
 const PosSale = lazy(() => import('./pages/pos/Sale').then((m) => ({ default: m.PosSale })));
@@ -49,6 +52,7 @@ const router = createBrowserRouter([
         element: <AdminLayout />,
         children: [
           { index: true, element: <AdminDashboard /> },
+          { path: 'estadisticas', element: <AdminStatistics /> },
           { path: 'productos', element: <ProductsPage /> },
           { path: 'ubicaciones', element: <LocationsPage /> },
           { path: 'ingresos', element: <IngressPage /> },
@@ -75,6 +79,8 @@ const router = createBrowserRouter([
         element: <PosLayout />,
         children: [
           { index: true, element: <PosSale /> },
+          { path: 'estadisticas', element: <PosStatistics /> },
+          { path: 'aprobar-reposiciones', element: <ApproveReplenishmentPage /> },
           { path: 'recepcion', element: <ReceivingPage /> },
           { path: 'recepciones', element: <ReceivingPage /> },
           { path: 'caja', element: <CashPage /> },
@@ -108,7 +114,9 @@ const router = createBrowserRouter([
 function RootRedirect() {
   const profile = useAuth((s) => s.profile);
   const calendar = new URLSearchParams(window.location.search).get('calendar') === '1';
-  if (!profile) return <Navigate to={calendar ? '/login?calendar=1' : '/login'} replace />;
+  const replenishment = new URLSearchParams(window.location.search).get('replenishment') === '1';
+  if (!profile) return <Navigate to={calendar ? '/login?calendar=1' : replenishment ? '/login?replenishment=1' : '/login'} replace />;
+  if (replenishment && (profile.role === 'admin' || (profile.role === 'pos' && profile.storeAccess === 'all'))) return <Navigate to={profile.role === 'admin' ? '/admin/reposiciones' : '/pos/aprobar-reposiciones'} replace />;
   if (calendar && profile.canManageCalendar) return <Navigate to={profile.role === 'admin' ? '/admin/calendario' : '/pos/calendario'} replace />;
   return <Navigate to={homeFor(profile.role)} replace />;
 }

@@ -13,6 +13,8 @@ export { saveCustomUnits } from './company';
 export { saveCalendarEvent, completeCalendarEvent, setCalendarPermission, markCalendarNotification, registerCalendarDevice, unregisterCalendarDevice, sendCalendarReminders } from './calendar';
 export { saveCatalogProduct } from './catalog';
 export { openCashSession, closeCashSession, getCashSessionSummary } from './cash';
+export { getSalesStatistics, backfillSalesStatistics } from './statistics';
+export { notifyReplenishmentRequest } from './replenishment-notifications';
 export { createQuotationRecord, createReplenishmentRecord, discardQuotation } from './requests';
 export { resolveTransferShortage } from './shortages';
 export {

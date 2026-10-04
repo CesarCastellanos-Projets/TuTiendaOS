@@ -6,6 +6,7 @@ import { useAuth } from '../../lib/auth';
 import { db } from '../../lib/firebase';
 import { calendarDate, calendarReminderLabel, markCalendar } from '../../lib/calendar';
 import { disableCalendarPush, enableCalendarPush } from '../../lib/calendar-push';
+import { canReceiveNotifications } from '../../lib/notification-permissions';
 import type { CalendarNotification } from '../../types';
 import { Modal } from '../ui/Modal';
 
@@ -14,6 +15,7 @@ export function CalendarBell() {
   const uid = useAuth((state) => state.user?.uid);
   const allowed = profile?.canManageCalendar === true;
   const tenantId = profile?.tenantId;
+  const receivesNotifications = canReceiveNotifications(profile);
   const navigate = useNavigate();
   const [items, setItems] = useState<CalendarNotification[]>([]);
   const [open, setOpen] = useState(false);
@@ -28,7 +30,7 @@ export function CalendarBell() {
     setOpen(false);
     setError(null);
     if (!allowed || !tenantId || !uid) {
-      void disableCalendarPush().catch(() => undefined);
+      if (!receivesNotifications) void disableCalendarPush().catch(() => undefined);
       return;
     }
     if ('Notification' in window && Notification.permission === 'granted')
@@ -76,7 +78,7 @@ export function CalendarBell() {
       clearInterval(timer);
       clearInterval(refreshPush);
     };
-  }, [allowed, tenantId, uid]);
+  }, [allowed, tenantId, uid, receivesNotifications]);
   useEffect(() => {
     const showCalendar = () => {
       if (allowed) navigate(calendarPath);

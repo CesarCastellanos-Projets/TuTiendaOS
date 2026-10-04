@@ -2,6 +2,8 @@ import { onCall, HttpsError, type CallableRequest } from 'firebase-functions/v2/
 import { createHash } from 'node:crypto';
 import { db } from './firebase';
 import { requireActiveProfile } from './authz';
+import { normalizePayments, addCashSummary } from './payment-model';
+import { updateSalesStatistics } from './statistics-model';
 import { tenantCollection, tenantDoc } from './tenant';
 import {
   consumeSaleStock,
@@ -39,6 +41,7 @@ interface TrustedSaleItem {
   catalogUnitPrice: number;
   priceOverridden: boolean;
   baseUnitsSold: number;
+  baseUnit: string;
 }
 
 function positiveNumber(value: unknown, field: string): number {
@@ -121,7 +124,10 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
     throw new HttpsError('invalid-argument', 'Tipo de comprobante inválido.');
   }
   const paymentMethod = data.paymentMethod;
-  if (!['efectivo', 'transferencia', 'tarjeta', 'yape', 'plin', 'sip', 'otro'].includes(String(paymentMethod))) {
+  if (data.payments !== undefined && (!Array.isArray(data.payments) || data.payments.length > 7 || JSON.stringify(data.payments).length > 4000)) {
+    throw new HttpsError('invalid-argument', 'El desglose de pagos es inválido o demasiado grande.');
+  }
+  if (!['efectivo', 'transferencia', 'tarjeta', 'yape', 'plin', 'sip', 'otro', 'mixto'].includes(String(paymentMethod))) {
     throw new HttpsError('invalid-argument', 'Método de pago inválido.');
   }
 
@@ -169,13 +175,14 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
     || (type === 'factura' && clientDoc.tipo !== 'RUC')) {
     throw new HttpsError('invalid-argument', 'El tipo y número del documento no coinciden.');
   }
-  if (paymentMethod === 'transferencia' && !shortText(data.bankName, 80)) {
+  if (!data.payments && paymentMethod === 'transferencia' && !shortText(data.bankName, 80)) {
     throw new HttpsError('invalid-argument', 'Selecciona el banco de la transferencia.');
   }
   const fingerprint = createHash('sha256').update(JSON.stringify(canonical({
     storeId, items: requestedItems, type, paymentMethod, clientDoc,
     cashSessionId, paidAmount: data.paidAmount, bankName: data.bankName ?? null,
-    operationNumber: data.operationNumber ?? null
+    operationNumber: data.operationNumber ?? null,
+    ...(data.payments !== undefined ? { payments: data.payments } : {})
   }))).digest('hex');
   const saleRef = tenantCollection(profile.tenantId, 'sales').doc(
     createHash('sha256').update(`${profile.uid}:${requestId}`).digest('hex')
@@ -191,7 +198,7 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
       userId: profile.uid, storeId, fingerprint, createdAt: Date.now(),
       input: { requestId, storeId, items: requestedItems, type, paymentMethod, clientDoc,
         cashSessionId, paidAmount: data.paidAmount, bankName: data.bankName ?? null,
-        operationNumber: data.operationNumber ?? null }
+        operationNumber: data.operationNumber ?? null, ...(data.payments !== undefined ? { payments: data.payments } : {}) }
     });
   });
   const result = await db.runTransaction(async (tx) => {
@@ -274,6 +281,7 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
         catalogUnitPrice: round2(catalogPrice),
         priceOverridden: Math.abs(unitPrice - catalogPrice) >= 0.005,
         baseUnitsSold: consumed.baseUnitsSold,
+        baseUnit: String(product.unit ?? 'UN'),
         ...(presentationUnit ? { presentationUnit } : {}),
         ...(barcode ? { barcode } : {})
       };
@@ -286,12 +294,7 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
     if (type === 'boleta' && total >= Number(company.minBoletaSinDni ?? 700) && (clientDoc.tipo !== 'DNI' || !/^\d{8}$/.test(clientDoc.numero))) {
       throw new HttpsError('invalid-argument', 'La boleta requiere DNI para este importe.');
     }
-    const paidAmount = Number(data.paidAmount);
-    if (!Number.isFinite(paidAmount) || paidAmount < 0 || paidAmount > 100_000_000
-      || Math.abs(paidAmount - round2(paidAmount)) > 0.0000001
-      || (paymentMethod === 'efectivo' ? paidAmount < total : Math.abs(paidAmount - total) >= 0.005)) {
-      throw new HttpsError('invalid-argument', 'El monto pagado es inválido.');
-    }
+    const paymentData = normalizePayments(data, total);
 
     const correlativo = Number(counterSnap.data()?.current ?? 0) + 1;
     const code = `${serie}-${String(correlativo).padStart(6, '0')}`;
@@ -314,11 +317,8 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
       subtotal,
       igv: round2(total - subtotal),
       total,
-      paymentMethod,
-      bankName: shortText(data.bankName, 80) || null,
-      operationNumber: shortText(data.operationNumber, 80) || null,
-      paidAmount,
-      changeAmount: round2(Math.max(0, paidAmount - total)),
+      ...paymentData,
+      statisticsVersion: 1,
       consolidated: type === 'boleta' && total < Number(company.umbralConsolidacion ?? 5),
       igvRate,
       minBoletaSinDni: Number(company.minBoletaSinDni ?? 700),
@@ -330,6 +330,10 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
       createdAt: now
     };
 
+    await updateSalesStatistics(tx, profile.tenantId, sale, 1);
+    if (cashSessionSnap?.data()?.summaryVersion === 1) {
+      tx.update(cashSessionSnap.ref, { salesSummary: addCashSummary(cashSessionSnap.data()?.salesSummary ?? {}, sale) });
+    }
     tx.set(counterRef, { tenantId: profile.tenantId, current: correlativo });
     for (const productId of productIds) {
       const stockSnap = stocks.get(productId)!;

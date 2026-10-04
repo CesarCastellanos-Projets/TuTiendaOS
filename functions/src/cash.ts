@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
-import { AggregateField } from 'firebase-admin/firestore';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { db } from './firebase';
 import { requireActiveProfile } from './authz';
 import { tenantCollection, tenantDoc } from './tenant';
 import { round2 } from './stock-model';
+import { addCashSummary } from './payment-model';
 
 function money(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0
@@ -15,42 +15,21 @@ function money(value: unknown): number {
 }
 
 async function summarize(tenantId: string, sessionId: string, cutoff?: number) {
-  if (cutoff !== undefined) {
-    const summary = { totalSales: 0, cashSales: 0, yapeSales: 0, cardSales: 0, otherSales: 0, salesCount: 0 };
+    let summary = { totalSales: 0, cashSales: 0, yapeSales: 0, cardSales: 0, otherSales: 0, salesCount: 0 };
     let cursor: string | undefined;
     do {
       const base = tenantCollection(tenantId, 'sales').where('cashSessionId', '==', sessionId).orderBy('__name__');
       const page = await (cursor ? base.startAfter(cursor) : base).limit(250).get();
       for (const doc of page.docs) {
         const sale = doc.data();
-        if (sale.status === 'anulada' && Number(sale.voidedAt ?? 0) <= cutoff) continue;
+        if (sale.status === 'anulada' && (cutoff === undefined || Number(sale.voidedAt ?? 0) <= cutoff)) continue;
         const total = Number(sale.total);
         if (!Number.isFinite(total) || total < 0 || total > 100_000_000) throw new HttpsError('failed-precondition', 'Una venta de esta caja tiene un importe inconsistente.');
-        summary.totalSales = round2(summary.totalSales + total);
-        summary.salesCount++;
-        const field = sale.paymentMethod === 'efectivo' ? 'cashSales'
-          : ['yape', 'plin'].includes(String(sale.paymentMethod)) ? 'yapeSales'
-            : sale.paymentMethod === 'tarjeta' ? 'cardSales' : 'otherSales';
-        summary[field] = round2(summary[field] + total);
+        summary = addCashSummary(summary, sale) as typeof summary;
       }
       cursor = page.size === 250 ? page.docs.at(-1)?.id : undefined;
     } while (cursor);
     return summary;
-  }
-  const sales = tenantCollection(tenantId, 'sales')
-    .where('cashSessionId', '==', sessionId).where('status', '==', 'activa');
-  const [all, cash, yape, card, other] = await Promise.all([
-    sales.aggregate({ total: AggregateField.sum('total'), count: AggregateField.count() }).get(),
-    sales.where('paymentMethod', '==', 'efectivo').aggregate({ total: AggregateField.sum('total') }).get(),
-    sales.where('paymentMethod', 'in', ['yape', 'plin']).aggregate({ total: AggregateField.sum('total') }).get(),
-    sales.where('paymentMethod', '==', 'tarjeta').aggregate({ total: AggregateField.sum('total') }).get(),
-    sales.where('paymentMethod', 'in', ['transferencia', 'sip', 'otro']).aggregate({ total: AggregateField.sum('total') }).get()
-  ]);
-  return {
-    totalSales: round2(all.data().total), salesCount: all.data().count,
-    cashSales: round2(cash.data().total), yapeSales: round2(yape.data().total),
-    cardSales: round2(card.data().total), otherSales: round2(other.data().total)
-  };
 }
 
 function lockId(uid: string, storeId: string) {
@@ -80,7 +59,8 @@ export const openCashSession = onCall(async (request) => {
     const session = {
       tenantId: profile.tenantId, storeId: profile.storeId, storeName: String(store.data()?.name ?? ''),
       userId: profile.uid, userName: profile.displayName, openingAmount,
-      status: 'abierta', openedAt: Date.now()
+      status: 'abierta', openedAt: Date.now(), summaryVersion: 1,
+      salesSummary: { totalSales: 0, cashSales: 0, yapeSales: 0, cardSales: 0, otherSales: 0, salesCount: 0 }
     };
     tx.set(ref, session);
     tx.set(lock, { sessionId: ref.id });
@@ -100,7 +80,7 @@ export const getCashSessionSummary = onCall(async (request) => {
     || session.userId !== profile.uid || session.storeId !== profile.storeId))) {
     throw new HttpsError('permission-denied', 'No puedes consultar esta caja.');
   }
-  if (session.status === 'cerrada') {
+  if (session.summaryVersion === 1 || session.status === 'cerrada') {
     if (!session.salesSummary) throw new HttpsError('failed-precondition', 'Este cierre antiguo no tiene desglose verificable.');
     return session.salesSummary;
   }
@@ -133,7 +113,8 @@ export const closeCashSession = onCall(async (request) => {
     return { ...session, closingStartedAt };
   });
   if (frozen.status === 'cerrada') return { id, ...frozen };
-  const salesSummary = await summarize(profile.tenantId, id, Number(frozen.closingStartedAt ?? Date.now()));
+  const salesSummary = frozen.summaryVersion === 1 && frozen.salesSummary
+    ? frozen.salesSummary : await summarize(profile.tenantId, id, Number(frozen.closingStartedAt ?? Date.now()));
   return db.runTransaction(async (tx) => {
     const [snap, lock] = await Promise.all([
       tx.get(ref), tx.get(tenantDoc(profile.tenantId, 'cash_session_locks', lockId(profile.uid, profile.storeId!)))

@@ -1,6 +1,6 @@
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { db } from './firebase';
-import { requireAdmin } from './authz';
+import { requireAdmin, requireReplenishmentApprover } from './authz';
 import { tenantCollection, tenantDoc } from './tenant';
 import {
   parsePresentations,
@@ -400,7 +400,7 @@ export const cancelInventoryTransfer = onCall(async (request) => {
 });
 
 export const attendReplenishmentRequest = onCall(async (request) => {
-  const profile = await requireAdmin(request);
+  const profile = await requireReplenishmentApprover(request);
   const requestId = shortText(request.data?.requestId, 128);
   const warehouseId = shortText(request.data?.warehouseId, 128);
   if (!requestId || !warehouseId) throw new HttpsError('invalid-argument', 'Solicitud inválida.');
@@ -505,6 +505,7 @@ export const attendReplenishmentRequest = onCall(async (request) => {
     tx.update(replenishmentRef, {
       status: 'atendida',
       attendedBy: profile.uid,
+      attendedByName: profile.displayName,
       attendedAt: now,
       transferId: transferRef.id
     });
@@ -513,7 +514,7 @@ export const attendReplenishmentRequest = onCall(async (request) => {
 });
 
 export const rejectReplenishmentRequest = onCall(async (request) => {
-  const profile = await requireAdmin(request);
+  const profile = await requireReplenishmentApprover(request);
   const requestId = shortText(request.data?.requestId, 128);
   if (!requestId) throw new HttpsError('invalid-argument', 'Solicitud inválida.');
   const ref = tenantDoc(profile.tenantId, 'replenishment_requests', requestId);
@@ -525,6 +526,7 @@ export const rejectReplenishmentRequest = onCall(async (request) => {
     tx.update(ref, {
       status: 'rechazada',
       rejectedBy: profile.uid,
+      rejectedByName: profile.displayName,
       rejectedAt: Date.now()
     });
   });

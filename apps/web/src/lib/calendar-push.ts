@@ -1,25 +1,24 @@
 import { httpsCallable } from 'firebase/functions';
 import { firebaseApp, functions } from './firebase';
 import { useAuth } from './auth';
+import { canReceiveNotifications } from './notification-permissions';
 
-let registered: { token: string; uid: string; confirmed: boolean } | null = null;
+let registered: { token: string; uid: string; confirmed: boolean; confirmedAt: number; permissions: string } | null = null;
 let pending: Promise<void> | null = null;
 let generation = 0;
 export async function enableCalendarPush(requestPermission = true): Promise<void> {
   if (pending) {
     await pending.catch(() => undefined);
-    if (
-      registered?.confirmed &&
-      registered.uid === useAuth.getState().user?.uid &&
-      useAuth.getState().profile?.canManageCalendar
-    )
-      return;
     return enableCalendarPush(requestPermission);
   }
   const session = useAuth.getState();
-  if (!session.user || !session.profile?.canManageCalendar)
-    throw new Error('Tu cuenta no tiene acceso al calendario.');
+  if (!session.user || !canReceiveNotifications(session.profile))
+    throw new Error('Tu cuenta no tiene acceso a estas notificaciones.');
   const uid = session.user.uid;
+  const permissions = `${session.profile?.role}:${session.profile?.storeAccess}:${session.profile?.canManageCalendar}`;
+  if (registered?.confirmed && registered.uid === uid && registered.permissions === permissions
+    && Date.now() - registered.confirmedAt < 12 * 3600000
+    && 'Notification' in window && Notification.permission === 'granted') return;
   const revision = generation;
   pending = (async () => {
     if (!('Notification' in window) || !('serviceWorker' in navigator))
@@ -51,21 +50,21 @@ export async function enableCalendarPush(requestPermission = true): Promise<void
     if (
       generation !== revision ||
       useAuth.getState().user?.uid !== uid ||
-      !useAuth.getState().profile?.canManageCalendar
+      !canReceiveNotifications(useAuth.getState().profile)
     ) {
       const { deleteToken } = await import('firebase/messaging');
       await deleteToken(getMessaging(firebaseApp)).catch(() => undefined);
       throw new Error('Tu sesión cambió. Vuelve a activar las notificaciones.');
     }
-    registered = { token, uid, confirmed: false };
+    registered = { token, uid, confirmed: false, confirmedAt: 0, permissions };
     await httpsCallable(functions, 'registerCalendarDevice', { timeout: 15000 })({ token });
     if (
       generation !== revision ||
       useAuth.getState().user?.uid !== uid ||
-      !useAuth.getState().profile?.canManageCalendar
+      !canReceiveNotifications(useAuth.getState().profile)
     )
       throw new Error('Tu sesión cambió. Vuelve a activar las notificaciones.');
-    registered = { token, uid, confirmed: true };
+    registered = { token, uid, confirmed: true, confirmedAt: Date.now(), permissions };
   })().finally(() => {
     pending = null;
   });

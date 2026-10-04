@@ -1,5 +1,6 @@
 import { DEFAULT_TICKET_DESIGN, type CompanyConfig, type Sale, type TicketDesign } from '../types';
 import { fmtDateTime } from './utils';
+import { PAYMENT_LABELS, salePayments } from './payments';
 
 export function ticketDesign(cfg?: CompanyConfig): TicketDesign {
   const source = cfg?.ticketDesign;
@@ -54,8 +55,8 @@ export function ticketHtml(sale: Sale, cfg?: CompanyConfig): string {
   <div class="row total"><span>TOTAL A PAGAR</span><span class="mono r">S/ ${sale.total.toFixed(2)}</span></div>
   <hr />
   <div>Condición de pago: Contado</div>
-  <div class="row"><span>Pago: ${esc(sale.paymentMethod).toUpperCase()}</span><span class="mono r">S/ ${sale.paidAmount.toFixed(2)}</span></div>
-  ${sale.paymentMethod === 'efectivo' ? `<div class="row"><span>Vuelto</span><span class="mono r">S/ ${sale.changeAmount.toFixed(2)}</span></div>` : ''}
+  ${salePayments(sale).map((part) => `<div class="row"><span>${esc(PAYMENT_LABELS[part.method])}</span><span class="mono r">S/ ${part.amount.toFixed(2)}</span></div>${part.bankName ? `<small>Banco: ${esc(part.bankName)}</small>` : ''}${part.operationNumber ? `<small>Operación: ${esc(part.operationNumber)}</small>` : ''}`).join('')}
+  ${salePayments(sale).some((part) => part.method === 'efectivo') ? `<div class="row"><span>Efectivo recibido</span><span class="mono r">S/ ${(salePayments(sale).find((part) => part.method === 'efectivo')?.receivedAmount ?? 0).toFixed(2)}</span></div><div class="row"><span>Vuelto</span><span class="mono r">S/ ${sale.changeAmount.toFixed(2)}</span></div>` : ''}
   <hr /><div class="foot">${esc(cfg?.footerText ?? '¡Gracias por su compra!')}</div></div>`;
 }
 

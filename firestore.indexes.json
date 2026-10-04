@@ -445,7 +445,70 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "sales_statistics",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "storeId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "month",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "sales_statistics_products",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "storeId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "month",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "calendar_push_devices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "tenantId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "replenishment",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "sales_statistics",
+      "fieldPath": "days",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "sales_statistics_products",
+      "fieldPath": "products",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "sales",
+      "fieldPath": "payments",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "sales",
+      "fieldPath": "paymentTotals",
+      "indexes": []
+    }
+  ]
 }

@@ -87,6 +87,10 @@ export function CashPage() {
 
   useEffect(() => {
     if (!session) return;
+    if (session.summaryVersion === 1 && session.salesSummary) {
+      setSummary(session.salesSummary);
+      return;
+    }
     let alive = true;
     const refresh = async () => {
       try {
@@ -98,8 +102,7 @@ export function CashPage() {
     };
     const unsub = onSnapshot(query(tenantCollection('sales'), where('cashSessionId', '==', session.id),
       where('userId', '==', user?.uid ?? ''), where('storeId', '==', profile.storeId), orderBy('createdAt', 'desc'), limit(1)), () => void refresh());
-    const timer = window.setInterval(() => void refresh(), 30000);
-    return () => { alive = false; unsub(); window.clearInterval(timer); };
+    return () => { alive = false; unsub(); };
   }, [profile.storeId, session, user?.uid, flash]);
 
   const open = async () => {

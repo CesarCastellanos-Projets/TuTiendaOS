@@ -2,9 +2,12 @@ import { useEffect, useState, Suspense } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { getDocs, limit, query } from 'firebase/firestore';
 import { CalendarBell } from '../calendar/CalendarBell';
+import { ReplenishmentBell } from '../inventory/ReplenishmentBell';
 import { RouteLoading } from '../RouteLoading';
 import {
   CalendarDays,
+  ChartColumn,
+  ClipboardCheck,
   ShoppingCart,
   Vault,
   ReceiptText,
@@ -27,6 +30,7 @@ const POS_NAV = [
   { to: '/pos/recepciones', icon: Truck, label: 'Recepciones de Traslado', shortLabel: 'Recepciones', desc: 'Ingreso de mercadería desde almacén' },
   { to: '/pos/caja', icon: Vault, label: 'Control de Caja (Turno)', shortLabel: 'Caja', desc: 'Apertura, arqueo y cierre Z' },
   { to: '/pos/ventas', icon: ReceiptText, label: 'Mis Ventas del Día', shortLabel: 'Mis Ventas', desc: 'Historial de comprobantes emitidos' },
+  { to: '/pos/estadisticas', icon: ChartColumn, label: 'Estadísticas de Hoy', shortLabel: 'Estadísticas', desc: 'Ventas y productos de la tienda activa' },
   { to: '/pos/reposicion', icon: PackageOpen, label: 'Solicitar Reposición', shortLabel: 'Reposición', desc: 'Pedir stock a almacén central' }
 ];
 
@@ -37,7 +41,9 @@ export function PosLayout() {
   const setProfileStoreId = useAuth((s) => s.setProfileStoreId);
   const navigate = useNavigate();
   const location = useLocation();
-  const nav = profile.canManageCalendar ? [...POS_NAV, { to: '/pos/calendario', icon: CalendarDays, label: 'Calendario de la empresa', shortLabel: 'Calendario', desc: 'Fechas y recordatorios compartidos', end: false }] : POS_NAV;
+  const nav = [...POS_NAV,
+    ...(profile.storeAccess === 'all' ? [{ to: '/pos/aprobar-reposiciones', icon: ClipboardCheck, label: 'Aprobar Reposiciones', shortLabel: 'Aprobar', desc: 'Atender solicitudes de todas las tiendas', end: false }] : []),
+    ...(profile.canManageCalendar ? [{ to: '/pos/calendario', icon: CalendarDays, label: 'Calendario de la empresa', shortLabel: 'Calendario', desc: 'Fechas y recordatorios compartidos', end: false }] : [])];
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [stores, setStores] = useState<StoreType[]>([]);
   const [selectingStore, setSelectingStore] = useState(false);
@@ -92,7 +98,7 @@ export function PosLayout() {
           </button>
 
           <div className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary text-white shadow-sm shadow-primary/30">
+            <div className="hidden h-8 w-8 items-center justify-center rounded-xl bg-primary text-white shadow-sm shadow-primary/30 sm:flex">
               <Sparkles size={16} />
             </div>
             <div>
@@ -104,7 +110,7 @@ export function PosLayout() {
         </div>
 
         {/* Centro: Switch Rápido de Pestañas en Pantallas Medianas/Grandes */}
-        <nav className={`hidden ${canChooseStore ? '2xl:flex' : 'xl:flex'} items-center gap-1 rounded-xl bg-slate-100/80 p-1 border border-slate-200/80`}>
+        <nav className="hidden 2xl:flex items-center gap-1 rounded-xl bg-slate-100/80 p-1 border border-slate-200/80">
           {nav.map(({ to, icon: Icon, shortLabel, end }) => (
             <NavLink
               key={to}
@@ -126,6 +132,7 @@ export function PosLayout() {
 
         {/* Lado Derecho: Info del Cajero & Botón Salir */}
         <div className="flex items-center gap-2.5">
+          <ReplenishmentBell />
           <CalendarBell />
           {canChooseStore && (
             <label className="relative hidden min-w-0 sm:block">
@@ -160,7 +167,7 @@ export function PosLayout() {
 
       {/* ─── CONTENIDO PRINCIPAL (Ocupa el 100% de la pantalla sin barras que estorben) ─── */}
       <main className="flex min-w-0 flex-1 flex-col overflow-y-auto lg:min-h-0 lg:overflow-hidden">
-        {canChooseStore && !profile.storeId && location.pathname !== '/pos/calendario' ? (
+        {canChooseStore && !profile.storeId && !['/pos/calendario', '/pos/aprobar-reposiciones'].includes(location.pathname) ? (
           <div className="grid flex-1 place-items-center p-4">
             <section className="card w-full max-w-md space-y-4 p-5 text-center">
               <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-100 text-primary">

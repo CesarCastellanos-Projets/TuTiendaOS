@@ -21,6 +21,7 @@ interface SaleInput {
   clientDoc: Sale['clientDoc'];
   items: SaleItem[];
   paymentMethod: Sale['paymentMethod'];
+  payments?: Sale['payments'];
   bankName?: string | null;
   operationNumber?: string | null;
   paidAmount: number;
@@ -78,6 +79,7 @@ export async function createSale(input: SaleInput): Promise<Sale & { id: string 
     clientDoc: input.clientDoc,
     items: input.items,
     paymentMethod: input.paymentMethod,
+    ...(input.payments ? { payments: input.payments } : {}),
     bankName: input.bankName,
     operationNumber: input.operationNumber,
     paidAmount: input.paidAmount,

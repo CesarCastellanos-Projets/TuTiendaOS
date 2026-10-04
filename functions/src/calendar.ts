@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import type { DocumentReference, DocumentSnapshot } from 'firebase-admin/firestore';
+import { FieldPath, Timestamp } from 'firebase-admin/firestore';
 import { admin, db } from './firebase';
 import { requireActiveProfile, requireAdmin } from './authz';
 import {
@@ -179,7 +180,9 @@ export const markCalendarNotification = onCall(async (request) => {
 });
 
 export const registerCalendarDevice = onCall(async (request) => {
-  const profile = await requireCalendar(request);
+  const profile = await requireActiveProfile(request, false);
+  const replenishment = profile.role === 'admin' || (profile.role === 'pos' && profile.storeAccess === 'all');
+  if (!profile.canManageCalendar && !replenishment) throw new HttpsError('permission-denied', 'Tu cuenta no puede recibir estas notificaciones.');
   const token = request.data?.token;
   if (
     typeof token !== 'string' ||
@@ -192,8 +195,10 @@ export const registerCalendarDevice = onCall(async (request) => {
   const ref = db.doc(`calendar_push_devices/${hash(token)}`);
   await db.runTransaction(async (tx) => {
     const user = await tx.get(db.doc(`users/${profile.uid}`));
-    if (!calendarAllowed(user.data() ?? {}) || user.data()?.tenantId !== profile.tenantId)
-      throw new HttpsError('permission-denied', 'Tu permiso del calendario cambió.');
+    const current = user.data() ?? {};
+    const currentApprover = current.role === 'admin' || (current.role === 'pos' && current.storeAccess === 'all' && profile.storeAccess === 'all');
+    if (current.active !== true || (!calendarAllowed(current) && !currentApprover) || current.tenantId !== profile.tenantId)
+      throw new HttpsError('permission-denied', 'Tus permisos de notificaciones cambiaron.');
     const devices = await tx.get(
       db
         .collection('calendar_push_devices')
@@ -205,6 +210,7 @@ export const registerCalendarDevice = onCall(async (request) => {
       token,
       uid: profile.uid,
       tenantId: profile.tenantId,
+      replenishment: currentApprover,
       updatedAt: now,
       expiresAt: now + 180 * DAY
     });
@@ -252,7 +258,7 @@ export async function dispatchCalendarEvent(ref: DocumentReference, now = Date.n
     let users = db
       .collection('users')
       .where('tenantId', '==', tenantId)
-      .orderBy(admin.firestore.FieldPath.documentId())
+      .orderBy(FieldPath.documentId())
       .limit(100);
     if (cursor) users = users.startAfter(cursor);
     const page = await users.get();
@@ -290,7 +296,7 @@ export async function dispatchCalendarEvent(ref: DocumentReference, now = Date.n
           pushState: 'pending',
           nextPushAt: now,
           pushAttempts: 0,
-          expiresAt: admin.firestore.Timestamp.fromMillis(now + 90 * DAY)
+          expiresAt: Timestamp.fromMillis(now + 90 * DAY)
         });
       });
     }

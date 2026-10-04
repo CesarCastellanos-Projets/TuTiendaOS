@@ -39,6 +39,8 @@ import type { CashSession, ClientDoc, PaymentMethod, Sale, SaleItem, Quotation }
 import { DNI_RE, money, RUC_RE } from '../../lib/utils';
 import { Modal } from '../../components/ui/Modal';
 import { PresentationSelector } from '../../components/pos/PresentationSelector';
+import { MixedPaymentEditor } from '../../components/pos/MixedPaymentEditor';
+import { buildMixedPayments, newPaymentDraft, type PaymentDraft } from '../../lib/payments';
 
 interface CartLine extends SaleItem {
   lineId: string;
@@ -103,6 +105,8 @@ export function PosSale() {
   const [payment, setPayment] = useState<PaymentMethod>('efectivo');
   const [paid, setPaid] = useState('');
   const [bankName, setBankName] = useState('BCP');
+  const [mixedMode, setMixedMode] = useState(false);
+  const [paymentDrafts, setPaymentDrafts] = useState<PaymentDraft[]>([newPaymentDraft('efectivo'), newPaymentDraft('yape')]);
   const [docType, setDocType] = useState<'boleta' | 'factura' | 'nota'>(() => {
     try {
       const saved = localStorage.getItem(cartStorageKey);
@@ -237,6 +241,7 @@ export function PosSale() {
   const finishCheckout = (sale: Sale & { id: string }) => {
     setReceiptDone({ id: sale.id, code: sale.code, total: sale.total, change: sale.changeAmount, html: ticketHtml(sale, company ?? undefined) });
     setCart([]); setPaid(''); setClientDoc({ tipo: '-', numero: '', nombre: '' }); setDocType('boleta');
+    setMixedMode(false); setPaymentDrafts([newPaymentDraft('efectivo'), newPaymentDraft('yape')]);
     localStorage.removeItem(cartStorageKey);
     setPendingCheckout(false);
     setDraftId(crypto.randomUUID());
@@ -539,7 +544,12 @@ export function PosSale() {
       setError('Agrega al menos un producto al carrito para cobrar.');
       return;
     }
-    if (payment === 'efectivo' && (Number(paid) || 0) < total - 0.001) {
+    let mixedPayments: Sale['payments'];
+    if (mixedMode) {
+      try { mixedPayments = buildMixedPayments(total, paymentDrafts); }
+      catch (cause) { setError(cause instanceof Error ? cause.message : 'Revisa los pagos combinados.'); return; }
+    }
+    if (!mixedMode && payment === 'efectivo' && (Number(paid) || 0) < total - 0.001) {
       setError('El monto pagado en efectivo no puede ser menor al total.');
       return;
     }
@@ -587,10 +597,11 @@ export function PosSale() {
           factor: factor || 1,
           barcode
         })),
-        paymentMethod: payment,
+        paymentMethod: mixedMode ? 'mixto' : payment,
+        ...(mixedPayments ? { payments: mixedPayments } : {}),
         bankName: payment === 'transferencia' ? bankName : null,
         operationNumber: null,
-        paidAmount: payment === 'efectivo' ? Number(paid) || total : total,
+        paidAmount: mixedPayments ? mixedPayments.reduce((sum, part) => sum + (part.receivedAmount ?? part.amount), 0) : payment === 'efectivo' ? Number(paid) || total : total,
         consolidated: docType === 'boleta' && total < umbralConsol,
         cashSessionId: sessionOpen?.id,
         type: docType
@@ -1115,7 +1126,12 @@ export function PosSale() {
         </div>
 
         {/* Footer / Panel de Cobro */}
-        <div className="border-t border-slate-200 bg-white p-4 pb-28 space-y-3.5 shadow-lg lg:shrink-0 lg:pb-4">
+        <div className={`border-t border-slate-200 bg-white p-4 pb-28 space-y-3.5 shadow-lg lg:shrink-0 lg:pb-4 ${mixedMode ? 'lg:max-h-[65dvh] lg:overflow-y-auto' : ''}`}>
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700">
+            <input type="checkbox" checked={mixedMode} disabled={busy || pendingCheckout} onChange={(event) => setMixedMode(event.target.checked)} />
+            Combinar métodos de pago
+          </label>
+          {mixedMode ? <MixedPaymentEditor total={total} value={paymentDrafts} onChange={setPaymentDrafts} disabled={busy || pendingCheckout} /> : <>
           {/* Selector de Método de Pago */}
           <div className="grid grid-cols-5 gap-1.5">
             {PAYMENTS.map(({ id, label, icon: Icon, colorClass }) => {
@@ -1262,6 +1278,7 @@ export function PosSale() {
             </div>
           )}
 
+          </>}
           {/* Total Grande */}
           <div className="hidden items-center justify-between rounded-2xl bg-slate-950 p-4 text-white shadow-md lg:flex">
             <div>
@@ -1378,7 +1395,7 @@ export function PosSale() {
               </p>
             </div>
 
-            {payment === 'efectivo' && receiptDone.change > 0 && (
+            {receiptDone.change > 0 && (
               <div className="mx-auto inline-flex items-center gap-2 rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-2 text-sm font-bold text-emerald-800">
                 <span>Vuelto a entregar:</span>
                 <span className="font-mono text-base font-extrabold">S/ {receiptDone.change.toFixed(2)}</span>

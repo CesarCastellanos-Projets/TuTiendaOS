@@ -26,6 +26,9 @@ export function LoginPage() {
 
   if (!loading && user && profile) {
     const calendar = new URLSearchParams(window.location.search).get('calendar') === '1' && profile.canManageCalendar;
+    const replenishment = new URLSearchParams(window.location.search).get('replenishment') === '1'
+      && (profile.role === 'admin' || (profile.role === 'pos' && profile.storeAccess === 'all'));
+    if (replenishment) return <Navigate to={profile.role === 'admin' ? '/admin/reposiciones' : '/pos/aprobar-reposiciones'} replace />;
     return <Navigate to={calendar ? profile.role === 'admin' ? '/admin/calendario' : '/pos/calendario' : homeFor(profile.role)} replace />;
   }
 

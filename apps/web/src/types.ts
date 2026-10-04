@@ -253,6 +253,13 @@ export interface SaleItem {
 }
 
 export type PaymentMethod = 'efectivo' | 'transferencia' | 'tarjeta' | 'yape' | 'plin' | 'sip' | 'otro';
+export interface SalePayment {
+  method: PaymentMethod;
+  amount: number;
+  receivedAmount?: number;
+  bankName?: string | null;
+  operationNumber?: string | null;
+}
 export type SunatStatus = 'no_enviado' | 'pendiente' | 'aceptado' | 'rechazado' | 'observado' | 'error' | 'no_aplica';
 
 export interface AnulationRequest {
@@ -279,7 +286,9 @@ export interface Sale {
   subtotal: number;
   igv: number;
   total: number;
-  paymentMethod: PaymentMethod;
+  paymentMethod: PaymentMethod | 'mixto';
+  payments?: SalePayment[];
+  paymentTotals?: { cashSales: number; yapeSales: number; cardSales: number; otherSales: number };
   bankName?: string | null;
   operationNumber?: string | null;
   paidAmount: number;
@@ -303,6 +312,7 @@ export interface Sale {
 }
 
 export interface CashSession {
+  summaryVersion?: number;
   tenantId?: string;
   storeId: string;
   userId: string;

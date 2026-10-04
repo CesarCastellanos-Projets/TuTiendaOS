@@ -102,7 +102,7 @@ export function RequestRestock() {
       });
       setLines([]);
       setNote('');
-      flash('Solicitud enviada al administrador');
+      flash('Solicitud enviada al administrador y a los POS multitiendas');
     } catch (err) {
       flash(err instanceof Error ? `Error: ${err.message}` : 'Error al enviar la solicitud');
     } finally {

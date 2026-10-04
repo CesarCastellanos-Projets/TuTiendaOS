@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie';
 import type { Product, ProductStock } from '../types';
+import type { CachedStatistics } from './statistics';
 
 export interface CachedProduct extends ProductStock {
   id: string;
@@ -23,6 +24,7 @@ class DenzozDB extends Dexie {
   products!: Table<CachedProduct, string>;
   productDefinitions!: Table<CachedProductDefinition, string>;
   catalogMeta!: Table<CatalogMeta, string>;
+  statisticsQueries!: Table<CachedStatistics, string>;
 
   constructor() {
     super('denzoz');
@@ -38,6 +40,12 @@ class DenzozDB extends Dexie {
       products: 'id, [tenantId+locationId], tenantId, productId, barcode, locationId, productName',
       productDefinitions: 'id, [tenantId+productId], tenantId, updatedAt, name',
       catalogMeta: 'key'
+    });
+    this.version(4).stores({
+      products: 'id, [tenantId+locationId], tenantId, productId, barcode, locationId, productName',
+      productDefinitions: 'id, [tenantId+productId], tenantId, updatedAt, name',
+      catalogMeta: 'key',
+      statisticsQueries: 'key, expiresAt'
     });
   }
 }

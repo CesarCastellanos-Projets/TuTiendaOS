@@ -1,9 +1,11 @@
 import { useState, Suspense } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { CalendarBell } from '../calendar/CalendarBell';
+import { ReplenishmentBell } from '../inventory/ReplenishmentBell';
 import { RouteLoading } from '../RouteLoading';
 import {
   CalendarDays,
+  ChartColumn,
   LayoutDashboard,
   Package,
   Warehouse,
@@ -29,6 +31,7 @@ import { useCompany } from '../../hooks/useCompany';
 
 const NAV = [
   { to: '/admin', label: 'Panel General', icon: LayoutDashboard, end: true },
+  { to: '/admin/estadisticas', label: 'Estadísticas', icon: ChartColumn },
   { to: '/admin/productos', label: 'Productos y Catálogo', icon: Package },
   { to: '/admin/ubicaciones', label: 'Tiendas y Almacenes', icon: Warehouse },
   { to: '/admin/ingresos', label: 'Ingresos de Mercadería', icon: ArrowDownToLine },
@@ -166,10 +169,10 @@ export function AdminLayout() {
         {/* Barra superior de acento */}
         <div className="tape h-1 w-full" aria-hidden />
 
-        <div className="absolute right-3 top-1.5 z-40 lg:right-5"><CalendarBell /></div>
+        <div className="absolute right-3 top-1.5 z-40 flex gap-2 lg:right-5"><ReplenishmentBell /><CalendarBell /></div>
 
         {/* Header Móvil / Tablet con botón Hamburguesa */}
-        <header className="flex h-14 items-center justify-between border-b border-slate-200 bg-white pl-4 pr-16 lg:hidden shadow-xs">
+        <header className="flex h-14 items-center justify-between border-b border-slate-200 bg-white pl-4 pr-28 lg:hidden shadow-xs">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setMobileOpen(true)}
@@ -182,7 +185,7 @@ export function AdminLayout() {
               <span className="font-display font-extrabold text-lg tracking-tight text-slate-900">
                 D'ENZOZ
               </span>
-              <span className="badge bg-primary/10 text-primary text-[10px] font-bold">Admin</span>
+              <span className="badge hidden bg-primary/10 text-primary text-[10px] font-bold sm:inline-flex">Admin</span>
             </div>
           </div>
 
@@ -201,7 +204,7 @@ export function AdminLayout() {
         </header>
 
         {/* Topbar Escritorio */}
-        <header className="hidden h-14 items-center justify-between border-b border-slate-200 bg-white pl-8 pr-20 lg:flex">
+        <header className="hidden h-14 items-center justify-between border-b border-slate-200 bg-white pl-8 pr-32 lg:flex">
           <div className="flex items-center gap-2 text-sm text-slate-600">
             <Building2 size={16} className="text-slate-400" />
             <span className="font-bold text-slate-800">{company?.razonSocial || "D'ENZOZ S.A.C."}</span>

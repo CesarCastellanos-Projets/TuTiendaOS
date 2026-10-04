@@ -5,6 +5,7 @@ import { CheckCircle2, Download, RefreshCw, Send, Layers } from 'lucide-react';
 import { tenantCollection } from '../../lib/tenant-firestore';
 import type { Sale, SunatStatus } from '../../types';
 import { fmtDateTime, money } from '../../lib/utils';
+import { PAYMENT_LABELS, salePayments } from '../../lib/payments';
 import { sendToSunat, sendCreditNote, sendDailySummary } from '../../services/sunat';
 import { FlashBar, useFlash } from '../../components/ui/Feedback';
 
@@ -100,7 +101,7 @@ export function ReceiptsPage() {
       flash('No hay comprobantes para exportar');
       return;
     }
-    const headers = ['Tipo', 'Comprobante', 'Fecha', 'Documento Cliente', 'Nombre Cliente', 'Subtotal', 'IGV', 'Total', 'Metodo Pago', 'Estado SUNAT', 'Mensaje SUNAT', 'Estado'];
+    const headers = ['Tipo', 'Comprobante', 'Fecha', 'Documento Cliente', 'Nombre Cliente', 'Subtotal', 'IGV', 'Total', 'Metodo Pago', 'Desglose Pagos', 'Estado SUNAT', 'Mensaje SUNAT', 'Estado'];
     const rows = sales.map((s) => [
       s.type.toUpperCase(),
       s.code,
@@ -110,7 +111,8 @@ export function ReceiptsPage() {
       s.subtotal.toFixed(2),
       s.igv.toFixed(2),
       s.total.toFixed(2),
-      s.paymentMethod,
+      PAYMENT_LABELS[s.paymentMethod],
+      `"${salePayments(s).map((part) => `${PAYMENT_LABELS[part.method]}: ${part.amount.toFixed(2)}`).join(' / ')}"`,
       s.sunatStatus,
       `"${(s.sunatMessage || '').replace(/"/g, '""')}"`,
       s.status

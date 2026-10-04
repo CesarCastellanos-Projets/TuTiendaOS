@@ -3,8 +3,10 @@ import { createHash } from 'node:crypto';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { FieldValue } from 'firebase-admin/firestore';
 import { admin, db } from './firebase';
 import { requireActiveProfile, requireAdmin } from './authz';
+import { applySaleStatusPatch } from './sale-status';
 import { buildFiscalInvoicePayload, FiscalPayloadError } from './fiscal';
 import { assertTenantId, tenantCollection, tenantDoc } from './tenant';
 
@@ -199,7 +201,7 @@ async function processSaleToSunat(tenantId: string, saleId: string): Promise<Tax
     await saleRef.update({
       sunatStatus: 'error',
       sunatMessage: message,
-      sunatLeaseUntil: admin.firestore.FieldValue.delete()
+      sunatLeaseUntil: FieldValue.delete()
     });
     throw new HttpsError('failed-precondition', message);
   }
@@ -215,14 +217,14 @@ async function processSaleToSunat(tenantId: string, saleId: string): Promise<Tax
     await saleRef.update({
       sunatStatus: status,
       sunatMessage: String(result.message ?? 'Respuesta recibida de SUNAT'),
-      sunatLeaseUntil: admin.firestore.FieldValue.delete()
+      sunatLeaseUntil: FieldValue.delete()
     });
     return { ok: result.ok === true, status, message: result.message };
   } catch (error) {
     await saleRef.update({
       sunatStatus: 'pendiente',
       sunatMessage: 'Motor tributario no disponible; reintenta desde Administración',
-      sunatLeaseUntil: admin.firestore.FieldValue.delete()
+      sunatLeaseUntil: FieldValue.delete()
     });
     throw error;
   }
@@ -275,8 +277,8 @@ async function processCreditNoteToSunat(tenantId: string, saleId: string): Promi
         anulationStatus: 'error',
         creditNoteStatus: 'error',
         creditNoteMessage: 'Se agotaron los reintentos automáticos; requiere revisión manual',
-        creditNoteLeaseUntil: admin.firestore.FieldValue.delete(),
-        creditNoteNextRetryAt: admin.firestore.FieldValue.delete()
+        creditNoteLeaseUntil: FieldValue.delete(),
+        creditNoteNextRetryAt: FieldValue.delete()
       });
       return { kind: 'exhausted' };
     }
@@ -316,7 +318,7 @@ async function processCreditNoteToSunat(tenantId: string, saleId: string): Promi
     const accepted = result.ok === true && ['aceptado', 'observado'].includes(String(result.status));
     const terminalError = ['rechazado', 'requiere_revision', 'error'].includes(String(result.status));
     const document = result.document as Record<string, unknown> | undefined;
-    await saleRef.update({
+    await applySaleStatusPatch(tenantId, saleId, {
       status: accepted ? 'anulada' : claim.originalStatus,
       ...(accepted ? { voidedAt: Date.now() } : {}),
       anulationStatus: accepted ? 'anulada' : terminalError ? 'error' : 'nc_pendiente',
@@ -325,8 +327,8 @@ async function processCreditNoteToSunat(tenantId: string, saleId: string): Promi
       creditNoteRef: typeof document?.ref === 'string' ? document.ref : `nc-${saleId}`,
       creditNoteSerie: typeof document?.serie === 'string' ? document.serie : null,
       creditNoteCorrelativo: typeof document?.correlativo === 'number' ? document.correlativo : null,
-      creditNoteLeaseUntil: admin.firestore.FieldValue.delete(),
-      creditNoteNextRetryAt: admin.firestore.FieldValue.delete()
+      creditNoteLeaseUntil: FieldValue.delete(),
+      creditNoteNextRetryAt: FieldValue.delete()
     });
     return { ok: accepted, status: result.status, message: result.message, document };
   } catch (error) {
@@ -334,7 +336,7 @@ async function processCreditNoteToSunat(tenantId: string, saleId: string): Promi
       anulationStatus: 'nc_pendiente',
       creditNoteStatus: 'pendiente',
       creditNoteMessage: 'Motor tributario no disponible; la nota puede reenviarse',
-      creditNoteLeaseUntil: admin.firestore.FieldValue.delete(),
+      creditNoteLeaseUntil: FieldValue.delete(),
       creditNoteNextRetryAt: Date.now() + creditNoteRetryDelayMs(claim.attempt)
     });
     throw error;
@@ -501,9 +503,13 @@ async function applyMaintenanceResults(tenantId: string, value: unknown): Promis
       });
     });
   });
-  for (let index = 0; index < updates.length; index += 400) {
+  const normalUpdates = updates.filter((update) => update.data.status !== 'anulada');
+  for (const update of updates.filter((item) => item.data.status === 'anulada')) {
+    await applySaleStatusPatch(tenantId, update.saleId, update.data);
+  }
+  for (let index = 0; index < normalUpdates.length; index += 400) {
     const batch = db.batch();
-    updates.slice(index, index + 400).forEach((update) => {
+    normalUpdates.slice(index, index + 400).forEach((update) => {
       batch.update(tenantDoc(tenantId, 'sales', update.saleId), update.data);
     });
     await batch.commit();
@@ -576,7 +582,7 @@ export const uploadSunatCertificate = onCall({ secrets: [API_FACT_TOKEN], timeou
 
 async function registerSunatMaintenanceTenant(tenantId: string): Promise<void> {
   await db.doc('system/sunatMaintenance').set({
-    tenantIds: admin.firestore.FieldValue.arrayUnion(assertTenantId(tenantId)),
+    tenantIds: FieldValue.arrayUnion(assertTenantId(tenantId)),
     updatedAt: Date.now()
   }, { merge: true });
 }

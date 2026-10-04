@@ -13,6 +13,10 @@ service cloud.firestore {
     function isAdmin() { return activeUser() && profile().data.role == 'admin'; }
     function isPos() { return activeUser() && profile().data.role == 'pos'; }
     function isWorker() { return activeUser() && profile().data.role == 'trabajador'; }
+    function canApproveReplenishment() {
+      return isAdmin() || (isPos() && profile().data.get('storeAccess', 'assigned') == 'all'
+        && request.auth.token.get('posStoreAccess', 'assigned') == 'all');
+    }
     function canUseCalendar() {
       return isAdmin() || (isPos() && (profile().data.get('canManageCalendar', false) == true
         || (!('canManageCalendar' in profile().data) && profile().data.get('storeAccess', 'assigned') == 'all')));
@@ -234,7 +238,7 @@ service cloud.firestore {
       }
       match /replenishment_requests/{requestId} {
         allow get, list: if belongsToTenant(tenantId)
-          && (isAdmin() || (isPos() && resource.data.storeId == userStoreId()
+          && (canApproveReplenishment() || (isPos() && resource.data.storeId == userStoreId()
             && resource.data.createdBy == request.auth.uid));
         allow write: if false;
       }
