@@ -93,7 +93,17 @@ export const getSalesStatistics = onCall(async (request) => {
       topProducts: sold.sort(sort).slice(0, 3), bottomProducts: [...sold].sort((a, b) => -sort(a, b)).slice(0, 3),
       soldProductIds: sold.map((row) => row.productId), generatedAt: Date.now(), documentsRead: documentsRead + 1,
       historicalComplete: coverage.data()?.historicalComplete === true };
-  }, { readOnly: true });
+  }, { readOnly: true }).catch((cause: unknown) => {
+    if (cause instanceof HttpsError) throw cause;
+    const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
+    const message = cause instanceof Error ? cause.message : '';
+    if (code === '9' && /index/i.test(message)) {
+      throw new HttpsError('failed-precondition', 'Los índices de estadísticas todavía no están listos. Espera a que termine su construcción en Firebase y pulsa Actualizar.');
+    }
+    console.error('No se pudo consultar el resumen de estadísticas', cause);
+    if (['4', '14'].includes(code)) throw new HttpsError('unavailable', 'Firebase no respondió a tiempo. Vuelve a pulsar Actualizar.');
+    throw new HttpsError('internal', 'No se pudieron cargar las estadísticas. Intenta actualizar nuevamente.');
+  });
 });
 
 export const backfillSalesStatistics = onCall({ timeoutSeconds: 120 }, async (request) => {
