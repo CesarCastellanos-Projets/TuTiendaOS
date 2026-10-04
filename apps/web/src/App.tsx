@@ -38,6 +38,9 @@ const RequestRestock = lazy(() => import('./pages/pos/RequestRestock').then((m) 
 const WorkerLookup = lazy(() => import('./pages/worker/Lookup').then((m) => ({ default: m.WorkerLookup })));
 const IncidentsWorkerPage = lazy(() => import('./pages/worker/Incidents').then((m) => ({ default: m.IncidentsWorkerPage })));
 const WorkerQuotations = lazy(() => import('./pages/worker/Quotations').then((m) => ({ default: m.WorkerQuotations })));
+const WorkerIngressPage = lazy(() => import('./pages/worker/Ingress').then((m) => ({ default: m.WorkerIngressPage })));
+const AdminWorkerPermissions = lazy(() => import('./pages/admin/WorkerPermissions').then((m) => ({ default: m.AdminWorkerPermissions })));
+const PosWorkerPermissions = lazy(() => import('./pages/pos/WorkerPermissions').then((m) => ({ default: m.PosWorkerPermissions })));
 
 const router = createBrowserRouter([
   {
@@ -63,6 +66,7 @@ const router = createBrowserRouter([
           { path: 'reposicion', element: <ReplenishmentAdminPage /> },
           { path: 'incidencias', element: <IncidentsAdminPage /> },
           { path: 'usuarios', element: <UsersPage /> },
+          { path: 'permisos-trabajadores', element: <AdminWorkerPermissions /> },
           { path: 'calendario', element: <AdminCalendar /> },
           { path: 'comprobantes', element: <ReceiptsPage /> },
           { path: 'tickets', element: <TicketDesignerPage /> },
@@ -81,6 +85,7 @@ const router = createBrowserRouter([
           { index: true, element: <PosSale /> },
           { path: 'estadisticas', element: <PosStatistics /> },
           { path: 'aprobar-reposiciones', element: <ApproveReplenishmentPage /> },
+          { path: 'permisos-trabajadores', element: <PosWorkerPermissions /> },
           { path: 'recepcion', element: <ReceivingPage /> },
           { path: 'recepciones', element: <ReceivingPage /> },
           { path: 'caja', element: <CashPage /> },
@@ -102,6 +107,7 @@ const router = createBrowserRouter([
         children: [
           { index: true, element: <WorkerLookup /> },
           { path: 'cotizaciones', element: <WorkerQuotations /> },
+          { path: 'ingresos', element: <WorkerIngressPage /> },
           { path: 'incidencias', element: <IncidentsWorkerPage /> }
         ]
       }

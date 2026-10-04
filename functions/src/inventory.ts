@@ -1,6 +1,8 @@
+import { createHash, randomUUID } from 'node:crypto';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { db } from './firebase';
-import { requireAdmin, requireReplenishmentApprover } from './authz';
+import { requireActiveProfile, requireAdmin, requireReplenishmentApprover } from './authz';
+import { assertInventoryTask } from './worker-permissions';
 import { tenantCollection, tenantDoc } from './tenant';
 import {
   parsePresentations,
@@ -44,6 +46,7 @@ function quantityItems(value: unknown, quantityField: string): QuantityItem[] {
   }
   const seen = new Set<string>();
   return value.map((raw) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new HttpsError('invalid-argument', 'La lista de productos no es válida.');
     const item = raw as Record<string, unknown>;
     const productId = shortText(item.productId, 128);
     const presentationId = shortText(item.presentationId, 80) || null;
@@ -76,14 +79,33 @@ function locationRef(tenantId: string, type: LocationType, id: string) {
 }
 
 export const recordStockIngress = onCall(async (request) => {
-  const profile = await requireAdmin(request);
+  const profile = await requireActiveProfile(request);
+  if (!request.data || typeof request.data !== 'object' || Array.isArray(request.data)) throw new HttpsError('invalid-argument', 'Los datos del ingreso no son válidos.');
   const data = request.data as Record<string, unknown>;
   const targetId = shortText(data.locationId, 128);
   const targetType = locationType(data.locationType, 'La ubicación');
   const items = quantityItems(data.items, 'qty');
-  if (!targetId) throw new HttpsError('invalid-argument', 'Falta la ubicación de destino.');
+  if (!targetId || targetId.includes('/')) throw new HttpsError('invalid-argument', 'Falta una ubicación de destino válida.');
+  if (profile.role !== 'admin' && (profile.role !== 'trabajador' || targetType !== 'store' || profile.storeId !== targetId)) {
+    throw new HttpsError('permission-denied', 'Solo puedes registrar mercadería en tu tienda autorizada.');
+  }
+  const requestId = data.requestId ?? (profile.role === 'admin' ? randomUUID() : '');
+  if (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{8,80}$/.test(requestId)) {
+    throw new HttpsError('invalid-argument', 'Falta el identificador del ingreso.');
+  }
+  const note = shortText(data.note, 250);
+  const fingerprint = createHash('sha256').update(JSON.stringify({ targetId, targetType, items, note })).digest('hex');
 
   await db.runTransaction(async (tx) => {
+    await assertInventoryTask(tx, profile, 'canIngress', targetId);
+    const ingressRef = tenantDoc(profile.tenantId, 'stock_ingresses', requestId);
+    const existing = await tx.get(ingressRef);
+    if (existing.exists) {
+      if (existing.data()?.userId !== profile.uid || existing.data()?.fingerprint !== fingerprint) {
+        throw new HttpsError('already-exists', 'Este ingreso ya se registró con otros datos.');
+      }
+      return;
+    }
     const targetRef = locationRef(profile.tenantId, targetType, targetId);
     const productRefs = items.map((item) => tenantDoc(profile.tenantId, 'products', item.productId));
     const stockRefs = items.map((item) => tenantDoc(profile.tenantId, 'product_stocks', `${item.productId}_${targetId}`));
@@ -124,13 +146,20 @@ export const recordStockIngress = onCall(async (request) => {
         ...presentationFields,
         fromLocationId: null,
         toLocationId: targetId,
-        reason: null,
-        refId: null,
+        reason: note || null,
+        refId: requestId,
         userId: profile.uid,
         userName: profile.displayName,
-        userStoreId: null,
+        userStoreId: profile.role === 'trabajador' ? targetId : null,
         createdAt: now
       });
+    });
+    tx.create(ingressRef, {
+      tenantId: profile.tenantId, locationId: targetId, locationType: targetType,
+      locationName: String(targetSnap.data()?.name ?? ''), userId: profile.uid, userName: profile.displayName,
+      createdAt: now, note, fingerprint,
+      items: items.map((item, index) => ({ ...item, productName: String(productSnaps[index].data()?.name ?? ''),
+        ...movementPresentation(selectedPresentation(productSnaps[index].data()!, item.presentationId), item.quantity) }))
     });
     for (const [productId, state] of states) {
       const product = products.get(productId)!.data()!;

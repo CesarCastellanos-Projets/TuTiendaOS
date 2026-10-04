@@ -12,6 +12,8 @@ export async function receiveTransferItems(params: {
 }
 
 export async function ingressStock(params: {
+  requestId?: string;
+  note?: string;
   locationId: string;
   locationType: 'store' | 'warehouse';
   items: { productId: string; presentationId: string | null; qty: number }[];

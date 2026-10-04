@@ -44,7 +44,8 @@ const NAV = [
   { to: '/admin/sunat', label: 'SUNAT y Facturación', icon: FileText },
   { to: '/admin/incidencias', label: 'Incidencias de Piso', icon: TriangleAlert },
   { to: '/admin/calendario', label: 'Calendario de la empresa', icon: CalendarDays },
-  { to: '/admin/usuarios', label: 'Usuarios y Accesos', icon: Users }
+  { to: '/admin/usuarios', label: 'Usuarios y Accesos', icon: Users },
+  { to: '/admin/permisos-trabajadores', label: 'Permisos de Trabajadores', icon: Users }
 ];
 
 export function AdminLayout() {

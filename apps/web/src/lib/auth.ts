@@ -90,7 +90,7 @@ export const useAuth = create<AuthState>((set) => {
             if (!current?.active || current.tenantId !== profile.tenantId || current.role !== profile.role) { void signOut(auth); return; }
             set({ profile: { ...profile, ...current, storeAccess: profile.storeAccess === 'all' && current.storeAccess === 'all' ? 'all' : 'assigned', canOverridePrices: profile.canOverridePrices && current.storeAccess === 'all',
               canManageCalendar: current.role === 'admin' || (current.role === 'pos' && (current.canManageCalendar === true || (current.canManageCalendar === undefined && current.storeAccess === 'all'))) } });
-          }, () => set((state) => ({ profile: state.profile ? { ...state.profile, canManageCalendar: false } : null })));
+          }, () => set((state) => ({ profile: state.profile ? { ...state.profile, canManageCalendar: false, inventoryAccess: undefined } : null })));
 
         } catch {
           if (active && currentRevision === revision) {

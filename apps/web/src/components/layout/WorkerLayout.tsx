@@ -12,7 +12,9 @@ import {
   ChevronRight,
   Calculator
 } from 'lucide-react';
+import { ArrowDownToLine } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
+import { workerInventoryTasks } from '../../lib/worker-inventory';
 
 const WORKER_NAV = [
   { to: '/w', icon: ScanBarcode, label: 'Consultar Precio y Stock', shortLabel: 'Consultar', end: true },
@@ -22,6 +24,8 @@ const WORKER_NAV = [
 
 export function WorkerLayout() {
   const profile = useAuth((s) => s.profile)!;
+  const { canIngress, canCreateProducts } = workerInventoryTasks(profile);
+  const nav = [...WORKER_NAV, ...(canIngress || canCreateProducts ? [{ to: '/w/ingresos', icon: ArrowDownToLine, label: 'Ingreso de Mercadería', shortLabel: 'Ingresos', end: false }] : [])];
   const logout = useAuth((s) => s.logout);
   const navigate = useNavigate();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -74,8 +78,8 @@ export function WorkerLayout() {
 
       {/* ─── BOTTOM NAVIGATION BAR FLOTANTE Y ELEGANTE ────────────────────────── */}
       <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200/80 bg-white/95 backdrop-blur-md px-3 py-2">
-        <div className="mx-auto grid max-w-md grid-cols-3 gap-1.5">
-          {WORKER_NAV.map(({ to, icon: Icon, shortLabel, end }) => (
+        <div className={`mx-auto grid max-w-md gap-1.5 ${nav.length === 4 ? 'grid-cols-4' : 'grid-cols-3'}`}>
+          {nav.map(({ to, icon: Icon, shortLabel, end }) => (
             <NavLink
               key={to}
               to={to}
@@ -143,7 +147,7 @@ export function WorkerLayout() {
             </div>
 
             <nav className="flex-1 space-y-1 overflow-y-auto px-4 py-4">
-              {WORKER_NAV.map(({ to, label, icon: Icon, end }) => (
+              {nav.map(({ to, label, icon: Icon, end }) => (
                 <NavLink
                   key={to}
                   to={to}

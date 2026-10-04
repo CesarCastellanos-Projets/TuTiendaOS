@@ -78,13 +78,23 @@ service cloud.firestore {
         && (!('customUnits' in data) || (data.customUnits is list && data.customUnits.size() <= 50));
     }
 
+    function validInventoryAccess(data) {
+      return data is map
+        && data.keys().hasAll(['storeId', 'canIngress', 'canCreateProducts', 'updatedAt', 'updatedBy', 'updatedByName'])
+        && data.keys().hasOnly(['storeId', 'canIngress', 'canCreateProducts', 'updatedAt', 'updatedBy', 'updatedByName'])
+        && shortString(data.storeId, 128) && data.canIngress is bool && data.canCreateProducts is bool
+        && data.updatedAt is number && data.updatedAt > 0
+        && shortString(data.updatedBy, 128) && shortString(data.updatedByName, 120);
+    }
+
     function validUser(data) {
       return data.keys().hasAll(['displayName', 'email', 'role', 'active', 'tenantId'])
-        && data.keys().hasOnly(['displayName', 'email', 'role', 'active', 'tenantId', 'storeId', 'storeAccess', 'warehouseId', 'createdAt', 'canManageCalendar'])
+        && data.keys().hasOnly(['displayName', 'email', 'role', 'active', 'tenantId', 'storeId', 'storeAccess', 'warehouseId', 'createdAt', 'canManageCalendar', 'inventoryAccess'])
         && shortString(data.displayName, 120) && shortString(data.email, 160)
         && shortString(data.tenantId, 63) && data.role in ['admin', 'pos', 'trabajador']
         && data.active is bool
         && (!('canManageCalendar' in data) || data.canManageCalendar is bool)
+        && (!('inventoryAccess' in data) || validInventoryAccess(data.inventoryAccess))
         && (!('storeId' in data) || data.storeId == null || shortString(data.storeId, 128))
         && (!('storeAccess' in data)
           || (data.role == 'pos' && data.storeAccess in ['assigned', 'all'])
@@ -153,9 +163,11 @@ service cloud.firestore {
     match /users/{uid} {
       allow get: if activeUser() && (request.auth.uid == uid || (isAdmin() && resource.data.tenantId == userTenantId()));
       allow list: if isAdmin() && resource.data.tenantId == userTenantId();
-      allow create: if isAdmin() && validUser(request.resource.data) && request.resource.data.tenantId == userTenantId();
+      allow create: if isAdmin() && validUser(request.resource.data) && request.resource.data.tenantId == userTenantId()
+        && !('inventoryAccess' in request.resource.data);
       allow update: if (isAdmin() && resource.data.tenantId == userTenantId()
-          && validUser(request.resource.data) && request.resource.data.tenantId == userTenantId())
+          && validUser(request.resource.data) && request.resource.data.tenantId == userTenantId()
+          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['inventoryAccess']))
         || (activeUser() && request.auth.uid == uid
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName'])
           && validUser(request.resource.data)
@@ -165,6 +177,22 @@ service cloud.firestore {
 
     match /tenants/{tenantId} {
       allow read, write: if false;
+
+      match /worker_permission_events/{eventId} {
+        allow get: if belongsToTenant(tenantId) && canApproveReplenishment();
+        allow list: if belongsToTenant(tenantId) && canApproveReplenishment() && request.query.limit <= 25;
+        allow write: if false;
+      }
+      match /stock_ingresses/{ingressId} {
+        function canReadIngress() {
+          return belongsToTenant(tenantId) && (canApproveReplenishment()
+            || (isWorker() && resource.data.userId == request.auth.uid
+              && resource.data.locationType == 'store' && resource.data.locationId == userStoreId()));
+        }
+        allow get: if canReadIngress();
+        allow list: if canReadIngress() && request.query.limit <= 25;
+        allow write: if false;
+      }
 
       match /calendar_events/{eventId} {
         allow read: if belongsToTenant(tenantId) && canUseCalendar();

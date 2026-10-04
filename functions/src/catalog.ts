@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { db } from './firebase';
-import { requireAdmin } from './authz';
+import { requireActiveProfile } from './authz';
+import { assertInventoryTask } from './worker-permissions';
 import { tenantCollection, tenantDoc } from './tenant';
 import { parsePresentations, round2, round3 } from './stock-model';
 
@@ -14,11 +15,17 @@ function barcodeId(value: string): string {
 }
 
 export const saveCatalogProduct = onCall(async (request) => {
-  const profile = await requireAdmin(request);
+  const profile = await requireActiveProfile(request);
+  if (!['admin', 'trabajador'].includes(profile.role)) throw new HttpsError('permission-denied', 'No tienes permiso para crear productos.');
   const input = (request.data?.product ?? {}) as Record<string, unknown>;
   const requestedId = text(request.data?.productId, 128);
+  const creationId = request.data?.creationId;
+  if (profile.role === 'trabajador' && (requestedId || typeof creationId !== 'string' || !/^[a-zA-Z0-9_-]{8,80}$/.test(creationId))) {
+    throw new HttpsError('permission-denied', 'El permiso solo permite crear productos nuevos.');
+  }
   const productRef = requestedId
     ? tenantDoc(profile.tenantId, 'products', requestedId)
+    : profile.role === 'trabajador' ? tenantDoc(profile.tenantId, 'products', creationId)
     : tenantCollection(profile.tenantId, 'products').doc();
   const name = text(input.name, 180);
   const category = text(input.category, 80) || 'General';
@@ -37,6 +44,7 @@ export const saveCatalogProduct = onCall(async (request) => {
   }
   const presentationIds = new Set<string>();
   const presentations = rawPresentations.map((value, index) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new HttpsError('invalid-argument', 'Hay una presentación inválida.');
     const source = value as Record<string, unknown>;
     const id = text(source.id, 80) || randomUUID();
     const presentationUnit = text(source.unit, 40).toUpperCase();
@@ -91,7 +99,15 @@ export const saveCatalogProduct = onCall(async (request) => {
   };
 
   await db.runTransaction(async (tx) => {
+    await assertInventoryTask(tx, profile, 'canCreateProducts', profile.storeId ?? '');
     const currentSnap = await tx.get(productRef);
+    const creationRef = tenantDoc(profile.tenantId, 'worker_product_creations', productRef.id);
+    const fingerprint = createHash('sha256').update(JSON.stringify({ ...product, updatedAt: 0 })).digest('hex');
+    const creation = profile.role === 'trabajador' ? await tx.get(creationRef) : null;
+    if (profile.role === 'trabajador' && currentSnap.exists) {
+      if (creation?.data()?.userId === profile.uid && creation.data()?.storeId === profile.storeId && creation.data()?.fingerprint === fingerprint) return;
+      throw new HttpsError('already-exists', 'Este producto ya existe. No puedes modificarlo con este permiso.');
+    }
     const current = currentSnap.data() ?? {};
     for (const old of parsePresentations(current)) {
       const next = presentations.find((p) => p.id === old.id);
@@ -130,6 +146,10 @@ export const saveCatalogProduct = onCall(async (request) => {
       });
     });
     tx.set(productRef, product);
+    if (profile.role === 'trabajador') tx.create(creationRef, {
+      tenantId: profile.tenantId, storeId: profile.storeId, userId: profile.uid, userName: profile.displayName,
+      productId: productRef.id, productName: name, fingerprint, createdAt: product.updatedAt
+    });
     tx.set(tenantDoc(profile.tenantId, 'meta', 'catalog'), {
       tenantId: profile.tenantId,
       updatedAt: product.updatedAt

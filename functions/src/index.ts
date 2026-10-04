@@ -12,6 +12,7 @@ export { createSaleRecord, resumeSaleRecord, getCompanyConfig, receiveTransfer }
 export { saveCustomUnits } from './company';
 export { saveCalendarEvent, completeCalendarEvent, setCalendarPermission, markCalendarNotification, registerCalendarDevice, unregisterCalendarDevice, sendCalendarReminders } from './calendar';
 export { saveCatalogProduct } from './catalog';
+export { listWorkerInventoryAccess, setWorkerInventoryAccess } from './worker-permissions';
 export { openCashSession, closeCashSession, getCashSessionSummary } from './cash';
 export { getSalesStatistics, backfillSalesStatistics } from './statistics';
 export { notifyReplenishmentRequest } from './replenishment-notifications';

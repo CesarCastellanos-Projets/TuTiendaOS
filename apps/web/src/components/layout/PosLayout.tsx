@@ -8,6 +8,7 @@ import {
   CalendarDays,
   ChartColumn,
   ClipboardCheck,
+  Users,
   ShoppingCart,
   Vault,
   ReceiptText,
@@ -42,6 +43,7 @@ export function PosLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const nav = [...POS_NAV,
+    ...(profile.storeAccess === 'all' ? [{ to: '/pos/permisos-trabajadores', icon: Users, label: 'Permisos de Trabajadores', shortLabel: 'Permisos', desc: 'Autorizar ingresos y productos nuevos en la tienda activa', end: false }] : []),
     ...(profile.storeAccess === 'all' ? [{ to: '/pos/aprobar-reposiciones', icon: ClipboardCheck, label: 'Aprobar Reposiciones', shortLabel: 'Aprobar', desc: 'Atender solicitudes de todas las tiendas', end: false }] : []),
     ...(profile.canManageCalendar ? [{ to: '/pos/calendario', icon: CalendarDays, label: 'Calendario de la empresa', shortLabel: 'Calendario', desc: 'Fechas y recordatorios compartidos', end: false }] : [])];
   const [drawerOpen, setDrawerOpen] = useState(false);

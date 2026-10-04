@@ -1,6 +1,15 @@
 export type Role = 'admin' | 'pos' | 'trabajador';
 export type PosStoreAccess = 'assigned' | 'all';
 
+export interface WorkerInventoryAccess {
+  storeId: string;
+  canIngress: boolean;
+  canCreateProducts: boolean;
+  updatedAt: number;
+  updatedBy: string;
+  updatedByName: string;
+}
+
 export interface UserProfile {
   tenantId: string;
   displayName: string;
@@ -10,6 +19,7 @@ export interface UserProfile {
   storeAccess?: PosStoreAccess;
   canOverridePrices?: boolean;
   canManageCalendar?: boolean;
+  inventoryAccess?: WorkerInventoryAccess;
   active: boolean;
   createdAt?: number;
 }
