@@ -26,8 +26,11 @@ export function emptyDay(): DayStatistics {
 }
 const rounded = (value: number, precision = 100) => Math.round(value * precision) / precision;
 
-// Todos los documentos se leen antes de escribir para compartir la transacción del cobro.
+// Todos los documentos se leen antes de escribir para aplicar cada venta una sola vez.
 export async function updateSalesStatistics(tx: Transaction, tenantId: string, sale: Record<string, unknown>, direction: 1 | -1) {
+  if (!Number.isFinite(Number(sale.createdAt)) || !Array.isArray(sale.items) || !Number.isFinite(Number(sale.total))) {
+    throw new HttpsError('failed-precondition', 'La venta requiere conciliación antes de agregarla a estadísticas.');
+  }
   const day = limaDay(Number(sale.createdAt));
   const month = day.slice(0, 7);
   const storeId = String(sale.storeId);
@@ -59,10 +62,35 @@ export async function updateSalesStatistics(tx: Transaction, tenantId: string, s
   days[day] = { revenue: rounded(current.revenue + direction * Number(sale.total)), tickets: current.tickets + direction,
     units: rounded(current.units + direction * [...products.values()].reduce((sum, item) => sum + item.units, 0), 1000), hourly, payments };
   if (days[day].tickets < 0) throw new HttpsError('failed-precondition', 'El resumen de ventas requiere revisión.');
-  const writes = snapshots.map((snapshot, index) => {
-    const bucket = [...groups.keys()][index];
-    const entries = Object.assign(Object.create(null) as Record<string, ProductStatistics>, snapshot.data()?.products ?? {});
-    for (const [id, value] of groups.get(bucket)!) {
+  const writes: Array<{ ref: typeof summaryRef; document: Record<string, unknown> }> = [];
+  function bit(id: string, depth: number): number {
+    const hash = createHash('sha256').update(id).digest();
+    return (hash[1 + Math.floor(depth / 8)] >> (depth % 8)) & 1;
+  }
+  function partition(ref: typeof summaryRef, bucket: number, entries: Record<string, ProductStatistics>, depth: number) {
+    const document = { tenantId, storeId, month, bucket, products: entries, split: false, updatedAt: Date.now() };
+    if (Buffer.byteLength(JSON.stringify(document)) <= 850_000) {
+      writes.push({ ref, document }); return;
+    }
+    if (depth >= 24) throw new HttpsError('resource-exhausted', 'La partición analítica requiere revisión. La venta permanece registrada.');
+    writes.push({ ref, document: { ...document, products: {}, split: true } });
+    for (const branch of [0, 1]) {
+      const subset = Object.fromEntries(Object.entries(entries).filter(([id]) => bit(id, depth) === branch));
+      partition(tenantDoc(tenantId, 'sales_statistics_products', `${ref.id}_${branch}`), bucket, subset, depth + 1);
+    }
+  }
+  async function updateNode(ref: typeof summaryRef, bucket: number, contributions: Map<string, ProductContribution>, depth: number,
+    data?: Record<string, unknown>) {
+    const current = data ?? (await tx.get(ref)).data() ?? {};
+    if (current.split === true) {
+      for (const branch of [0, 1]) {
+        const subset = new Map([...contributions].filter(([id]) => bit(id, depth) === branch));
+        if (subset.size) await updateNode(tenantDoc(tenantId, 'sales_statistics_products', `${ref.id}_${branch}`), bucket, subset, depth + 1);
+      }
+      return;
+    }
+    const entries = Object.assign(Object.create(null) as Record<string, ProductStatistics>, current.products ?? {});
+    for (const [id, value] of contributions) {
       const previous = entries[id] ?? { name: value.name, unit: value.unit, days: {} };
       const productDay = previous.days[day] ?? { units: 0, revenue: 0, tickets: 0 };
       entries[id] = { name: value.name, unit: value.unit, days: { ...previous.days, [day]: {
@@ -70,10 +98,12 @@ export async function updateSalesStatistics(tx: Transaction, tenantId: string, s
         revenue: rounded(productDay.revenue + direction * value.revenue), tickets: productDay.tickets + direction
       } } };
     }
-    const document = { tenantId, storeId, month, bucket, products: entries, updatedAt: Date.now() };
-    if (Buffer.byteLength(JSON.stringify(document)) > 850_000) throw new HttpsError('resource-exhausted', 'El resumen mensual de productos requiere ampliar su partición.');
-    return { ref: refs[index], document };
-  });
+    partition(ref, bucket, entries, depth);
+  }
+  for (let index = 0; index < snapshots.length; index++) {
+    const bucket = [...groups.keys()][index];
+    await updateNode(refs[index], bucket, groups.get(bucket)!, 0, snapshots[index].data() ?? {});
+  }
   tx.set(summaryRef, { tenantId, storeId, storeName: String(sale.storeName ?? ''), month, days, updatedAt: Date.now() });
   writes.forEach(({ ref, document }) => tx.set(ref, document));
 }

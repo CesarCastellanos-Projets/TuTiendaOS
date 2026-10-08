@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync } from 'node:fs';
@@ -9,6 +9,7 @@ import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 if (process.env.FIRESTORE_EMULATOR_HOST !== '127.0.0.1:8080') throw new Error('Se requiere el emulador local.');
 const db = getFirestore(initializeApp({ projectId: 'demo-denzoz-ops' }));
+after(async () => { await db.terminate(); });
 
 test('migración conserva cantidades, respalda, bloquea mezclas y detecta códigos duplicados', async () => {
   const tenantId = 'tenant-migration';

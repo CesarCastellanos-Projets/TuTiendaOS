@@ -2,6 +2,7 @@ import { HttpsError, type CallableRequest } from 'firebase-functions/v2/https';
 import { db } from './firebase';
 import { assertTenantId } from './tenant';
 import { calendarAllowed } from './calendar-model';
+import type { Transaction } from 'firebase-admin/firestore';
 
 export type AppRole = 'admin' | 'pos' | 'trabajador';
 
@@ -47,13 +48,21 @@ export async function requireActiveProfile(request: CallableRequest, checkInvent
   const storeAccess = data.role === 'pos' && data.storeAccess === 'all' && request.auth.token.posStoreAccess === 'all'
     ? 'all'
     : 'assigned';
+  const requestedStore = request.data?.storeId;
+  const assignedStore = typeof data.storeId === 'string' ? data.storeId : null;
+  if (requestedStore !== undefined && (typeof requestedStore !== 'string' || !/^[\w-]{1,128}$/.test(requestedStore))) {
+    throw new HttpsError('invalid-argument', 'Tienda inválida.');
+  }
+  if (requestedStore && data.role !== 'admin' && storeAccess !== 'all' && requestedStore !== assignedStore) {
+    throw new HttpsError('permission-denied', 'Tu usuario no tiene acceso a esa tienda.');
+  }
 
   return {
     uid: request.auth.uid,
     displayName: String(data.displayName ?? ''),
     role: data.role as AppRole,
     tenantId,
-    storeId: typeof data.storeId === 'string' ? data.storeId : null,
+    storeId: requestedStore ?? assignedStore,
     storeAccess,
     canOverridePrices: storeAccess === 'all' && request.auth.token.canOverridePrices === true,
     canManageCalendar: calendarAllowed(data)
@@ -66,6 +75,17 @@ export async function requireAdmin(request: CallableRequest): Promise<ActiveProf
     throw new HttpsError('permission-denied', 'Solo el administrador puede realizar esta acción.');
   }
   return profile;
+}
+
+export async function assertCurrentProfile(tx: Transaction, profile: ActiveProfile): Promise<void> {
+  const maintenance = await tx.get(db.doc(`tenants/${profile.tenantId}/meta/inventory_maintenance`));
+  if (maintenance.data()?.active === true) throw new HttpsError('unavailable', 'Inventario en mantenimiento. Intenta nuevamente al terminar la migración.');
+  const data = (await tx.get(db.doc(`users/${profile.uid}`))).data();
+  if (data?.active !== true || data.tenantId !== profile.tenantId || data.role !== profile.role
+    || (profile.storeAccess === 'all' && data.storeAccess !== 'all')
+    || (profile.role !== 'admin' && profile.storeAccess !== 'all' && data.storeId !== profile.storeId)) {
+    throw new HttpsError('permission-denied', 'Tu acceso cambió. Vuelve a iniciar sesión.');
+  }
 }
 
 export async function requireReplenishmentApprover(request: CallableRequest): Promise<ActiveProfile> {

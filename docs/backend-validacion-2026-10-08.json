@@ -1,0 +1,43 @@
+{
+  "date": "2026-10-08",
+  "project": "demo-denzoz-ops",
+  "production_published": false,
+  "production_data_migrated": false,
+  "runtime": { "functions_node": "22", "php": "8.2.33", "browser": "Edge headless via Python Playwright" },
+  "javascript_tests": {
+    "functions_unit": 17,
+    "inventory_sales_permissions_integration": 5,
+    "calendar_integration": 1,
+    "presentation_migration": 1,
+    "firestore_storage_rules": 15,
+    "frontend_utilities": 8,
+    "fiscal_payload": 4,
+    "indexes_configuration": 1,
+    "backend_audit_regressions": 8,
+    "total_unique": 60,
+    "failures": 0,
+    "execution_note": "Suites ejecutadas por grupos. Tras los últimos cambios de unidades medibles y presupuesto del scheduler, se repitieron las 17 unitarias y 21 pruebas de regresión/utilidades/índices/payload."
+  },
+  "php_tests": { "tests": 20, "assertions": 73, "failures": 0 },
+  "build_checks": { "functions_compile": true, "web_typecheck": true, "web_lint": true, "web_build": true, "git_diff_check": true },
+  "production_dependency_audits": { "npm_functions_known_vulnerabilities": 0, "npm_web_known_vulnerabilities": 0, "composer_advisories": 0, "composer_abandoned": 0 },
+  "browser_cache": {
+    "local_emulators_only": true,
+    "cases": [
+      { "products": 50, "initial_ms_local": 2391, "same_commit_burst": 50, "reconnection": true, "indexeddb_reload": true },
+      { "products": 500, "initial_ms_local": 2140, "same_commit_burst": 500, "reconnection": true, "indexeddb_reload": true },
+      { "products": 5000, "initial_ms_local": 24344, "same_commit_burst": 500, "reconnection": true, "indexeddb_reload": true }
+    ],
+    "timing_note": "Carga inicial local incluyendo módulos y emuladores; no representa p95 de producción. Se verificó reutilización del repositorio con varios suscriptores."
+  },
+  "not_certified": [
+    "Entrega real de FCM con app cerrada en equipos del cliente",
+    "SUNAT/Greenter de extremo a extremo con servicios y credenciales reales",
+    "Schedulers ejecutándose en infraestructura publicada",
+    "Disponibilidad READY de los nuevos índices en producción",
+    "Concurrencia en el motor SQL real",
+    "Carga, p95 y consumo de una jornada representativa",
+    "Backup, restauración, PITR y políticas de retención reales",
+    "App Check configurado y exigido en producción"
+  ]
+}

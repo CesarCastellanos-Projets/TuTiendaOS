@@ -1,0 +1,25 @@
+{
+  "score": 4,
+  "summary": "Aislamiento por empresa, roles desde perfil vigente, inventario y ventas solo servidor, límites de consultas y origen de incidencias protegido. Evaluación local; no confirma publicación ni califica las Functions que usan Admin SDK.",
+  "checks": {
+    "update_bypass": "Identidad, rol y permisos no editables por cliente; resolución de incidencia limitada a transición abierta a resuelta.",
+    "authority_source": "Perfil de users administrado por servidor y claims complementarios para acceso multitiendas.",
+    "ownership": "Ventas, caja, archivos e inbox sujetos a empresa, rol y propietario/contexto según flujo.",
+    "resource_bounds": "Consultas cliente con limit hasta 500; strings, mapas críticos y listas acotados.",
+    "type_safety": "Esquemas validados para escrituras cliente; mapas de inventario, cotizaciones y ventas escritos mediante Functions."
+  },
+  "findings": [
+    {
+      "severity": "minor",
+      "check": "Audit timestamp authority",
+      "issue": "createdAt/resolvedAt de incidencias y updatedAt de configuración siguen siendo números del cliente. Se protege identidad/origen, pero el reloj no constituye evidencia autoritativa del servidor.",
+      "recommendation": "Si se exige auditoría temporal estricta, mover estas escrituras a una Function o adoptar serverTimestamp con migración compatible de tipos."
+    }
+  ],
+  "operational_requirements": [
+    "Publicar reglas junto con clientes compatibles.",
+    "Esperar índices READY antes del cambio de consultas.",
+    "Preparar metadatos históricos antes de activar sincronización por committedAt.",
+    "Validar autorización de Functions separadamente; Admin SDK no está sujeto a Firestore Rules."
+  ]
+}

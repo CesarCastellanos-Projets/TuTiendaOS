@@ -120,22 +120,22 @@ export function ProductLines({
               <button
                 type="button"
                 onClick={() => add(p)}
-                className="flex w-full items-center justify-between px-3.5 py-2.5 text-left text-sm hover:bg-indigo-50/50 transition-colors"
+                className="flex w-full items-center justify-between px-3.5 py-2.5 text-left text-sm hover:bg-brand-50/50 transition-colors"
               >
                 <div className="min-w-0 flex-1">
-                  <span className="font-semibold text-slate-900 block truncate">{p.name}</span>
-                  <div className="flex items-center gap-2 mt-0.5">
+                  <span className="font-semibold text-slate-900 block">{p.name}</span>
+                  <div className="flex flex-wrap items-center gap-2 mt-0.5">
                     {p.presentationId ? (
                       <>
-                        <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 text-[11px] font-extrabold text-primary">
+                        <span className="inline-flex items-center gap-1 rounded-md bg-brand-50 border border-brand-200 px-1.5 py-0.5 text-xs font-extrabold text-primary">
                            {p.presentationLabel}
                         </span>
-                        <span className="text-[11px] text-slate-500 font-medium">
+                        <span className="text-xs text-slate-500 font-medium">
                           ({p.factor} unidades por presentación)
                         </span>
                       </>
                     ) : (
-                      <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[11px] font-bold text-slate-600">
+                      <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-xs font-bold text-slate-600">
                         Unidad base
                       </span>
                     )}
@@ -143,7 +143,7 @@ export function ProductLines({
                 </div>
                 <div className="ml-3 shrink-0 text-right font-mono">
                   <span className="text-xs font-bold text-slate-900">S/ {p.salePrice.toFixed(2)}</span>
-                  <span className="block text-[10px] text-slate-400 font-medium">
+                  <span className="block text-xs text-slate-400 font-medium">
                     {p.presentationId ? 'por presentación' : 'por unidad'}
                   </span>
                 </div>
@@ -158,22 +158,22 @@ export function ProductLines({
           {lines.map((l, idx) => (
             <li
               key={`${l.productId}:${l.presentationId ?? 'base'}`}
-              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200/90 bg-white p-3 shadow-xs"
+              className="inventory-product-line flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200/90 bg-white p-3 shadow-xs"
             >
               <div className="min-w-0 flex-1">
-                <span className="font-bold text-slate-900 text-sm block truncate">{l.name}</span>
-                <div className="flex items-center gap-2 mt-1">
+                <span className="font-bold text-slate-900 text-sm block">{l.name}</span>
+                <div className="flex flex-wrap items-center gap-2 mt-1">
                   {l.presentationId ? (
                     <>
-                      <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 text-[11px] font-extrabold text-primary">
+                      <span className="inline-flex items-center gap-1 rounded-md bg-brand-50 border border-brand-200 px-1.5 py-0.5 text-xs font-extrabold text-primary">
                          {l.presentationLabel}
                       </span>
-                      <span className="text-[11px] font-medium text-slate-500">
+                      <span className="text-xs font-medium text-slate-500">
                         Total: <b className="font-mono text-slate-700">{l.qty * l.factor}</b> unidades
                       </span>
                     </>
                   ) : (
-                    <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[11px] font-bold text-slate-600">
+                    <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-xs font-bold text-slate-600">
                       Unidad base
                     </span>
                   )}
@@ -184,7 +184,7 @@ export function ProductLines({
                 <div className="text-right">
                   <label
                     htmlFor={`qty-${l.productId}-${l.presentationId ?? 'base'}`}
-                    className="block text-[10px] font-bold uppercase tracking-wider text-slate-500"
+                    className="block text-xs font-bold uppercase tracking-wider text-slate-500"
                   >
                     {l.presentationId ? 'Presentaciones' : 'Unidades'}
                   </label>

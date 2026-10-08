@@ -1,10 +1,11 @@
 import { availableBase, availablePresentation } from '../../lib/stock-availability';
 import { useEffect, useState } from 'react';
-import { Camera, PackageX, Search, TriangleAlert, WifiOff, ScanLine, X, AlertCircle, Layers } from 'lucide-react';
+import { Camera, ScanBarcode, PackageX, Search, TriangleAlert, WifiOff, ScanLine, X, AlertCircle, Layers } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
 import { useStoreCatalog, useCatalogSearch, findInCatalog } from '../../hooks/useStoreCatalog';
 import type { ProductWithId } from '../../lib/catalog-repository';
 import { useScanner } from '../../hooks/useScanner';
+import { Modal } from '../../components/ui/Modal';
 import { IncidentFormModal } from './Incidents';
 import type { ProductStock } from '../../types';
 import { money } from '../../lib/utils';
@@ -12,7 +13,7 @@ import { money } from '../../lib/utils';
 export function WorkerLookup() {
   const profile = useAuth((s) => s.profile)!;
   const storeId = profile.storeId!;
-  const { items: catalog, products } = useStoreCatalog(storeId);
+  const { items: catalog, products, error: catalogError } = useStoreCatalog(storeId);
   const searchIn = useCatalogSearch(catalog);
   const [selected, setSelected] = useState<ProductStock | null>(null);
   const [term, setTerm] = useState('');
@@ -48,7 +49,9 @@ export function WorkerLookup() {
   const scanner = useScanner(onCode);
 
   return (
-    <div className="space-y-4">
+    <div className="worker-lookup space-y-4">
+      {catalogError && <p role="alert" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{catalogError}</p>}
+      <div className="lookup-intro"><span className="eyebrow">En tienda</span><h1>Consulta al instante.</h1><p>Precio, presentaciones y disponibilidad de tus productos.</p></div>
       {/* Banner Offline PWA */}
       {!isOnline && (
         <div className="flex items-center gap-2.5 rounded-2xl bg-amber-50 border border-amber-200 p-3 text-xs font-semibold text-amber-900 shadow-xs">
@@ -138,7 +141,7 @@ export function WorkerLookup() {
           <AlertCircle size={18} className="text-amber-600 shrink-0 mt-0.5" />
           <div className="space-y-1">
             <p className="font-bold">{scanner.error}</p>
-            <p className="text-amber-800 text-[11px]">
+            <p className="text-amber-800 text-xs">
               Puedes buscar el producto escribiendo su nombre en el buscador de arriba.
             </p>
           </div>
@@ -177,7 +180,7 @@ export function WorkerLookup() {
         <div className="rounded-2xl border border-slate-200 bg-white shadow-lg overflow-hidden animate-in fade-in">
           <div className="bg-slate-50 px-4 py-2 border-b border-slate-100 flex items-center justify-between text-xs font-bold text-slate-500">
             <span>Resultados de búsqueda ({results.length})</span>
-            <span className="text-[10px] text-slate-400">Toca para consultar</span>
+            <span className="text-xs text-slate-400">Toca para consultar</span>
           </div>
           {results.length === 0 ? (
             <div className="px-4 py-6 text-center text-sm text-slate-500 space-y-1">
@@ -193,20 +196,20 @@ export function WorkerLookup() {
                       setSelected(p);
                       setTerm('');
                     }}
-                    className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-indigo-50/50 transition-colors group"
+                    className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-brand-50/50 transition-colors group"
                   >
                     <div className="min-w-0 flex-1 pr-3">
                       <span className="block truncate text-sm font-bold text-slate-800 group-hover:text-primary">
                         {p.productName}
                       </span>
                       {p.locationName && (
-                        <span className="text-[11px] text-slate-400 block truncate mt-0.5">
+                        <span className="text-xs text-slate-400 block truncate mt-0.5">
                            {p.locationName}
                         </span>
                       )}
                     </div>
                     <div className="flex items-center gap-2.5 shrink-0">
-                      <span className={`badge text-[10px] font-bold ${p.quantity <= 5 ? 'bg-red-50 text-critical border border-red-200' : 'bg-emerald-50 text-success border border-emerald-200'}`}>
+                      <span className={`badge text-xs font-bold ${p.quantity <= 5 ? 'bg-red-50 text-critical border border-red-200' : 'bg-emerald-50 text-success border border-emerald-200'}`}>
                         {p.quantity} {p.presentationUnit ?? 'UN'}
                       </span>
                       <span className="price-tag font-mono text-sm font-extrabold text-slate-900">
@@ -221,6 +224,7 @@ export function WorkerLookup() {
         </div>
       )}
 
+      {!term && !selected && !notFound && catalog.length > 0 && <div className="lookup-empty"><ScanBarcode size={42} strokeWidth={1.2} /><strong>Busca o escanea un producto</strong><p>Usa el lector de códigos o abre la cámara para consultar.</p></div>}
       {/* Modales y Detalle del Producto */}
       {selected && selected.productId === '' && (
         <IncidentFormModal
@@ -268,46 +272,15 @@ function ProductCard({
 
   return (
     <>
-      <div
-        className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-4 animate-in fade-in"
-        onClick={(e) => {
-          if (e.target === e.currentTarget) onClose();
-        }}
-      >
-        <article className="w-full max-w-md overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl animate-in zoom-in-95 flex flex-col max-h-[90vh]">
-          {/* Cinta superior decorativa */}
-          <div className="h-1.5 w-full bg-linear-to-r from-primary to-indigo-500" aria-hidden />
-
-          {/* Cabecera del modal centrado */}
-          <div className="p-5 border-b border-slate-100 flex items-start justify-between gap-3 bg-slate-50/60">
-            <div className="min-w-0 flex-1">
-              <span className="text-[11px] font-extrabold uppercase tracking-wider text-primary block">
-                Consulta de Producto
-              </span>
-              <h2 className="text-lg font-display font-extrabold text-slate-900 leading-tight mt-0.5">
-                {product?.name || p.productName}
-              </h2>
-              {p.locationName && (
-                <span className="text-xs text-slate-500 font-medium block mt-1">
-                   Ubicación: <strong className="text-slate-700">{p.locationName}</strong>
-                </span>
-              )}
-            </div>
-            <button
-              onClick={onClose}
-              className="flex h-8 w-8 items-center justify-center rounded-full bg-white border border-slate-200 text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors shrink-0 shadow-xs"
-              aria-label="Cerrar"
-            >
-              <X size={16} />
-            </button>
-          </div>
-
+      <Modal open={!reporting} title={product?.name || p.productName} onClose={onClose} side>
+        <article>
+          {p.locationName && <p className="mb-3 text-sm text-slate-500">{p.locationName}</p>}
           {/* Contenido con scroll */}
-          <div className="p-5 space-y-4 overflow-y-auto flex-1">
+          <div className="space-y-4">
             {/* Estado del Stock en Tienda */}
             <div className="flex items-center justify-between rounded-2xl border border-slate-200/80 bg-slate-50 p-3.5">
               <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
                   Stock Físico en Tienda
                 </span>
                 <div className="flex items-center gap-2 mt-1">
@@ -323,14 +296,14 @@ function ProductCard({
                     {isOutOfStock ? 'Agotado (0)' : `${p.quantity} unidades`}
                   </span>
                   {lowStock && !isOutOfStock && (
-                    <span className="text-[11px] font-semibold text-amber-600">
+                    <span className="text-xs font-semibold text-amber-600">
                       · Quedan pocas
                     </span>
                   )}
                 </div>
               </div>
               <div className="text-right">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
                   Precio Base ({baseUnit})
                 </span>
                 <span className="font-mono text-2xl font-extrabold text-slate-900">
@@ -342,23 +315,23 @@ function ProductCard({
             {/* Presentaciones y Precios */}
             <div className="space-y-2">
               <span className="text-xs font-bold uppercase tracking-wider text-slate-500 block flex items-center gap-1.5">
-                <Layers size={14} className="text-indigo-600" />
+                <Layers size={14} className="text-brand-600" />
                 Presentaciones y Precios ({presentations.length + 1})
               </span>
 
               <div className="space-y-2.5">
                 {/* 1. Unidad Base */}
-                <div className="flex items-center justify-between rounded-2xl border-2 border-indigo-100 bg-indigo-50/40 p-3.5 transition-all">
+                <div className="flex items-center justify-between rounded-2xl border-2 border-brand-100 bg-brand-50/40 p-3.5 transition-colors">
                   <div className="min-w-0 flex-1 pr-3">
                     <div className="flex items-center gap-2">
-                      <span className="badge bg-indigo-600 text-white font-extrabold text-[11px]">
+                      <span className="badge bg-brand-600 text-white font-extrabold text-xs">
                         {baseUnit}
                       </span>
                       <span className="text-xs font-extrabold text-slate-800">
                         Unidad Principal (x1)
                       </span>
                     </div>
-                    <span className="text-[11px] text-slate-500 font-mono block mt-1">
+                    <span className="text-xs text-slate-500 font-mono block mt-1">
                       Código: {baseBarcode || 'Sin código'}
                     </span>
                   </div>
@@ -366,7 +339,7 @@ function ProductCard({
                     <span className="price-tag font-mono text-xl font-extrabold text-primary block">
                       {money(basePrice)}
                     </span>
-                    <span className="text-[10px] text-slate-400 font-medium">Por unidad</span>
+                    <span className="text-xs text-slate-400 font-medium">Por unidad</span>
                   </div>
                 </div>
 
@@ -379,11 +352,11 @@ function ProductCard({
                   return (
                     <div
                       key={presentationId}
-                      className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs hover:border-slate-300 transition-all"
+                      className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-3.5 shadow-xs hover:border-slate-300 transition-colors"
                     >
                       <div className="min-w-0 flex-1 pr-3">
                         <div className="flex items-center gap-2">
-                          <span className="badge bg-slate-800 text-white font-extrabold text-[11px]">
+                          <span className="badge bg-slate-800 text-white font-extrabold text-xs">
                             {pres.unit}
                           </span>
                           <span className="text-xs font-bold text-slate-800">
@@ -391,11 +364,11 @@ function ProductCard({
                           </span>
                         </div>
                         {pres.barcode && (
-                          <span className="text-[11px] text-slate-500 font-mono block mt-1">
+                          <span className="text-xs text-slate-500 font-mono block mt-1">
                             Código: {pres.barcode}
                           </span>
                         )}
-                        <span className="text-[11px] text-emerald-700 font-medium block mt-1">
+                        <span className="text-xs text-emerald-700 font-medium block mt-1">
                           Disponible: <strong>{disponible} {pres.description || pres.unit}</strong>
                           {pres.autoUnpackEnabled ? ` · Saldo compartido: ${availableBase(p, presentations)} ${baseUnit}` : ' · Solo cajas cerradas'}
                         </span>
@@ -404,7 +377,7 @@ function ProductCard({
                         <span className="price-tag font-mono text-xl font-extrabold text-slate-900 block">
                           {money(pres.salePrice)}
                         </span>
-                        <span className="text-[10px] text-slate-400 font-medium">
+                        <span className="text-xs text-slate-400 font-medium">
                           ({money(pres.salePrice / factor)} c/u)
                         </span>
                       </div>
@@ -416,7 +389,7 @@ function ProductCard({
           </div>
 
           {/* Acciones inferiores */}
-          <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex gap-2">
+          <div className="mt-5 pt-4 border-t border-slate-100 flex gap-2">
             <button
               className="btn-ghost flex-1 !py-2.5 text-xs font-bold"
               onClick={() => setReporting(true)}
@@ -431,7 +404,7 @@ function ProductCard({
             </button>
           </div>
         </article>
-      </div>
+      </Modal>
 
       {reporting && (
         <IncidentFormModal

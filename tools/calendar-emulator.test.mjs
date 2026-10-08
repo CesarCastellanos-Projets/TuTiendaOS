@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -6,6 +6,7 @@ if (process.env.FIRESTORE_EMULATOR_HOST !== '127.0.0.1:8080' || process.env.FIRE
 process.env.GCLOUD_PROJECT = 'demo-denzoz-ops';
 const require = createRequire(new URL('../functions/package.json', import.meta.url));
 const { db } = require('./lib/firebase.js');
+after(async () => { await db.terminate(); });
 const { dispatchCalendarEvent, deliverCalendarNotification } = require('./lib/calendar.js');
 const tenant = 'tenant-calendar';
 async function identity(role, canManageCalendar, company = tenant) {

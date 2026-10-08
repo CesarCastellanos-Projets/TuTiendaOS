@@ -77,7 +77,7 @@ export function ReceivingPage() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-2xl space-y-4 p-4">
+    <div className="mx-auto w-full max-w-4xl space-y-5">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="flex items-center gap-2 font-display text-2xl uppercase tracking-wide">
@@ -127,14 +127,14 @@ export function ReceivingPage() {
                       key={`${i.productId}:${i.presentationId ?? 'base'}`}
                       className="flex items-center justify-between rounded-lg bg-slate-50 border border-slate-100 px-2.5 py-1.5 text-xs"
                     >
-                      <div className="min-w-0 flex-1 truncate mr-2">
-                        <span className="font-semibold text-slate-800 block truncate">{i.name}</span>
+                      <div className="min-w-0 flex-1 mr-2">
+                        <span className="font-semibold text-slate-800 block">{i.name}</span>
                         {i.presentationId ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-primary">
+                          <span className="inline-flex items-center gap-1 text-xs font-bold text-primary">
                              {i.presentationLabel}
                           </span>
                         ) : (
-                          <span className="text-[10px] text-slate-400">Unidad suelta</span>
+                          <span className="text-xs text-slate-400">Unidad suelta</span>
                         )}
                       </div>
                       <b className="font-mono text-slate-900 shrink-0">
@@ -165,13 +165,13 @@ export function ReceivingPage() {
             {receivingTransfer?.items.map((item) => {
               const quantityKey = `${item.productId}:${item.presentationId ?? 'base'}`;
               return (
-                <div key={quantityKey} className="flex items-center justify-between gap-3 p-3">
+                <div key={quantityKey} className="receiving-line flex items-center justify-between gap-3 p-3">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-bold text-slate-900">{item.name}</p>
+                    <p className="text-sm font-semibold text-slate-900">{item.name}</p>
                     <div className="flex items-center gap-2 mt-0.5">
                       {item.presentationId ? (
                         <>
-                          <span className="inline-flex items-center gap-1 rounded-md bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 text-[10px] font-extrabold text-primary">
+                          <span className="inline-flex items-center gap-1 rounded-md bg-brand-50 border border-brand-200 px-1.5 py-0.5 text-xs font-extrabold text-primary">
                              {item.presentationLabel}
                           </span>
                           <span className="text-xs text-slate-500">
@@ -180,7 +180,7 @@ export function ReceivingPage() {
                         </>
                       ) : (
                         <>
-                          <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-600">
+                          <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 border border-slate-200 px-1.5 py-0.5 text-xs font-bold text-slate-600">
                             Unidad suelta
                           </span>
                           <span className="text-xs text-slate-500">

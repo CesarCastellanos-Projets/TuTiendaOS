@@ -1,11 +1,14 @@
+import { usePagedQuery } from '../../hooks/usePagedQuery';
+import { Pagination } from '../../components/ui/Pagination';
+import { EditableNumberInput } from '../../components/ui/EditableNumberInput';
 import { useEffect, useMemo, useState } from 'react';
-import { limit, orderBy, query } from 'firebase/firestore';
+import { limit, orderBy, query, where } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
 import { functions } from '../../lib/firebase';
 import { onSnapshot } from '../../lib/firestore-listener';
 import { ArrowRight, Ban, Send } from 'lucide-react';
 import { tenantCollection } from '../../lib/tenant-firestore';
-import { cancelTransfer, createTransfer } from '../../lib/inventory';
+import { cancelTransfer, createTransfer, receiveTransferItems } from '../../lib/inventory';
 import { ProductLines, useProductSearch, type PickLine } from '../../components/ui/ProductPicker';
 import type { Store, Transfer, TransferStatus, Warehouse } from '../../types';
 import { fmtDateTime } from '../../lib/utils';
@@ -15,8 +18,9 @@ import { EmptyState, FlashBar, useFlash } from '../../components/ui/Feedback';
 export function TransfersPage() {
   const [stores, setStores] = useState<Store[]>([]);
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
-  const [transfers, setTransfers] = useState<(Transfer & { id: string })[]>([]);
   const [creating, setCreating] = useState(false);
+  const [receiving, setReceiving] = useState<(Transfer & { id: string }) | null>(null);
+  const [received, setReceived] = useState<Record<string, number>>({});
   const [resolving, setResolving] = useState<(Transfer & { id: string }) | null>(null);
   const [resolution, setResolution] = useState<'devolver' | 'merma'>('devolver');
   const [reason, setReason] = useState('');
@@ -24,6 +28,9 @@ export function TransfersPage() {
   const [toId, setToId] = useState('');
   const [lines, setLines] = useState<PickLine[]>([]);
   const [statusFilter, setStatusFilter] = useState<TransferStatus | 'todos'>('todos');
+  const transferSource = useMemo(() => query(tenantCollection('transfers'), ...(statusFilter === 'todos' ? [] : [where('status', '==', statusFilter)]), orderBy('createdAt', 'desc')), [statusFilter]);
+  const pagination = usePagedQuery<Transfer & { id: string }>(transferSource);
+  const transfers = pagination.rows;
   const { search } = useProductSearch();
   const { msg, flash } = useFlash();
   const [busy, setBusy] = useState(false);
@@ -31,8 +38,8 @@ export function TransfersPage() {
   // Lista unificada de todas las ubicaciones (Almacenes y Tiendas)
   const allLocations = useMemo(() => {
     return [
-      ...warehouses.map((w) => ({ id: w.id, name: w.name, type: 'warehouse' as const, label: `[Almacén] ${w.name}` })),
-      ...stores.map((s) => ({ id: s.id, name: s.name, type: 'store' as const, label: `[Tienda] ${s.name}` }))
+      ...warehouses.filter((w) => w.active !== false).map((w) => ({ id: w.id, name: w.name, type: 'warehouse' as const, label: `[Almacén] ${w.name}` })),
+      ...stores.filter((s) => s.active !== false).map((s) => ({ id: s.id, name: s.name, type: 'store' as const, label: `[Tienda] ${s.name}` }))
     ];
   }, [warehouses, stores]);
 
@@ -45,14 +52,9 @@ export function TransfersPage() {
       query(tenantCollection('warehouses'), limit(50)),
       (s) => setWarehouses(s.docs.map((d) => ({ ...(d.data() as Warehouse), id: d.id })))
     );
-    const unTransfers = onSnapshot(
-      query(tenantCollection('transfers'), orderBy('createdAt', 'desc'), limit(100)),
-      (s) => setTransfers(s.docs.map((d) => ({ ...(d.data() as Transfer), id: d.id })))
-    );
     return () => {
       unStores();
       unWarehouses();
-      unTransfers();
     };
   }, []);
 
@@ -124,7 +126,7 @@ export function TransfersPage() {
           <button
             key={s}
             onClick={() => setStatusFilter(s)}
-            className={`rounded-xl px-3 py-1.5 text-xs font-bold capitalize transition-all ${
+            className={`rounded-xl px-3 py-1.5 text-xs font-bold capitalize transition-colors ${
               statusFilter === s
                 ? 'bg-primary text-white shadow-sm'
                 : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
@@ -151,7 +153,7 @@ export function TransfersPage() {
             <div key={t.id} className="card p-4 space-y-3 shadow-xs">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
                 <div className="flex items-center gap-2">
-                  <span className="font-mono text-xs font-bold text-primary bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-lg">
+                  <span className="font-mono text-xs font-bold text-primary bg-brand-50 border border-brand-200 px-2 py-0.5 rounded-lg">
                     {t.code}
                   </span>
                   <span
@@ -172,12 +174,12 @@ export function TransfersPage() {
               <div className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-800">
                 <span className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs">{t.fromLocationName}</span>
                 <ArrowRight size={14} className="text-slate-400 shrink-0" />
-                <span className="rounded-lg bg-indigo-50 text-primary px-2.5 py-1 text-xs">{t.toLocationName}</span>
+                <span className="rounded-lg bg-brand-50 text-primary px-2.5 py-1 text-xs">{t.toLocationName}</span>
               </div>
 
               <ul className="divide-y divide-slate-100 text-xs text-slate-600 bg-slate-50/60 rounded-xl p-2.5 border border-slate-100">
                 {t.items.map((i, idx) => (
-                  <li key={idx} className="flex items-center justify-between py-1">
+                  <li key={idx} className="transfer-product flex flex-wrap items-center justify-between gap-2 py-2">
                     <span className="font-medium text-slate-800">{i.name}</span>
                     <span className="font-mono font-bold text-slate-700">
                       Enviado: {i.qtySent} {i.presentationLabel ?? 'unidades'} {i.qtyReceived > 0 && `(Recibido: ${i.qtyReceived})`}
@@ -193,7 +195,8 @@ export function TransfersPage() {
                 </div>
               )}
               {(t.status === 'pendiente'  || t.status === 'en_transito') && (
-                <div className="text-right pt-1">
+                <div className="flex justify-end gap-2 pt-1">
+                  {t.toLocationType === 'warehouse' && <button className="btn-primary !min-h-9 !px-3 text-xs" onClick={() => { setReceiving(t); setReceived(Object.fromEntries(t.items.map((item) => [`${item.productId}:${item.presentationId ?? 'base'}`, item.qtySent]))); }}>Recibir en almacén</button>}
                   <button className="btn-danger !min-h-9 !px-3 !py-1.5 text-xs font-bold" onClick={() => void cancel(t)}>
                     <Ban size={14} /> Cancelar y devolver stock
                   </button>
@@ -203,6 +206,19 @@ export function TransfersPage() {
           ))}
         </div>
       )}
+
+      <Modal open={!!receiving} title="Recibir mercadería en almacén" onClose={() => setReceiving(null)}>
+        <div className="space-y-3">{receiving?.items.map((item) => {
+          const key = `${item.productId}:${item.presentationId ?? 'base'}`;
+          return <label key={key} className="block"><span className="label">{item.name} · {item.presentationLabel ?? 'Unidad base'} · enviado: {item.qtySent}</span><EditableNumberInput className="field" min={0} max={item.qtySent} step="any" value={received[key] ?? 0} onChange={(event) => setReceived((current) => ({ ...current, [key]: Number(event.target.value) }))} /></label>;
+        })}<button className="btn-primary w-full" disabled={busy} onClick={async () => {
+          if (!receiving) return;
+          setBusy(true);
+          try { await receiveTransferItems({ transferId: receiving.id, quantities: received }); setReceiving(null); flash('Recepción registrada.'); }
+          catch (cause) { flash(cause instanceof Error ? cause.message : 'No se pudo recibir'); }
+          finally { setBusy(false); }
+        }}>Confirmar recepción</button></div>
+      </Modal>
 
       {/* ─── MODAL NUEVA TRANSFERENCIA ───────────────────────────────────────── */}
       <Modal open={creating} title="Nueva transferencia de mercadería" onClose={() => setCreating(false)} wide>
@@ -267,6 +283,8 @@ export function TransfersPage() {
           }}>Guardar conciliación</button>
         </div>
       </Modal>
+      <Pagination {...pagination} />
+      {pagination.error && <p role="alert">{pagination.error}</p>}
       <FlashBar msg={msg} />
     </div>
   );

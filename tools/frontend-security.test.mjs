@@ -80,6 +80,10 @@ test('950 hojas permiten seleccionar 0.5 millar y comparten demanda del carrito'
   assert.equal(remainingPresentation(stock, { presentations: [millar] }, [{ productId: 'P1', presentationId: 'millar', qty: 0.5 }, { productId: 'P1', qty: 400 }], 'P1'), 50);
   assert.ok(saleQuantityError(0.5));
   assert.equal(saleQuantityError(0.5, null, 'KG'), null);
+  const measured = { factor: 3, autoUnpackEnabled: true, allowFractionalSale: true, fractionStep: 0.25 };
+  assert.equal(saleQuantityError(0.25, measured, 'KG'), null);
+  assert.ok(saleQuantityError(0.25, measured, 'UN'));
+  assert.ok(saleQuantityError(0.25, { ...measured, autoUnpackEnabled: false }, 'KG'));
 });
 
 test('selector y carrito separan 10 sueltos de dos cajas cerradas de 12', async () => {

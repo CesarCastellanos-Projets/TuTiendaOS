@@ -1,8 +1,12 @@
-import { useEffect, useState } from 'react';
-import { doc, query, setDoc, limit, deleteDoc } from 'firebase/firestore';
-import { onSnapshot } from '../../lib/firestore-listener';
+import { useMemo, useState } from 'react';
+import { documentId, orderBy, query } from 'firebase/firestore';
+import { usePagedQuery } from '../../hooks/usePagedQuery';
+import { Pagination } from '../../components/ui/Pagination';
 import { Building2, Plus, Warehouse as WarehouseIcon, Trash2 } from 'lucide-react';
-import { requireCurrentTenantId, tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
+import { tenantCollection } from '../../lib/tenant-firestore';
+import { durableCommand } from '../../lib/durable-command';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '../../lib/firebase';
 import { clean } from '../../lib/utils';
 import type { Store, Warehouse } from '../../types';
 import { Modal } from '../../components/ui/Modal';
@@ -10,24 +14,16 @@ import { FlashBar, useFlash } from '../../components/ui/Feedback';
 
 export function LocationsPage() {
   const [tab, setTab] = useState<'tiendas' | 'almacenes'>('tiendas');
-  const [stores, setStores] = useState<Store[]>([]);
-  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [editingStore, setEditingStore] = useState<Store | null>(null);
   const [editingWh, setEditingWh] = useState<Warehouse | null>(null);
   const [creatingStore, setCreatingStore] = useState(false);
   const [creatingWh, setCreatingWh] = useState(false);
   const { msg, flash } = useFlash();
 
-  useEffect(() => {
-    const qs = query(tenantCollection('stores'), limit(50));
-    const un1 = onSnapshot(qs, (s) => setStores(s.docs.map((d) => ({ ...(d.data() as Store), id: d.id }))));
-    const qw = query(tenantCollection('warehouses'), limit(50));
-    const un2 = onSnapshot(qw, (s) => setWarehouses(s.docs.map((d) => ({ ...(d.data() as Warehouse), id: d.id }))));
-    return () => {
-      un1();
-      un2();
-    };
-  }, []);
+  const locationQuery = useMemo(() => query(tenantCollection(tab === 'tiendas' ? 'stores' : 'warehouses'), orderBy(documentId())), [tab]);
+  const locationPage = usePagedQuery<Store & Warehouse>(locationQuery);
+  const stores = locationPage.rows.filter((row) => row.active !== false);
+  const warehouses = stores;
 
   return (
     <div className="space-y-4">
@@ -55,6 +51,8 @@ export function LocationsPage() {
         ))}
       </div>
 
+      {locationPage.error && <p role="alert" className="text-critical">{locationPage.error}</p>}
+      <Pagination {...locationPage} />
       {tab === 'tiendas' ? (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {stores.map((s) => (
@@ -66,11 +64,11 @@ export function LocationsPage() {
                     Editar
                   </button>
                   <button
-                    aria-label="Eliminar"
+                    aria-label="Archivar"
                     className="text-critical hover:opacity-70"
                     onClick={() => {
-                      if (confirm(`¿Eliminar la tienda ${s.name}? Los usuarios asignados quedarán sin tienda.`)) {
-                        void deleteDoc(tenantDoc('stores', s.id)).catch(() => flash('Error al eliminar'));
+                      if (confirm(`¿Archivar la tienda ${s.name}? Debe estar sin stock ni operaciones pendientes.`)) {
+                        void httpsCallable(functions, 'archiveLocation')({ type: 'store', id: s.id }).catch((error: unknown) => flash(error instanceof Error ? error.message : 'No se pudo archivar'));
                       }
                     }}
                   >
@@ -94,11 +92,11 @@ export function LocationsPage() {
                     Editar
                   </button>
                   <button
-                    aria-label="Eliminar"
+                    aria-label="Archivar"
                     className="text-critical hover:opacity-70"
                     onClick={() => {
-                      if (confirm(`¿Eliminar el almacén ${w.name}?`)) {
-                        void deleteDoc(tenantDoc('warehouses', w.id)).catch(() => flash('Error al eliminar'));
+                      if (confirm(`¿Archivar el almacén ${w.name}? Debe estar sin stock ni operaciones pendientes.`)) {
+                        void httpsCallable(functions, 'archiveLocation')({ type: 'warehouse', id: w.id }).catch((error: unknown) => flash(error instanceof Error ? error.message : 'No se pudo archivar'));
                       }
                     }}
                   >
@@ -122,18 +120,16 @@ export function LocationsPage() {
             e.preventDefault();
             const fd = new FormData(e.currentTarget);
             const data = {
-              tenantId: requireCurrentTenantId(),
               name: clean(fd.get('name')),
               code: (clean(fd.get('code')) || '').toUpperCase(),
               address: clean(fd.get('address'))
             };
             if (!data.name || !data.code) return flash('Error: nombre y código son obligatorios');
-            const ref = editingStore && stores.some((s) => s.id === editingStore.id) ? tenantDoc('stores', editingStore.id) : doc(tenantCollection('stores'));
-            void setDoc(ref, data).then(() => {
+            void durableCommand('saveLocation', { ...data, type: 'store', ...(editingStore ? { id: editingStore.id } : {}) }).then(() => {
               setCreatingStore(false);
               setEditingStore(null);
               flash('Tienda guardada');
-            });
+            }).catch((error: unknown) => flash(error instanceof Error ? error.message : 'No se pudo guardar'));
           }}
           className="space-y-3"
         >
@@ -159,18 +155,16 @@ export function LocationsPage() {
             e.preventDefault();
             const fd = new FormData(e.currentTarget);
             const data = {
-              tenantId: requireCurrentTenantId(),
               name: clean(fd.get('name')),
               code: (clean(fd.get('code')) || '').toUpperCase(),
               isCentral: fd.get('isCentral') === 'on'
             };
             if (!data.name || !data.code) return flash('Error: nombre y código son obligatorios');
-            const ref = editingWh && warehouses.some((w) => w.id === editingWh.id) ? tenantDoc('warehouses', editingWh.id) : doc(tenantCollection('warehouses'));
-            void setDoc(ref, data).then(() => {
+            void durableCommand('saveLocation', { ...data, type: 'warehouse', ...(editingWh ? { id: editingWh.id } : {}) }).then(() => {
               setCreatingWh(false);
               setEditingWh(null);
               flash('Almacén guardado');
-            });
+            }).catch((error: unknown) => flash(error instanceof Error ? error.message : 'No se pudo guardar'));
           }}
           className="space-y-3"
         >

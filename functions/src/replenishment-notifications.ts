@@ -1,35 +1,61 @@
+import { createHash } from 'node:crypto';
 import { onDocumentCreated } from 'firebase-functions/v2/firestore';
-import type { QueryDocumentSnapshot } from 'firebase-admin/firestore';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { Timestamp, type DocumentReference, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { admin, db } from './firebase';
 
-export const notifyReplenishmentRequest = onDocumentCreated('tenants/{tenantId}/replenishment_requests/{requestId}', async (event) => {
+export async function deliverReplenishmentPush(ref: DocumentReference, now = Date.now(), send = async (token: string, requestId: string) => {
+  if (process.env.FUNCTIONS_EMULATOR === 'true') throw new Error('FCM remoto deshabilitado en emuladores.');
+  await admin.messaging().send({ token, data: { kind: 'replenishment', notificationId: requestId },
+    webpush: { headers: { TTL: '3600' } } });
+}): Promise<void> {
+  const claim = await db.runTransaction(async (tx) => {
+    const snapshot = await tx.get(ref); const job = snapshot.data();
+    if (!job || (job.expiresAt?.toMillis?.() ?? Infinity) <= now || job.state !== 'pending' || Number(job.nextAttemptAt) > now || Number(job.leaseUntil ?? 0) > now) return null;
+    const [device, user, request] = await tx.getAll(db.doc(`calendar_push_devices/${job.deviceId}`), db.doc(`users/${job.uid}`),
+      db.doc(`tenants/${job.tenantId}/replenishment_requests/${job.requestId}`));
+    const profile = user.data(); const target = device.data();
+    if (!target || target.uid !== job.uid || target.tenantId !== job.tenantId || target.replenishment !== true
+      || Number(target.expiresAt) <= now || profile?.active !== true || profile.tenantId !== job.tenantId
+      || !(profile.role === 'admin' || (profile.role === 'pos' && profile.storeAccess === 'all'))
+      || request.data()?.status !== 'pendiente') {
+      tx.update(ref, { state: 'cancelled' }); return null;
+    }
+    const attempt = Number(job.attempts ?? 0) + 1;
+    tx.update(ref, { leaseUntil: now + 60000, attempts: attempt });
+    return { token: String(target.token), requestId: String(job.requestId), device: device.ref, attempt };
+  });
+  if (!claim) return;
+  try { await send(claim.token, claim.requestId); await ref.update({ state: 'sent', sentAt: Date.now(), leaseUntil: 0 }); }
+  catch (cause) {
+    const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
+    const invalid = ['messaging/registration-token-not-registered', 'messaging/invalid-registration-token'].includes(code);
+    if (invalid) await claim.device.delete();
+    await ref.update({ state: invalid || claim.attempt >= 6 ? 'failed' : 'pending', leaseUntil: 0,
+      nextAttemptAt: now + Math.min(3600000, 60000 * 2 ** claim.attempt), lastError: code || 'delivery-unavailable' });
+  }
+}
+
+export const notifyReplenishmentRequest = onDocumentCreated({ document: 'tenants/{tenantId}/replenishment_requests/{requestId}', retry: true }, async (event) => {
   if (!event.data || event.data.data().status !== 'pendiente') return;
   const { tenantId, requestId } = event.params;
-  const query = db.collection('calendar_push_devices').where('tenantId', '==', tenantId).where('replenishment', '==', true).limit(100);
+  const query = db.collection('calendar_push_devices').where('tenantId', '==', tenantId).where('replenishment', '==', true).orderBy('__name__').limit(100);
   let cursor: QueryDocumentSnapshot | undefined;
-  while (true) {
+  do {
     const devices = await (cursor ? query.startAfter(cursor) : query).get();
-    if (devices.empty) break;
-    const ids = [...new Set(devices.docs.map((device) => String(device.data().uid)))];
-    const users = await db.getAll(...ids.map((uid) => db.doc(`users/${uid}`)));
-    const allowed = new Set(users.filter((user) => {
-      const profile = user.data();
-      return profile?.active === true && profile.tenantId === tenantId
-        && (profile.role === 'admin' || (profile.role === 'pos' && profile.storeAccess === 'all'));
-    }).map((user) => user.id));
-    const targets = devices.docs.filter((device) => allowed.has(String(device.data().uid)) && Number(device.data().expiresAt) > Date.now());
-    await Promise.all(targets.map(async (device) => {
-      try {
-        await admin.messaging().send({ token: String(device.data().token),
-          data: { kind: 'replenishment', notificationId: requestId },
-          webpush: { headers: { TTL: '3600' } } });
-      } catch (cause) {
-        const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
-        if (['messaging/registration-token-not-registered', 'messaging/invalid-registration-token'].includes(code)) await device.ref.delete();
-        else console.warn('No se pudo enviar un aviso de reposición', code);
-      }
-    }));
-    if (devices.size < 100) break;
-    cursor = devices.docs.at(-1);
-  }
+    for (const device of devices.docs) {
+      const id = createHash('sha256').update(`${tenantId}:${requestId}:${device.id}`).digest('hex');
+      const job = db.doc(`replenishment_push_jobs/${id}`);
+      try { await job.create({ tenantId, requestId, deviceId: device.id, uid: String(device.data().uid), state: 'pending', attempts: 0,
+        nextAttemptAt: 0, leaseUntil: 0, createdAt: Date.now(), expiresAt: Timestamp.fromMillis(Date.now() + 7 * 86400000) }); }
+      catch (cause) { if (!(cause && typeof cause === 'object' && 'code' in cause && cause.code === 6)) throw cause; }
+      await deliverReplenishmentPush(job);
+    }
+    cursor = devices.size === 100 ? devices.docs.at(-1) : undefined;
+  } while (cursor);
+});
+
+export const retryReplenishmentPush = onSchedule({ schedule: 'every 5 minutes', maxInstances: 1 }, async () => {
+  const jobs = await db.collection('replenishment_push_jobs').where('state', '==', 'pending').where('nextAttemptAt', '<=', Date.now()).orderBy('nextAttemptAt').limit(50).get();
+  for (const job of jobs.docs) await deliverReplenishmentPush(job.ref).catch((cause: unknown) => console.warn('Aviso pendiente de recuperación', cause instanceof Error ? cause.message : 'error'));
 });

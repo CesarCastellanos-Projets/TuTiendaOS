@@ -63,7 +63,7 @@ export function CalendarWorkspace() {
           Nuevo evento
         </button>
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-100 bg-indigo-50 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-brand-100 bg-brand-50 p-3">
         <p className="text-sm">Recibe recordatorios también con la app cerrada en este dispositivo.</p>
         <button
           className="btn-ghost"
@@ -88,7 +88,7 @@ export function CalendarWorkspace() {
           {error ?? message}
         </p>
       )}
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+      <div className="calendar-workspace grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
         <section className="card overflow-x-auto p-2 sm:p-4">
           <div className="mb-4 flex items-center justify-between gap-2">
             <button className="btn-ghost !px-2" aria-label="Mes anterior" onClick={() => move(-1)}>
@@ -123,11 +123,11 @@ export function CalendarWorkspace() {
                   aria-label={`${calendarDate(date)}${count ? `, ${count} pendientes` : ''}`}
                   aria-pressed={selectedDate === date}
                   onClick={() => setSelectedDate((current) => (current === date ? null : date))}
-                  className={`flex min-h-14 flex-col items-center justify-center rounded-lg border text-sm sm:min-h-20 ${selectedDate === date ? 'border-primary bg-indigo-50 text-primary' : date === today ? 'border-primary text-primary' : 'border-slate-100 hover:bg-slate-50'}`}
+                  className={`flex min-h-14 flex-col items-center justify-center rounded-lg border text-sm sm:min-h-20 ${selectedDate === date ? 'border-primary bg-brand-50 text-primary' : date === today ? 'border-primary text-primary' : 'border-slate-100 hover:bg-slate-50'}`}
                 >
                   <strong>{index + 1}</strong>
                   {count > 0 && (
-                    <span className="mt-1 text-[10px] font-semibold text-primary">
+                    <span className="mt-1 text-xs font-semibold text-primary">
                       {count} <span className="hidden sm:inline">pend.</span>
                     </span>
                   )}
@@ -174,7 +174,7 @@ export function CalendarWorkspace() {
               <div className="flex justify-between gap-2">
                 <h3 className="break-words font-bold">{event.title}</h3>
                 <span
-                  className={`badge shrink-0 ${event.status === 'pendiente' && event.dueDate < today ? 'bg-red-50 text-critical' : 'bg-indigo-50 text-primary'}`}
+                  className={`badge shrink-0 ${event.status === 'pendiente' && event.dueDate < today ? 'bg-red-50 text-critical' : 'bg-brand-50 text-primary'}`}
                 >
                   {event.status === 'pendiente' && event.dueDate < today ? 'Vencido' : event.status}
                 </span>
@@ -222,7 +222,7 @@ export function CalendarWorkspace() {
                 )}
               </div>
               {event.updatedByName && (
-                <p className="text-[10px] text-slate-400">Último cambio: {event.updatedByName}</p>
+                <p className="text-xs text-slate-400">Último cambio: {event.updatedByName}</p>
               )}
             </article>
           ))}

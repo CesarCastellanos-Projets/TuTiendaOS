@@ -1,3 +1,4 @@
+import { FieldValue } from 'firebase-admin/firestore';
 import { HttpsError } from 'firebase-functions/v2/https';
 
 export interface StockPresentation {
@@ -26,6 +27,10 @@ export function round2(value: number): number {
 
 export function round3(value: number): number {
   return Math.round((value + Number.EPSILON) * 1000) / 1000;
+}
+
+export function isMeasuredUnit(unit = 'UN'): boolean {
+  return ['KG', 'LT', 'L', 'M', 'GR', 'G', 'ML'].includes(unit.toUpperCase());
 }
 
 export function positiveQuantity(value: unknown, field = 'La cantidad'): number {
@@ -59,7 +64,7 @@ export function parsePresentations(product: Record<string, unknown>): StockPrese
     const fractionStep = Number.isFinite(configuredStep) && configuredStep > 0 && configuredStep < 1
       ? round3(configuredStep)
       : 0.5;
-    if (source.allowFractionalSale === true && (fractionStep < 0.001 || !Number.isInteger(round3(fractionStep * factor)))) {
+    if (source.allowFractionalSale === true && (fractionStep < 0.001 || (!isMeasuredUnit(String(product.unit ?? 'UN')) && !Number.isInteger(round3(fractionStep * factor))))) {
       throw new HttpsError('failed-precondition', 'El paso fraccionario debe equivaler a unidades base completas. Revisa la presentación.');
     }
     const priority = Number(source.autoUnpackPriority ?? index + 1);
@@ -128,24 +133,27 @@ export function totalBaseQuantity(state: StockState, presentations: StockPresent
   return round3(total);
 }
 
-export function stockPatch(state: StockState, presentations: StockPresentation[]) {
+export function stockPatch(state: StockState, presentations: StockPresentation[], minimum = 0, active = true) {
   const total = totalBaseQuantity(state, presentations);
   return {
     baseQuantity: state.baseQuantity,
     presentationQuantities: { ...state.presentationQuantities },
     quantity: total,
+    minStock: minimum,
+    isLowStock: active && total <= minimum,
     stockModelVersion: 4,
+    committedAt: FieldValue.serverTimestamp(),
     updatedAt: Date.now()
   };
 }
 
 export function stockEquivalent(quantity: number, presentation: StockPresentation | null, baseUnit = 'UN'): number {
-  if ((!presentation && !['KG', 'LT', 'L', 'M', 'GR', 'G', 'ML'].includes(baseUnit.toUpperCase()) || presentation && !presentation.autoUnpackEnabled) && !Number.isInteger(quantity)) {
+  if ((!presentation && !isMeasuredUnit(baseUnit) || presentation && !presentation.autoUnpackEnabled) && !Number.isInteger(quantity)) {
     throw new HttpsError('invalid-argument', 'Las unidades y los empaques cerrados deben tener cantidades enteras.');
   }
   const equivalent = round3(quantity * (presentation?.factor ?? 1));
   if (!Number.isFinite(quantity) || Math.abs(quantity - round3(quantity)) > 0.0000001
-    || (presentation && !Number.isInteger(equivalent))) {
+    || (presentation && !isMeasuredUnit(baseUnit) && !Number.isInteger(equivalent))) {
     throw new HttpsError('invalid-argument', 'La cantidad debe equivaler a unidades base completas y admite hasta tres decimales.');
   }
   return equivalent;
@@ -188,7 +196,7 @@ export function assertSaleStep(quantity: number, presentation: StockPresentation
   if (Math.abs(steps - Math.round(steps)) > 0.000001) {
     throw new HttpsError('invalid-argument', `La cantidad debe avanzar de ${presentation.fractionStep} en ${presentation.fractionStep}.`);
   }
-  if (!Number.isInteger(round3(quantity * presentation.factor))) {
+  if (!isMeasuredUnit(baseUnit) && !Number.isInteger(round3(quantity * presentation.factor))) {
     throw new HttpsError('failed-precondition', 'El paso fraccionario configurado no equivale a unidades completas.');
   }
 }

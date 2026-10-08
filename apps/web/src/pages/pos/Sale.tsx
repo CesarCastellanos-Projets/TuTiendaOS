@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getDoc, getDocs, limit, orderBy, query, where } from 'firebase/firestore';
+import { getDoc, limit, orderBy, query, where } from 'firebase/firestore';
 import { onSnapshot } from '../../lib/firestore-listener';
+import { usePagedQuery } from '../../hooks/usePagedQuery';
+import { Pagination } from '../../components/ui/Pagination';
 import {
   Camera,
   CheckCircle2,
@@ -39,8 +41,8 @@ import type { CashSession, ClientDoc, PaymentMethod, Sale, SaleItem, Quotation }
 import { DNI_RE, money, RUC_RE } from '../../lib/utils';
 import { Modal } from '../../components/ui/Modal';
 import { PresentationSelector } from '../../components/pos/PresentationSelector';
-import { MixedPaymentEditor } from '../../components/pos/MixedPaymentEditor';
-import { buildMixedPayments, newPaymentDraft, type PaymentDraft } from '../../lib/payments';
+import { MixedPaymentModal } from '../../components/pos/MixedPaymentModal';
+import { PAYMENT_LABELS, buildMixedPayments, mixedPaymentSummary, newPaymentDraft, type PaymentDraft } from '../../lib/payments';
 
 interface CartLine extends SaleItem {
   lineId: string;
@@ -63,12 +65,13 @@ const PAYMENTS: { id: PaymentMethod; label: string; icon: LucideIcon; colorClass
 ];
 
 export function PosSale() {
+  const [mobileView, setMobileView] = useState<'catalog' | 'cart'>('catalog');
   const profile = useAuth((s) => s.profile)!;
   const user = useAuth((s) => s.user);
   const company = useCompany();
   const storeId = profile.storeId!;
   const cartStorageKey = `denzoz_pos_cart_v2_${profile.tenantId}_${user?.uid}_${storeId}`;
-  const { items: catalog, products } = useStoreCatalog(storeId);
+  const { items: catalog, products, error: catalogError } = useStoreCatalog(storeId);
   const searchIn = useCatalogSearch(catalog);
 
   const [cart, setCart] = useState<CartLine[]>(() => {
@@ -106,6 +109,7 @@ export function PosSale() {
   const [paid, setPaid] = useState('');
   const [bankName, setBankName] = useState('BCP');
   const [mixedMode, setMixedMode] = useState(false);
+  const [mixedPaymentModal, setMixedPaymentModal] = useState(false);
   const [paymentDrafts, setPaymentDrafts] = useState<PaymentDraft[]>([newPaymentDraft('efectivo'), newPaymentDraft('yape')]);
   const [docType, setDocType] = useState<'boleta' | 'factura' | 'nota'>(() => {
     try {
@@ -151,30 +155,22 @@ export function PosSale() {
 
   // Cotizaciones
   const [quoteModal, setQuoteModal] = useState(false);
-  const [quotesList, setQuotesList] = useState<Quotation[]>([]);
-  const [loadingQuotes, setLoadingQuotes] = useState(false);
-
-  const openQuoteModal = async () => {
-    setQuoteModal(true);
-    setLoadingQuotes(true);
+  const [quotationId, setQuotationId] = useState<string | undefined>(() => {
     try {
-      const snap = await getDocs(
-        query(
-          tenantCollection('quotations'),
-          where('storeId', '==', storeId),
-          orderBy('createdAt', 'desc'),
-          limit(20)
-        )
-      );
-      setQuotesList(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Quotation)));
-    } catch {
-      // fallback
-    } finally {
-      setLoadingQuotes(false);
-    }
-  };
+      const saved = JSON.parse(localStorage.getItem(cartStorageKey) ?? '{}');
+      if (Date.now() - Number(saved.savedAt) < 86400000 && typeof saved.quotationId === 'string' && /^[\w-]{1,128}$/.test(saved.quotationId)) return saved.quotationId;
+    } catch { /* El carrito recuperado se valida nuevamente antes del cobro. */ }
+    return undefined;
+  });
+  const quoteSource = useMemo(() => quoteModal ? query(tenantCollection('quotations'), where('storeId', '==', storeId),
+    where('status', '==', 'pendiente'), orderBy('createdAt', 'desc')) : null, [quoteModal, storeId]);
+  const quotePagination = usePagedQuery<Quotation>(quoteSource, 20);
+  const quotesList = quotePagination.rows;
+  const loadingQuotes = quotePagination.loading;
+  const openQuoteModal = () => setQuoteModal(true);
 
   const loadQuoteIntoCart = (q: Quotation) => {
+    setQuotationId(q.id);
     const newCart: CartLine[] = [];
     for (const item of q.items) {
       const inCat = catalog.find((c) => c.productId === item.productId);
@@ -231,7 +227,8 @@ export function PosSale() {
     const synchronize = (event: StorageEvent) => {
       if (event.key === key) setPendingCheckout(Boolean(event.newValue));
       if (event.key === cartStorageKey && event.newValue === null && !busyRef.current) {
-        setCart([]); setDraftId(crypto.randomUUID());
+        setCart([]);
+    setQuotationId(undefined); setDraftId(crypto.randomUUID());
       }
     };
     window.addEventListener('storage', synchronize);
@@ -240,8 +237,10 @@ export function PosSale() {
 
   const finishCheckout = (sale: Sale & { id: string }) => {
     setReceiptDone({ id: sale.id, code: sale.code, total: sale.total, change: sale.changeAmount, html: ticketHtml(sale, company ?? undefined) });
-    setCart([]); setPaid(''); setClientDoc({ tipo: '-', numero: '', nombre: '' }); setDocType('boleta');
-    setMixedMode(false); setPaymentDrafts([newPaymentDraft('efectivo'), newPaymentDraft('yape')]);
+    setMobileView('catalog');
+    setCart([]);
+    setQuotationId(undefined); setPaid(''); setClientDoc({ tipo: '-', numero: '', nombre: '' }); setDocType('boleta');
+    setMixedMode(false); setMixedPaymentModal(false); setPaymentDrafts([newPaymentDraft('efectivo'), newPaymentDraft('yape')]);
     localStorage.removeItem(cartStorageKey);
     setPendingCheckout(false);
     setDraftId(crypto.randomUUID());
@@ -281,7 +280,7 @@ export function PosSale() {
       if (cart.length > 0 || clientDoc.tipo !== '-' || docType !== 'boleta') {
         localStorage.setItem(
           cartStorageKey,
-          JSON.stringify({ version: 2, draftId, cart, docType, savedAt: Date.now() })
+          JSON.stringify({ version: 2, draftId, cart, docType, quotationId, savedAt: Date.now() })
         );
       } else {
         localStorage.removeItem(cartStorageKey);
@@ -289,7 +288,7 @@ export function PosSale() {
     } catch {
       // ignore
     }
-  }, [cart, cartStorageKey, clientDoc, docType, draftId, storeId]);
+  }, [cart, cartStorageKey, clientDoc, docType, draftId, storeId, quotationId]);
 
   // Sincronizar y sanear ítems del carrito recuperados del almacenamiento local
   useEffect(() => {
@@ -343,6 +342,7 @@ export function PosSale() {
 
   const total = useMemo(() => round2(cart.reduce((s, l) => s + l.total, 0)), [cart]);
   const change = Math.max(0, (Number(paid) || 0) - total);
+  const mixedSummary = mixedMode ? mixedPaymentSummary(total, paymentDrafts) : null;
 
   // Extract categories for fast filter chips
   const categories = useMemo(() => [...new Set(catalog.map((stock) => productsById.get(stock.productId)?.category).filter((category): category is string => Boolean(category)))], [catalog, productsById]);
@@ -479,7 +479,7 @@ export function PosSale() {
   };
   usePosKeyboard(searchInputRef, {
     blocked: busy || Boolean(receiptDone) || Boolean(presentationProductId),
-    onChange: (value) => { setTerm(value); setHighlightedResult(0); },
+    onChange: (value) => { setTerm(value); setHighlightedResult(0); if (value) { setMobileView('catalog'); requestAnimationFrame(() => searchInputRef.current?.focus()); } },
     onScan: scanCode, onSubmit: submitSearch,
     isKnownCode: (value) => searchIn(value).some((item) => [item.barcode, item.internalCode, item.productId].some((code) => code?.toLowerCase() === value.toLowerCase())),
     onNavigate: (direction) => setHighlightedResult((current) => Math.max(0, Math.min(results.length - 1, current + direction)))
@@ -563,6 +563,22 @@ export function PosSale() {
       return;
     }
 
+    let pricesChanged = false;
+    const currentCart = cart.map((line) => {
+      const product = productsById.get(line.productId);
+      const presentation = product?.presentations?.find((item, index) => (item.id || `legacy-${index + 1}`) === line.presentationId);
+      const price = presentation?.salePrice ?? product?.salePrice;
+      if (!canOverridePrices && typeof price === 'number' && price !== line.unitPrice) {
+        pricesChanged = true;
+        return { ...line, unitPrice: price, total: round2(line.qty * price) };
+      }
+      return line;
+    });
+    if (pricesChanged) {
+      setCart(currentCart);
+      setError('Los precios cambiaron. Actualizamos el carrito; revisa el total y los pagos antes de cobrar.');
+      return;
+    }
     for (const line of cart) {
       const product = productsById.get(line.productId);
       const stock = catalog.find((item) => item.productId === line.productId);
@@ -597,6 +613,7 @@ export function PosSale() {
           factor: factor || 1,
           barcode
         })),
+        quotationId,
         paymentMethod: mixedMode ? 'mixto' : payment,
         ...(mixedPayments ? { payments: mixedPayments } : {}),
         bankName: payment === 'transferencia' ? bankName : null,
@@ -621,7 +638,7 @@ export function PosSale() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-slate-100/60 lg:h-full lg:overflow-hidden lg:flex-row">
+    <div className="sale-workspace" data-view={mobileView}>
       {pendingCheckout && (
         <div data-pos-block-input className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
           <div className="card max-w-md space-y-3 p-5">
@@ -632,8 +649,12 @@ export function PosSale() {
           </div>
         </div>
       )}
+      <div className="sale-mobile-tabs"><button className={mobileView === 'catalog' ? 'is-active' : ''} onClick={() => setMobileView('catalog')}>Productos</button><button className={mobileView === 'cart' ? 'is-active' : ''} onClick={() => setMobileView('cart')}>Carrito <span>{cart.length}</span></button></div>
+      {error && mobileView === 'cart' && <p role="alert" className="mx-4 mt-3 rounded-lg bg-red-50 p-3 text-sm text-critical lg:hidden">{error}</p>}
       {/* ─── COLUMNA IZQUIERDA: CATÁLOGO Y BÚSQUEDA ───────────────────────────── */}
-      <section className="flex min-w-0 flex-1 flex-col border-b border-slate-200 bg-white lg:overflow-hidden lg:border-b-0 lg:border-r">
+      <section className="sale-catalog">
+        {catalogError && <p role="alert" className="m-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{catalogError} El cobro vuelve a comprobar el stock en el servidor.</p>}
+        <p className="catalog-location">{storeName}</p>
         {/* Banner de Estado de Caja */}
         {!sessionOpen && (
           <div className="flex items-center justify-between gap-3 bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-xs font-semibold text-amber-900">
@@ -664,7 +685,7 @@ export function PosSale() {
                   ref={searchInputRef}
                   value={term}
                   onChange={(event) => { setTerm(event.target.value); setHighlightedResult(0); }}
-                  placeholder="Busca por nombre o escanea cualquier presentación…"
+                  placeholder="Buscar producto o escanear código"
                   className="field !pl-10 !h-12 !text-base font-medium shadow-xs"
                   aria-label="Buscar productos"
                   role="combobox"
@@ -677,7 +698,7 @@ export function PosSale() {
                   autoFocus
                 />
               </form>
-              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded-md bg-slate-100 border border-slate-200 px-2 py-0.5 text-[11px] font-bold text-slate-500 hidden sm:inline">
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded-md bg-slate-100 border border-slate-200 px-2 py-0.5 text-xs font-bold text-slate-500 hidden sm:inline">
                 Pistola USB
               </span>
               {results.length > 0 && (
@@ -689,11 +710,11 @@ export function PosSale() {
                         onClick={() => {
                           chooseProduct(p.productId);
                         }}
-                        className={`flex min-h-11 w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm hover:bg-indigo-50/60 transition-colors ${index === highlightedResult ? 'bg-indigo-50' : ''}`}
+                        className={`flex min-h-11 w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm hover:bg-brand-50/60 transition-colors ${index === highlightedResult ? 'bg-brand-50' : ''}`}
                       >
                         <div className="min-w-0 flex-1">
                           <span className="truncate font-medium text-slate-800 block">{p.productName}</span>
-                          {p.barcode && <span className="text-[10px] font-mono text-slate-400 block">Código: {p.barcode}</span>}
+                          {p.barcode && <span className="text-xs font-mono text-slate-400 block">Código: {p.barcode}</span>}
                         </div>
                         <div className="ml-3 flex shrink-0 items-center gap-2">
                           <span className={`badge ${p.quantity <= 5 ? 'bg-red-50 text-critical' : 'bg-emerald-50 text-success'}`}>
@@ -750,7 +771,7 @@ export function PosSale() {
               <button
                 type="button"
                 onClick={() => setSelectedCategory('todos')}
-                className={`shrink-0 rounded-xl px-3 py-1 text-xs font-bold transition-all ${
+                className={`shrink-0 rounded-xl px-3 py-1 text-xs font-bold transition-colors ${
                   selectedCategory === 'todos'
                     ? 'bg-slate-900 text-white shadow-xs'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -763,7 +784,7 @@ export function PosSale() {
                   key={cat}
                   type="button"
                   onClick={() => setSelectedCategory(cat)}
-                  className={`shrink-0 rounded-xl px-3 py-1 text-xs font-bold transition-all ${
+                  className={`shrink-0 rounded-xl px-3 py-1 text-xs font-bold transition-colors ${
                     selectedCategory === cat
                       ? 'bg-primary text-white shadow-xs'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -791,7 +812,7 @@ export function PosSale() {
 
         {/* Grilla Visual de Productos */}
         <div className="flex-1 p-4 lg:min-h-0 lg:overflow-y-auto">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+          <div className="product-grid">
             {filteredCatalog.slice(0, visibleCount).map((p) => {
               const prodDef = productsById.get(p.productId);
               const choices = salePresentations(p, prodDef);
@@ -806,25 +827,21 @@ export function PosSale() {
                   onClick={() => chooseProduct(p.productId)}
                   disabled={isOutOfStock}
                   aria-label={`Seleccionar ${p.productName}`}
-                  className={`card flex flex-col justify-between p-3 text-left transition-all ${
+                  className={`product-tile ${
                     isOutOfStock ? 'opacity-50 !border-dashed' : 'hover:border-primary/50 shadow-xs'
                   }`}
                 >
                   <div className="space-y-1">
-                    <span className="line-clamp-2 text-xs font-bold text-slate-800 leading-snug">
+                    <span className="product-tile-name">
                       {p.productName}
                     </span>
-                    {p.locationName && (
-                      <span className="text-[10px] font-medium text-slate-400 block truncate">
-                        {p.locationName}
-                      </span>
-                    )}
+
                   </div>
 
                   <div className="mt-2.5 space-y-2 pt-2 border-t border-slate-100">
                     <div className="flex items-end justify-between gap-1">
                       <div>
-                        <span className="text-[10px] uppercase font-bold text-slate-400 block leading-none">
+                        <span className="text-xs uppercase font-bold text-slate-400 block leading-none">
                           Precio base
                         </span>
                         <span className="price-tag font-mono text-base font-extrabold text-slate-900 leading-tight">
@@ -833,7 +850,7 @@ export function PosSale() {
                       </div>
 
                       <span
-                        className={`badge text-[10px] ${
+                        className={`badge text-xs ${
                           isOutOfStock
                             ? 'bg-red-50 text-critical'
                             : isLowStock
@@ -845,7 +862,7 @@ export function PosSale() {
                       </span>
                     </div>
 
-                    <span className="mt-2 block text-xs font-semibold text-primary">{choices.length > 1 ? `Elegir presentación (${choices.length})` : 'Agregar al carrito'}</span>
+                    <span className="mt-2 block text-xs font-semibold text-primary">{choices.length > 1 ? `Ver ${choices.length} presentaciones` : '+ Agregar'}</span>
                   </div>
                 </button>
               );
@@ -863,15 +880,15 @@ export function PosSale() {
       </section>
 
       {/* ─── COLUMNA DERECHA: PANEL DEL TICKET / CARRITO ───────────────────────── */}
-      <aside className="flex w-full shrink-0 flex-col bg-slate-50/90 lg:h-full lg:min-h-0 lg:w-[420px] xl:w-[460px] border-l border-slate-200 shadow-sm">
+      <aside className="sale-cart">
         {/* Cabecera del Ticket */}
-        <div className="sticky top-0 z-10 border-b border-slate-200 bg-white p-4 space-y-3 lg:static">
+        <div className="cart-heading">
           {/* Segmented Control Boleta / Factura / Nota de Venta */}
           <div className="flex items-center justify-between gap-2">
             <div className="flex flex-1 rounded-xl border border-slate-200 bg-slate-100/80 p-1 text-xs font-bold gap-1">
               <button
                 type="button"
-                className={`flex-1 rounded-lg py-1.5 transition-all text-center ${
+                className={`flex-1 rounded-lg py-1.5 transition-colors text-center ${
                   docType === 'boleta'
                     ? 'bg-slate-900 text-white shadow-xs font-extrabold'
                     : 'text-slate-600 hover:text-slate-900'
@@ -881,11 +898,11 @@ export function PosSale() {
                   if (clientDoc.tipo === 'RUC') setClientDoc({ tipo: '-', numero: '', nombre: '' });
                 }}
               >
-                Boleta de Venta
+                Boleta
               </button>
               <button
                 type="button"
-                className={`flex-1 rounded-lg py-1.5 transition-all text-center ${
+                className={`flex-1 rounded-lg py-1.5 transition-colors text-center ${
                   docType === 'factura'
                     ? 'bg-primary text-white shadow-xs font-extrabold'
                     : 'text-slate-600 hover:text-slate-900'
@@ -895,11 +912,11 @@ export function PosSale() {
                   if (clientDoc.tipo !== 'RUC') setDniModal(true);
                 }}
               >
-                Factura (RUC)
+                Factura
               </button>
               <button
                 type="button"
-                className={`flex-1 rounded-lg py-1.5 transition-all text-center ${
+                className={`flex-1 rounded-lg py-1.5 transition-colors text-center ${
                   docType === 'nota'
                     ? 'bg-amber-600 text-white shadow-xs font-extrabold'
                     : 'text-slate-600 hover:text-slate-900'
@@ -908,7 +925,7 @@ export function PosSale() {
                   setDocType('nota');
                 }}
               >
-                Nota de Venta
+                Nota
               </button>
             </div>
 
@@ -916,17 +933,18 @@ export function PosSale() {
               <button
                 type="button"
                 onClick={() => void openQuoteModal()}
-                className="flex h-9 items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50/70 px-2.5 text-xs font-bold text-primary hover:bg-indigo-100 transition-colors"
+                className="flex h-9 items-center gap-1.5 rounded-xl border border-brand-200 bg-brand-50/70 px-2.5 text-xs font-bold text-primary hover:bg-brand-100 transition-colors"
                 title="Cargar cotización guardada"
               >
                 <Calculator size={15} />
-                <span className="hidden sm:inline">Cotizaciones</span>
+                <span className="sr-only">Cotizaciones</span>
               </button>
 
                 <button
                   type="button"
                   onClick={() => {
                     setCart([]);
+    setQuotationId(undefined);
                     setClientDoc({ tipo: '-', numero: '', nombre: '' });
                     try {
                       localStorage.removeItem(cartStorageKey);
@@ -956,7 +974,7 @@ export function PosSale() {
                 <button
                   type="button"
                   onClick={() => setDniModal(true)}
-                  className="font-bold text-primary hover:underline text-[11px] shrink-0"
+                  className="font-bold text-primary hover:underline text-xs shrink-0"
                 >
                   {clientDoc.tipo !== '-' ? 'Cambiar' : '+ Asignar cliente'}
                 </button>
@@ -970,7 +988,7 @@ export function PosSale() {
                 <button
                   type="button"
                   onClick={() => setDniModal(true)}
-                  className="font-bold text-primary hover:underline text-[11px]"
+                  className="font-bold text-primary hover:underline text-xs"
                 >
                   + Agregar DNI / RUC
                 </button>
@@ -979,13 +997,13 @@ export function PosSale() {
               <div className="flex items-center justify-between text-xs">
                 <div className="flex items-center gap-2 min-w-0">
                   {clientDoc.tipo === 'RUC' ? (
-                    <Building2 size={15} className="text-indigo-600 shrink-0" />
+                    <Building2 size={15} className="text-brand-600 shrink-0" />
                   ) : (
                     <User size={15} className="text-emerald-600 shrink-0" />
                   )}
                   <div className="truncate">
                     <span className="font-mono font-bold text-slate-900">{clientDoc.tipo}: {clientDoc.numero}</span>
-                    <span className="text-slate-500 block truncate text-[11px]">{clientDoc.nombre}</span>
+                    <span className="text-slate-500 block truncate text-xs">{clientDoc.nombre}</span>
                   </div>
                 </div>
                 <button
@@ -1004,7 +1022,7 @@ export function PosSale() {
         </div>
 
         {/* Lista de Productos en el Carrito */}
-        <div className="p-4 space-y-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+        <div className="cart-items">
           {cart.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-slate-400 py-12">
               <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-slate-100 text-slate-300">
@@ -1021,10 +1039,10 @@ export function PosSale() {
             cart.map((l) => (
               <div
                 key={l.lineId}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white p-3 shadow-xs animate-in fade-in"
+                className="cart-line"
               >
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-bold text-slate-800 leading-tight">
+                  <p className="cart-product-name">
                     {l.name}
                   </p>
                   {canOverridePrices ? (
@@ -1063,7 +1081,7 @@ export function PosSale() {
                     ) : (
                       <button
                         type="button"
-                        className="mt-1 min-h-8 rounded-lg bg-indigo-50 px-2 font-mono text-[11px] font-bold text-primary hover:bg-indigo-100"
+                        className="mt-1 min-h-8 rounded-lg bg-brand-50 px-2 font-mono text-xs font-bold text-primary hover:bg-brand-100"
                         onClick={() => {
                           setEditingPriceLineId(l.lineId);
                           setPriceDraft(l.unitPrice.toFixed(2));
@@ -1074,7 +1092,7 @@ export function PosSale() {
                       </button>
                     )
                   ) : (
-                    <span className="text-[11px] font-mono text-slate-500">{cartLineDescription(l)}</span>
+                    <span className="text-xs font-mono text-slate-500">{cartLineDescription(l)}</span>
                   )}
                 </div>
 
@@ -1126,12 +1144,17 @@ export function PosSale() {
         </div>
 
         {/* Footer / Panel de Cobro */}
-        <div className={`border-t border-slate-200 bg-white p-4 pb-28 space-y-3.5 shadow-lg lg:shrink-0 lg:pb-4 ${mixedMode ? 'lg:max-h-[65dvh] lg:overflow-y-auto' : ''}`}>
-          <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700">
-            <input type="checkbox" checked={mixedMode} disabled={busy || pendingCheckout} onChange={(event) => setMixedMode(event.target.checked)} />
-            Combinar métodos de pago
-          </label>
-          {mixedMode ? <MixedPaymentEditor total={total} value={paymentDrafts} onChange={setPaymentDrafts} disabled={busy || pendingCheckout} /> : <>
+        <div className="cart-payment">
+          <button type="button" className="btn-secondary w-full" disabled={busy || pendingCheckout || cart.length === 0} onClick={() => setMixedPaymentModal(true)}>
+            <WalletCards size={17} /> {mixedMode ? 'Editar pagos combinados' : 'Combinar métodos de pago'}
+          </button>
+          {mixedMode && mixedSummary ? <div className="space-y-2 rounded-xl border border-brand-200 bg-brand-50/40 p-3 text-sm">
+            {mixedSummary.error ? <p className="text-critical" role="alert">{mixedSummary.error}</p> : <>
+              <div className="flex max-h-24 flex-wrap gap-x-4 gap-y-1 overflow-y-auto">{mixedSummary.payments.map((part) => <span key={part.method}>{PAYMENT_LABELS[part.method]}: <strong>{money(part.amount)}</strong></span>)}</div>
+              <div className="flex flex-wrap justify-between gap-2"><span className={mixedSummary.remaining > 0 ? 'text-amber-800' : 'text-success'}>{mixedSummary.remaining > 0 ? `Falta: ${money(mixedSummary.remaining)}` : 'Pago completo'}</span><strong>Vuelto: {money(mixedSummary.change)}</strong></div>
+            </>}
+            <button type="button" className="min-h-11 text-xs font-semibold text-primary" disabled={busy || pendingCheckout} onClick={() => { setMixedMode(false); setError(null); }}>Usar un solo método de pago</button>
+          </div> : <>
           {/* Selector de Método de Pago */}
           <div className="grid grid-cols-5 gap-1.5">
             {PAYMENTS.map(({ id, label, icon: Icon, colorClass }) => {
@@ -1140,15 +1163,17 @@ export function PosSale() {
                 <button
                   key={id}
                   type="button"
+                  aria-label={label}
+                  aria-pressed={active}
                   onClick={() => setPayment(id)}
-                  className={`flex flex-col items-center justify-center gap-1 rounded-xl p-2 text-xs font-bold border transition-all active:scale-95 ${
+                  className={`flex flex-col items-center justify-center gap-1 rounded-xl p-2 text-xs font-bold border transition-colors active:scale-95 ${
                     active
                       ? `${colorClass} shadow-xs font-extrabold border-2`
                       : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
                   }`}
                 >
                   <Icon size={16} />
-                  <span className="truncate">{label}</span>
+                  <span>{id === 'transferencia' ? 'Transfer.' : label}</span>
                 </button>
               );
             })}
@@ -1157,7 +1182,7 @@ export function PosSale() {
           {/* Selector de Banco para Transferencia */}
           {payment === 'transferencia' && (
             <div className="rounded-xl bg-blue-50/60 border border-blue-200/80 p-3 space-y-2 min-h-[68px] animate-in fade-in">
-              <label className="text-[10px] font-bold uppercase tracking-wider text-blue-900 block">
+              <label className="text-xs font-bold uppercase tracking-wider text-blue-900 block">
                 Selecciona la Entidad Bancaria
               </label>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
@@ -1166,7 +1191,7 @@ export function PosSale() {
                     key={b}
                     type="button"
                     onClick={() => setBankName(b)}
-                    className={`h-9 flex items-center justify-center rounded-xl px-2 text-xs font-bold transition-all truncate text-center ${
+                    className={`h-9 flex items-center justify-center rounded-xl px-2 text-xs font-bold transition-colors truncate text-center ${
                       bankName === b
                         ? 'bg-blue-600 text-white shadow-xs font-extrabold ring-2 ring-blue-400/30'
                         : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
@@ -1183,7 +1208,7 @@ export function PosSale() {
           {payment === 'efectivo' && (
             <div className="grid grid-cols-2 gap-2.5 rounded-xl bg-slate-50 border border-slate-200/80 p-3 min-h-[68px] animate-in fade-in">
               <div>
-                <label className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block mb-1">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-500 block mb-1">
                   Paga con (S/)
                 </label>
                 <input
@@ -1198,7 +1223,7 @@ export function PosSale() {
               </div>
 
               <div>
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block mb-1">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-500 block mb-1">
                   Vuelto
                 </span>
                 <div className="flex h-10 items-center justify-between rounded-xl bg-emerald-50 border border-emerald-200 px-3 font-mono font-extrabold text-emerald-800 text-sm">
@@ -1220,13 +1245,13 @@ export function PosSale() {
                   <span className="text-xs font-extrabold text-purple-950 block leading-tight">
                     Cobro con Yape
                   </span>
-                  <span className="text-[11px] text-purple-700/90 font-medium block mt-0.5">
+                  <span className="text-xs text-purple-700/90 font-medium block mt-0.5">
                     Verifica la notificación en el celular de caja
                   </span>
                 </div>
               </div>
               <div className="text-right font-mono shrink-0 pl-2">
-                <span className="text-[10px] uppercase font-bold text-purple-700 block">Monto Yape</span>
+                <span className="text-xs uppercase font-bold text-purple-700 block">Monto Yape</span>
                 <span className="text-base font-extrabold text-purple-950">S/ {total.toFixed(2)}</span>
               </div>
             </div>
@@ -1243,13 +1268,13 @@ export function PosSale() {
                   <span className="text-xs font-extrabold text-cyan-950 block leading-tight">
                     Cobro con Plin
                   </span>
-                  <span className="text-[11px] text-cyan-700/90 font-medium block mt-0.5">
+                  <span className="text-xs text-cyan-700/90 font-medium block mt-0.5">
                     Verifica la notificación en el celular de caja
                   </span>
                 </div>
               </div>
               <div className="text-right font-mono shrink-0 pl-2">
-                <span className="text-[10px] uppercase font-bold text-cyan-700 block">Monto Plin</span>
+                <span className="text-xs uppercase font-bold text-cyan-700 block">Monto Plin</span>
                 <span className="text-base font-extrabold text-cyan-950">S/ {total.toFixed(2)}</span>
               </div>
             </div>
@@ -1266,13 +1291,13 @@ export function PosSale() {
                   <span className="text-xs font-extrabold text-amber-950 block leading-tight">
                     Cobro con Sip
                   </span>
-                  <span className="text-[11px] text-amber-700/90 font-medium block mt-0.5">
+                  <span className="text-xs text-amber-700/90 font-medium block mt-0.5">
                     Pago registrado vía billetera/terminal Sip
                   </span>
                 </div>
               </div>
               <div className="text-right font-mono shrink-0 pl-2">
-                <span className="text-[10px] uppercase font-bold text-amber-700 block">Monto Sip</span>
+                <span className="text-xs uppercase font-bold text-amber-700 block">Monto Sip</span>
                 <span className="text-base font-extrabold text-amber-950">S/ {total.toFixed(2)}</span>
               </div>
             </div>
@@ -1285,47 +1310,51 @@ export function PosSale() {
               <span className="text-xs uppercase font-bold text-slate-400 block tracking-wider">
                 Total a Pagar ({cart.length} {cart.length === 1 ? 'ítem' : 'ítems'})
               </span>
-              <span className="text-[10px] text-slate-500 font-medium">IGV 18% incluido</span>
+              <span className="text-xs text-slate-500 font-medium">IGV 18% incluido</span>
             </div>
             <span className="price-tag font-mono text-3xl font-extrabold text-emerald-400">
               S/ {total.toFixed(2)}
             </span>
           </div>
 
+
+        </div>
           {/* Botón Principal de Cobro */}
           <button
             disabled={cart.length === 0 || busy}
             onClick={() => void checkout()}
-            className="group relative hidden w-full items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-primary via-indigo-600 to-indigo-500 py-4 text-base font-display font-extrabold text-white shadow-lg shadow-primary/30 transition-all duration-200 hover:shadow-primary/50 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed lg:flex"
+            className="btn-primary checkout-button hidden lg:flex"
           >
             <CheckCircle2 size={22} className="transition-transform group-hover:scale-110" />
             <span>{busy ? 'Procesando venta…' : `Cobrar S/ ${total.toFixed(2)}`}</span>
           </button>
-        </div>
       </aside>
 
-      <div className="fixed inset-x-0 bottom-0 z-40 flex items-center gap-3 border-t border-slate-200 bg-white/95 p-3 shadow-2xl backdrop-blur lg:hidden">
+      <div className="sale-mobile-total">
         <div className="min-w-0 flex-1">
-          <span className="block text-[10px] font-bold uppercase tracking-wider text-slate-500">Total · {cart.length} ítems</span>
+          <span className="block text-xs font-bold uppercase tracking-wider text-slate-500">Total · {cart.length} ítems</span>
           <span className="font-mono text-xl font-extrabold text-slate-950">S/ {total.toFixed(2)}</span>
         </div>
         <button
           type="button"
           disabled={cart.length === 0 || busy}
-          onClick={() => void checkout()}
+          onClick={() => { if (mobileView === 'catalog') setMobileView('cart'); else void checkout(); }}
           className="flex min-h-12 min-w-40 items-center justify-center gap-2 rounded-2xl bg-primary px-5 font-display text-sm font-extrabold text-white shadow-lg disabled:opacity-50"
         >
-          <CheckCircle2 size={19} /> {busy ? 'Procesando…' : 'Cobrar'}
+          <CheckCircle2 size={19} /> {busy ? 'Procesando…' : mobileView === 'catalog' ? 'Ver carrito' : 'Cobrar'}
         </button>
       </div>
+
+      {mixedPaymentModal && <MixedPaymentModal total={total} items={cart} value={paymentDrafts} disabled={busy || pendingCheckout}
+        onClose={() => setMixedPaymentModal(false)} onApply={(value) => { setPaymentDrafts(value); setMixedMode(true); setMixedPaymentModal(false); setError(null); }} />}
 
       {/* ─── MODAL CONSULTA DNI / RUC ────────────────────────────────────────── */}
       <Modal open={dniModal} title="Identificación del Cliente" onClose={() => setDniModal(false)}>
         <div className="space-y-5">
           {/* Factura con RUC */}
-          <div className="rounded-2xl border border-indigo-100 bg-indigo-50/40 p-4 space-y-3">
-            <label className="text-xs font-bold uppercase tracking-wider text-indigo-900 flex items-center gap-1.5">
-              <Building2 size={15} className="text-indigo-600" /> Factura Electrónica — RUC
+          <div className="rounded-2xl border border-brand-100 bg-brand-50/40 p-4 space-y-3">
+            <label className="text-xs font-bold uppercase tracking-wider text-brand-900 flex items-center gap-1.5">
+              <Building2 size={15} className="text-brand-600" /> Factura Electrónica — RUC
             </label>
             <div className="flex gap-2">
               <input
@@ -1344,7 +1373,7 @@ export function PosSale() {
                 {lookupBusy ? 'Buscando…' : 'Buscar'}
               </button>
             </div>
-            <p className="text-[11px] text-slate-500">
+            <p className="text-xs text-slate-500">
               Consulta automática de Razón Social en SUNAT / APIS.net.pe.
             </p>
           </div>
@@ -1371,7 +1400,7 @@ export function PosSale() {
                 {lookupBusy ? 'Validando…' : 'Aplicar'}
               </button>
             </div>
-            <p className="text-[11px] text-slate-500">
+            <p className="text-xs text-slate-500">
               Obligatorio para montos iguales o mayores a S/ {company?.minBoletaSinDni ?? 700}.
             </p>
           </div>
@@ -1446,6 +1475,7 @@ export function PosSale() {
             Selecciona una cotización generada por los trabajadores para importar los productos al carrito:
           </p>
 
+          {quotePagination.error && <p role="alert">{quotePagination.error}</p>}
           {loadingQuotes ? (
             <div className="p-8 text-center text-sm text-slate-500">Cargando cotizaciones…</div>
           ) : quotesList.length === 0 ? (
@@ -1459,17 +1489,17 @@ export function PosSale() {
               {quotesList.map((q) => (
                 <div
                   key={q.id}
-                  className="flex items-center justify-between p-3.5 rounded-2xl border border-slate-200 bg-white hover:border-primary/50 hover:bg-indigo-50/20 transition-all shadow-xs"
+                  className="flex items-center justify-between p-3.5 rounded-2xl border border-slate-200 bg-white hover:border-primary/50 hover:bg-brand-50/20 transition-colors shadow-xs"
                 >
                   <div className="min-w-0 flex-1 pr-3">
                     <div className="flex items-center gap-2">
                       <span className="font-mono font-extrabold text-sm text-slate-900">{q.code}</span>
-                      <span className="text-[11px] text-slate-400">· {q.items.length} productos</span>
+                      <span className="text-xs text-slate-400">· {q.items.length} productos</span>
                     </div>
                     <p className="text-xs font-semibold text-slate-700 truncate mt-0.5">
                        {q.clientName || 'Cliente anónimo'}
                     </p>
-                    <span className="text-[10px] text-slate-400">Creado por {q.createdByName}</span>
+                    <span className="text-xs text-slate-400">Creado por {q.createdByName}</span>
                   </div>
 
                   <div className="text-right shrink-0">
@@ -1488,6 +1518,7 @@ export function PosSale() {
             </div>
           )}
 
+          <Pagination {...quotePagination} />
           <button
             onClick={() => setQuoteModal(false)}
             className="btn-ghost w-full !min-h-10 text-xs font-bold"

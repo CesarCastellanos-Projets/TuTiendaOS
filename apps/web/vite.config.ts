@@ -12,14 +12,14 @@ export default defineConfig({
       srcDir: 'src',
       filename: 'sw.ts',
       registerType: 'autoUpdate',
-      includeAssets: ['icon.svg'],
+      includeAssets: ['icon.svg', 'icon-maskable.svg', 'branding/logo_denzoz.png', 'fonts/*.woff2'],
       manifest: {
         name: "D'ENZOZ — Sistema de tienda",
         short_name: "D'ENZOZ",
         description: 'POS, inventario y consultas de precio para D\'ENZOZ',
         lang: 'es',
-        theme_color: '#4F46E5',
-        background_color: '#F8FAFC',
+        theme_color: '#F4F6F8',
+        background_color: '#F4F6F8',
         display: 'standalone',
         orientation: 'any',
         icons: [
@@ -27,7 +27,7 @@ export default defineConfig({
           { src: '/icon-maskable.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'maskable' }
         ]
       },
-      injectManifest: { globPatterns: ['**/*.{js,css,html,svg,woff2}'] }
+      injectManifest: { globPatterns: ['**/*.{js,css,html,svg,png,woff2}'] }
     })
   ],
   build: {

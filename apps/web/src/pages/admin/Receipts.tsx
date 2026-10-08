@@ -1,6 +1,10 @@
+import { SaleCompensation } from '../../components/inventory/SaleCompensation';
 import { useEffect, useMemo, useState } from 'react';
-import { limit, orderBy, query } from 'firebase/firestore';
-import { onSnapshot } from '../../lib/firestore-listener';
+import { orderBy, query, where } from 'firebase/firestore';
+import { usePagedQuery } from '../../hooks/usePagedQuery';
+import { Pagination } from '../../components/ui/Pagination';
+import { peruToday } from '../../lib/calendar';
+import { csvCell } from '../../lib/csv';
 import { CheckCircle2, Download, RefreshCw, Send, Layers } from 'lucide-react';
 import { tenantCollection } from '../../lib/tenant-firestore';
 import type { Sale, SunatStatus } from '../../types';
@@ -13,27 +17,16 @@ type Filter = SunatStatus | 'todos' | 'anulaciones';
 
 export function ReceiptsPage() {
   const [filter, setFilter] = useState<Filter>('rechazado');
-  const [sales, setSales] = useState<(Sale & { id: string })[]>([]);
+  const source = useMemo(() => query(tenantCollection('sales'),
+    ...(filter === 'anulaciones' ? [where('anulationStatus', 'in', ['solicitada', 'nc_pendiente', 'error'])]
+      : filter === 'todos' ? [] : [where('sunatStatus', '==', filter)]), orderBy('createdAt', 'desc')), [filter]);
+  const pagination = usePagedQuery<Sale & { id: string }>(source);
+  const sales = pagination.rows;
+  const [compensating, setCompensating] = useState<(Sale & { id: string }) | null>(null);
   const [busyBatch, setBusyBatch] = useState(false);
   const { msg, flash } = useFlash();
 
-  useEffect(() => {
-    const q = query(
-      tenantCollection('sales'),
-      orderBy('createdAt', 'desc'),
-      limit(200)
-    );
-    return onSnapshot(q, (s) => {
-      const all = s.docs.map((d) => ({ ...(d.data() as Sale), id: d.id }));
-      if (filter === 'anulaciones') {
-        setSales(all.filter((x) => x.status === 'activa' && x.anulationRequest));
-      } else if (filter === 'todos') {
-        setSales(all);
-      } else {
-        setSales(all.filter((x) => x.sunatStatus === filter));
-      }
-    });
-  }, [filter]);
+  useEffect(() => { if (pagination.error) flash(pagination.error); }, [pagination.error, flash]);
 
   const authorizeAnulation = async (sale: Sale & { id: string }) => {
     const req = sale.anulationRequest;
@@ -44,14 +37,14 @@ export function ReceiptsPage() {
       flash(result.status === 'aceptado'
         ? `${sale.code} anulada; nota de crédito aceptada`
         : `${sale.code}: ${result.message || 'la nota de crédito quedó pendiente'}`);
-    } catch {
-      flash('Error al autorizar');
+    } catch (cause) {
+      flash(cause instanceof Error ? cause.message : 'Error al autorizar');
     }
   };
 
   const retrySunat = async (sale: Sale & { id: string }) => {
     flash(`Reenviando ${sale.code} a SUNAT…`);
-    await sendToSunat(sale.id);
+    try { await sendToSunat(sale.id); } catch (cause) { flash(cause instanceof Error ? cause.message : 'No se pudo enviar'); }
   };
 
   const retryAllPending = async () => {
@@ -77,20 +70,15 @@ export function ReceiptsPage() {
   };
 
   const createDailySummary = async () => {
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const boletasToday = sales.filter(
-      (s) => s.type === 'boleta' && s.consolidated && s.status === 'activa' && new Date(s.createdAt).toISOString().startsWith(todayStr)
-    );
-    if (boletasToday.length === 0) {
-      flash('No hay boletas registradas hoy para consolidar');
-      return;
-    }
-    if (!confirm(`¿Generar y enviar Resumen Diario a SUNAT con ${boletasToday.length} boletas de hoy (${todayStr})?`)) return;
+    const todayStr = peruToday();
+    if (!confirm(`¿Preparar el siguiente lote de hasta 200 boletas del ${todayStr}? Los lotes pendientes continuarán automáticamente.`)) return;
 
     setBusyBatch(true);
     try {
       const res = await sendDailySummary(todayStr);
       flash(res.message);
+    } catch (cause) {
+      flash(cause instanceof Error ? cause.message : 'No se pudo preparar el resumen.');
     } finally {
       setBusyBatch(false);
     }
@@ -107,17 +95,17 @@ export function ReceiptsPage() {
       s.code,
       fmtDateTime(s.createdAt),
       `${s.clientDoc.tipo}: ${s.clientDoc.numero || '-'}`,
-      `"${(s.clientDoc.nombre || 'Consumidor final').replace(/"/g, '""')}"`,
+      s.clientDoc.nombre || 'Consumidor final',
       s.subtotal.toFixed(2),
       s.igv.toFixed(2),
       s.total.toFixed(2),
       PAYMENT_LABELS[s.paymentMethod],
-      `"${salePayments(s).map((part) => `${PAYMENT_LABELS[part.method]}: ${part.amount.toFixed(2)}`).join(' / ')}"`,
+      salePayments(s).map((part) => `${PAYMENT_LABELS[part.method]}: ${part.amount.toFixed(2)}`).join(' / '),
       s.sunatStatus,
-      `"${(s.sunatMessage || '').replace(/"/g, '""')}"`,
+      s.sunatMessage || '',
       s.status
     ]);
-    const csvContent = '\uFEFF' + [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    const csvContent = '\uFEFF' + [headers, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -167,7 +155,7 @@ export function ReceiptsPage() {
             className="btn-ghost flex items-center gap-1.5 !min-h-9 !px-3 text-xs"
             onClick={exportCsv}
           >
-            <Download size={14} /> Exportar CSV
+            <Download size={14} /> Exportar página CSV
           </button>
           <select className="field !min-h-9 w-52" value={filter} onChange={(e) => setFilter(e.target.value as Filter)}>
             <option value="rechazado">Rechazados por SUNAT</option>
@@ -184,7 +172,7 @@ export function ReceiptsPage() {
         <p className="card p-6 text-center text-sm text-slate-500">Sin comprobantes para el filtro seleccionado.</p>
       ) : (
         <div className="card overflow-x-auto">
-          <table className="w-full min-w-[760px]">
+          <table className="responsive-table w-full min-w-[760px]">
             <thead className="border-b border-slate-200">
               <tr>
                 <th className="th">Comprobante</th>
@@ -198,22 +186,23 @@ export function ReceiptsPage() {
             <tbody className="divide-y divide-linea">
               {sales.map((s) => (
                 <tr key={s.id} className={s.status === 'anulada' ? 'opacity-50 line-through' : ''}>
-                  <td className="td font-mono text-xs font-semibold">
+                  <td data-label="Comprobante" className="td font-mono text-xs font-semibold">
                     {s.code}
                     {s.consolidated && <span className="ml-1 text-slate-500 font-normal">(Consolidado)</span>}
                   </td>
-                  <td className="td text-xs">{fmtDateTime(s.createdAt)}</td>
-                  <td className="td max-w-[180px] truncate text-xs">{s.clientDoc.nombre || 'Consumidor final'}</td>
-                  <td className="td text-right font-mono">{money(s.total)}</td>
-                  <td className="td">
+                  <td data-label="Fecha" className="td text-xs">{fmtDateTime(s.createdAt)}</td>
+                  <td data-label="Cliente" className="td max-w-[180px] truncate text-xs">{s.clientDoc.nombre || 'Consumidor final'}</td>
+                  <td data-label="Total" className="td text-right font-mono">{money(s.total)}</td>
+                  <td data-label="SUNAT" className="td">
                     <StatusBadge sale={s} />
                     {s.sunatMessage && (
-                      <p className="max-w-[200px] truncate text-[11px] text-slate-500" title={s.sunatMessage}>
+                      <p className="max-w-[200px] truncate text-xs text-slate-500" title={s.sunatMessage}>
                         {s.sunatMessage}
                       </p>
                     )}
                   </td>
-                  <td className="td whitespace-nowrap text-right">
+                  <td data-label="Acciones" className="td whitespace-nowrap text-right">
+                    {s.status === 'anulada' && (!s.stockReturnedAt || !s.refundedAt) && <button className="btn-ghost !min-h-8 !px-2 text-xs" onClick={() => setCompensating(s)}>Registrar devolución</button>}
                     {s.anulationRequest && s.status === 'activa' ? (
                       <button className="btn-danger !min-h-8 !px-2 !py-1 text-xs" onClick={() => void authorizeAnulation(s)}>
                         {s.anulationStatus === 'solicitada' ? 'Autorizar anulación' : 'Reintentar nota'} ({s.anulationRequest.reason})
@@ -229,11 +218,13 @@ export function ReceiptsPage() {
             </tbody>
           </table>
           <p className="border-t border-slate-200 px-3 py-2 text-right font-mono text-sm">
-            {sales.length} comprobantes · Total: {money(totals)}
+            {sales.length} comprobantes en esta página · Total: {money(totals)}
           </p>
         </div>
       )}
 
+      <Pagination {...pagination} />
+      <SaleCompensation sale={compensating} onClose={() => setCompensating(null)} onSaved={() => flash('Devolución registrada.')} />
       <FlashBar msg={msg} />
     </div>
   );

@@ -13,6 +13,16 @@ final class SunatDocumentIdentityTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_fiscal_sequence_resumes_after_existing_documents_and_is_tenant_scoped(): void
+    {
+        config()->set('sunat.tenant_id', 'sequence-a');
+        SunatDocument::query()->create(['ref' => 'existing-summary', 'tipo' => 'resumen', 'serie' => 'RC', 'correlativo' => 12]);
+        self::assertSame(13, \App\Services\Sunat\FiscalSequence::next('resumen', 'RC'));
+        self::assertSame(14, \App\Services\Sunat\FiscalSequence::next('resumen', 'RC'));
+        config()->set('sunat.tenant_id', 'sequence-b');
+        self::assertSame(1, \App\Services\Sunat\FiscalSequence::next('resumen', 'RC'));
+    }
+
     public function test_credit_note_is_a_separate_document_and_does_not_mutate_original(): void
     {
         $original = SunatDocument::query()->create([

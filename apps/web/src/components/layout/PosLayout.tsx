@@ -1,9 +1,12 @@
 import { useEffect, useState, Suspense } from 'react';
-import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { getDocs, limit, query } from 'firebase/firestore';
 import { CalendarBell } from '../calendar/CalendarBell';
 import { ReplenishmentBell } from '../inventory/ReplenishmentBell';
 import { RouteLoading } from '../RouteLoading';
+import { Brand } from '../Brand';
+import { Modal } from '../ui/Modal';
+import { Navigation, AccountMenu } from './Navigation';
 import {
   CalendarDays,
   ChartColumn,
@@ -14,12 +17,8 @@ import {
   ReceiptText,
   PackageOpen,
   Truck,
-  LogOut,
-  Menu,
-  X,
-  Sparkles,
   Store,
-  ChevronRight
+  MoreHorizontal
 } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
 import { tenantCollection } from '../../lib/tenant-firestore';
@@ -84,242 +83,31 @@ export function PosLayout() {
     navigate('/login');
   };
 
-  return (
-    <div className="flex min-h-dvh flex-col bg-slate-100/60 lg:h-dvh lg:overflow-hidden">
-      {/* ─── BARRA SUPERIOR INTEGRADA (Header limpio sin barras laterales raras) ─ */}
-      <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-slate-200 bg-white px-4 shadow-xs">
-        {/* Lado Izquierdo: Botón Hamburguesa 3 Líneas + Logo */}
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setDrawerOpen(true)}
-            aria-label="Abrir menú de navegación"
-            className="flex h-9 items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-700 hover:bg-slate-100 hover:text-slate-900 transition-all active:scale-95 shadow-xs"
-          >
-            <Menu size={18} className="text-slate-600" />
-            <span className="text-xs font-display font-bold hidden sm:inline">Menú</span>
-          </button>
-
-          <div className="flex items-center gap-2">
-            <div className="hidden h-8 w-8 items-center justify-center rounded-xl bg-primary text-white shadow-sm shadow-primary/30 sm:flex">
-              <Sparkles size={16} />
-            </div>
-            <div>
-              <span className="font-display font-extrabold text-base tracking-tight text-slate-900 block leading-tight">
-                D'ENZOZ POS
-              </span>
-            </div>
-          </div>
+  const primaryPaths = ['/pos', '/pos/caja', '/pos/ventas'];
+  const navigation = nav.map((item) => ({ ...item, label: item.shortLabel }));
+  const needsStore = canChooseStore && !profile.storeId && !['/pos/calendario', '/pos/aprobar-reposiciones'].includes(location.pathname);
+  const selling = location.pathname === '/pos' || location.pathname === '/pos/';
+  return <div className={`pos-shell ${selling ? 'is-selling' : ''}`}>
+    <a href="#main-content" className="skip-link">Ir al contenido</a>
+    <aside className="pos-rail"><Brand compact /><Navigation items={navigation} compact /></aside>
+    <div className="app-shell-body">
+      <header className="app-topbar">
+        <div className="lg:hidden"><Brand compact /></div>
+        <div className="topbar-context"><span className="eyebrow">Punto de venta</span>
+          {canChooseStore ? <select aria-label="Tienda activa" className="store-selector" value={profile.storeId ?? ''} disabled={selectingStore} onChange={(e) => void chooseStore(e.target.value)}>
+            <option value="" disabled>Elegir tienda</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+          </select> : <strong>{nav.find((item) => item.to === location.pathname)?.shortLabel ?? 'Operaciones de tienda'}</strong>}
         </div>
-
-        {/* Centro: Switch Rápido de Pestañas en Pantallas Medianas/Grandes */}
-        <nav className="hidden 2xl:flex items-center gap-1 rounded-xl bg-slate-100/80 p-1 border border-slate-200/80">
-          {nav.map(({ to, icon: Icon, shortLabel, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                `flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition-all ${
-                  isActive
-                    ? 'bg-primary text-white shadow-xs font-extrabold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
-                }`
-              }
-            >
-              <Icon size={14} />
-              <span>{shortLabel}</span>
-            </NavLink>
-          ))}
-        </nav>
-
-        {/* Lado Derecho: Info del Cajero & Botón Salir */}
-        <div className="flex items-center gap-2.5">
-          <ReplenishmentBell />
-          <CalendarBell />
-          {canChooseStore && (
-            <label className="relative hidden min-w-0 sm:block">
-              <span className="sr-only">Tienda activa</span>
-              <select
-                value={profile.storeId ?? ''}
-                disabled={selectingStore}
-                onChange={(event) => void chooseStore(event.target.value)}
-                className="h-11 max-w-52 rounded-xl border border-indigo-200 bg-indigo-50 pl-3 pr-8 text-xs font-bold text-indigo-950 outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
-              >
-                <option value="" disabled>Elegir tienda…</option>
-                {stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
-              </select>
-            </label>
-          )}
-          <div className="hidden lg:flex items-center gap-2 rounded-full bg-slate-50 border border-slate-200 px-3 py-1 text-xs">
-            <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="font-bold text-slate-700 truncate max-w-[140px]">
-              {profile.displayName}
-            </span>
-          </div>
-
-          <button
-            onClick={() => void handleLogout()}
-            title="Cerrar turno y salir"
-            className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-400 hover:bg-red-50 hover:text-critical hover:border-red-200 transition-colors"
-          >
-            <LogOut size={16} />
-          </button>
-        </div>
+        <div className="topbar-actions"><ReplenishmentBell /><CalendarBell /><AccountMenu name={profile.displayName} role={canChooseStore ? 'POS multitiendas' : 'Cajero'} onLogout={() => void handleLogout()} /></div>
       </header>
-
-      {/* ─── CONTENIDO PRINCIPAL (Ocupa el 100% de la pantalla sin barras que estorben) ─── */}
-      <main className="flex min-w-0 flex-1 flex-col overflow-y-auto lg:min-h-0 lg:overflow-hidden">
-        {canChooseStore && !profile.storeId && !['/pos/calendario', '/pos/aprobar-reposiciones'].includes(location.pathname) ? (
-          <div className="grid flex-1 place-items-center p-4">
-            <section className="card w-full max-w-md space-y-4 p-5 text-center">
-              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-100 text-primary">
-                <Store size={24} />
-              </div>
-              <div>
-                <h1 className="font-display text-xl font-extrabold">Selecciona la tienda de este turno</h1>
-                <p className="mt-1 text-sm text-slate-500">Las ventas, caja y movimientos se registrarán únicamente en la tienda elegida.</p>
-              </div>
-              <select
-                value=""
-                disabled={selectingStore}
-                onChange={(event) => void chooseStore(event.target.value)}
-                className="field !min-h-12 text-base font-bold"
-              >
-                <option value="" disabled>Elegir tienda…</option>
-                {stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
-              </select>
-              {storeError && <p className="text-sm font-semibold text-critical">{storeError}</p>}
-            </section>
-          </div>
-        ) : (
-          <Suspense key={profile.storeId} fallback={<RouteLoading />}>
-            <Outlet key={`${profile.tenantId}:${uid}:${profile.storeId}`} />
-          </Suspense>
-        )}
+      {storeError && <p role="alert" className="mx-4 mt-2 text-sm text-critical">{storeError}</p>}
+      <main id="main-content" className={`pos-content ${selling ? 'pos-content-sale' : 'page-content'}`}>
+        {needsStore ? <div className="store-welcome"><Store size={32} strokeWidth={1.5} /><h1>Elige tu tienda</h1><p>Las operaciones se registrarán en la tienda seleccionada.</p>
+          <select aria-label="Seleccionar tienda del turno" className="field" value="" disabled={selectingStore} onChange={(e) => void chooseStore(e.target.value)}><option value="" disabled>Elegir tienda…</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select>
+        </div> : <Suspense key={profile.storeId} fallback={<RouteLoading />}><Outlet key={`${profile.tenantId}:${uid}:${profile.storeId}`} /></Suspense>}
       </main>
-
-      {/* ─── DRAWER LATERAL FLUIDO (Se abre al presionar las 3 líneas) ───────── */}
-      {drawerOpen && (
-        <div role="dialog" aria-modal="true" aria-label="Menú de operaciones" className="fixed inset-0 z-50 flex animate-in fade-in duration-200">
-          {/* Backdrop Blur */}
-          <div
-            onClick={() => setDrawerOpen(false)}
-            className="fixed inset-0 bg-slate-950/50 backdrop-blur-xs transition-opacity"
-          />
-
-          {/* Drawer Panel */}
-          <div className="relative flex w-full max-w-sm flex-1 flex-col bg-white shadow-2xl transition-transform duration-300 ease-out animate-in slide-in-from-left">
-            {/* Header del Drawer */}
-            <div className="flex h-16 items-center justify-between border-b border-slate-100 px-5">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary text-white shadow-md shadow-primary/30">
-                  <Sparkles size={20} />
-                </div>
-                <div>
-                  <span className="font-display font-extrabold text-lg tracking-tight text-slate-900 block leading-tight">
-                    D'ENZOZ POS
-                  </span>
-                  <span className="text-xs text-slate-400 font-medium block">
-                    Menú de Operaciones
-                  </span>
-                </div>
-              </div>
-              <button
-                onClick={() => setDrawerOpen(false)}
-                className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-800 transition-colors"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            {/* Perfil del Cajero */}
-            <div className="border-b border-slate-100 bg-slate-50/80 p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-100 text-primary font-display font-extrabold text-sm border border-indigo-200">
-                  {profile.displayName?.charAt(0).toUpperCase() || 'C'}
-                </div>
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-bold text-slate-900 leading-tight">
-                    {profile.displayName}
-                  </p>
-                  <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
-                    <Store size={13} className="text-slate-400" /> Cajero Autorizado
-                  </p>
-                </div>
-              </div>
-              {canChooseStore && (
-                <div className="mt-3 sm:hidden">
-                  <label className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-slate-500">Tienda activa</label>
-                  <select
-                    value={profile.storeId ?? ''}
-                    disabled={selectingStore}
-                    onChange={(event) => void chooseStore(event.target.value)}
-                    className="field !min-h-11 text-sm font-bold"
-                  >
-                    <option value="" disabled>Elegir tienda…</option>
-                    {stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
-                  </select>
-                  {storeError && <p className="mt-1 text-xs font-semibold text-critical">{storeError}</p>}
-                </div>
-              )}
-            </div>
-
-            {/* Links de Navegación Completos */}
-            <nav className="flex-1 space-y-1.5 overflow-y-auto px-4 py-4">
-              {nav.map(({ to, label, desc, icon: Icon, end }) => (
-                <NavLink
-                  key={to}
-                  to={to}
-                  end={end}
-                  onClick={() => setDrawerOpen(false)}
-                  className={({ isActive }) =>
-                    `flex items-center justify-between rounded-2xl p-3 text-sm font-semibold transition-all ${
-                      isActive
-                        ? 'bg-primary text-white shadow-md shadow-primary/25 font-bold'
-                        : 'text-slate-800 hover:bg-slate-100/80'
-                    }`
-                  }
-                >
-                  {({ isActive }) => (
-                    <>
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div
-                          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${
-                            isActive ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-700'
-                          }`}
-                        >
-                          <Icon size={20} />
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-bold leading-tight">{label}</p>
-                          <p
-                            className={`truncate text-xs ${
-                              isActive ? 'text-indigo-100' : 'text-slate-400'
-                            }`}
-                          >
-                            {desc}
-                          </p>
-                        </div>
-                      </div>
-                      <ChevronRight size={18} className={`shrink-0 ${isActive ? 'opacity-90' : 'opacity-40'}`} />
-                    </>
-                  )}
-                </NavLink>
-              ))}
-            </nav>
-
-            {/* Footer con botón Cerrar Turno */}
-            <div className="border-t border-slate-100 p-4">
-              <button
-                onClick={() => void handleLogout()}
-                className="btn-danger w-full !py-3 text-xs font-bold"
-              >
-                <LogOut size={16} /> Cerrar Turno / Salir
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
-  );
+    <div className="mobile-navigation pos-mobile-nav"><Navigation items={navigation.filter((item) => primaryPaths.includes(item.to))} /><button className={`mobile-more ${!primaryPaths.includes(location.pathname) ? 'is-active' : ''}`} onClick={() => setDrawerOpen(true)} aria-label="Más operaciones"><MoreHorizontal size={21} /><span>Más</span></button></div>
+    <Modal open={drawerOpen} title="Más operaciones" onClose={() => setDrawerOpen(false)} drawer><Navigation items={navigation.filter((item) => !primaryPaths.includes(item.to))} onNavigate={() => setDrawerOpen(false)} /></Modal>
+  </div>;
 }

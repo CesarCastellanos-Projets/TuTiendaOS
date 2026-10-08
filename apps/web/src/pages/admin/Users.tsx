@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react';
-import { collection, doc, limit, query, updateDoc, where } from 'firebase/firestore';
+import { useEffect, useMemo, useState } from 'react';
+import { collection, documentId, limit, orderBy, query, where } from 'firebase/firestore';
+import { usePagedQuery } from '../../hooks/usePagedQuery';
+import { Pagination } from '../../components/ui/Pagination';
 import { onSnapshot } from '../../lib/firestore-listener';
 import { Plus } from 'lucide-react';
 import { db } from '../../lib/firebase';
@@ -20,7 +22,6 @@ const ROLE_LABEL: Record<Role, string> = {
 };
 
 export function UsersPage() {
-  const [users, setUsers] = useState<(UserProfile & { id: string })[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -30,12 +31,9 @@ export function UsersPage() {
   const { msg, flash } = useFlash();
   const tenantId = useAuth((state) => state.profile?.tenantId);
 
-  useEffect(() => {
-    if (!tenantId) return;
-    return onSnapshot(query(collection(db, 'users'), where('tenantId', '==', tenantId), limit(100)), (s) =>
-      setUsers(s.docs.map((d) => ({ ...(d.data() as UserProfile), id: d.id })))
-    );
-  }, [tenantId]);
+  const userQuery = useMemo(() => tenantId ? query(collection(db, 'users'), where('tenantId', '==', tenantId), orderBy(documentId())) : null, [tenantId]);
+  const userPage = usePagedQuery<UserProfile & { id: string }>(userQuery);
+  const users = userPage.rows;
 
   useEffect(() => {
     return onSnapshot(query(tenantCollection('stores'), limit(50)), (s) =>
@@ -82,10 +80,10 @@ export function UsersPage() {
 
   const toggleActive = async (u: UserProfile & { id: string }) => {
     try {
-      await updateDoc(doc(db, 'users', u.id), { active: !u.active });
+      await httpsCallable(functions, 'setUserActive')({ uid: u.id, active: !u.active });
       flash(u.active ? `${u.displayName} desactivado` : `${u.displayName} activado`);
-    } catch {
-      flash('Error al actualizar');
+    } catch (error) {
+      flash(error instanceof Error ? error.message : 'Error al actualizar');
     }
   };
 
@@ -98,8 +96,10 @@ export function UsersPage() {
         </button>
       </div>
 
+      {userPage.error && <p role="alert" className="text-critical">{userPage.error}</p>}
+      <Pagination {...userPage} />
       <div className="card overflow-x-auto">
-        <table className="w-full min-w-[600px]">
+        <table className="responsive-table w-full min-w-[600px]">
           <thead className="border-b border-slate-200">
             <tr>
               <th className="th">Nombre</th>
@@ -113,16 +113,16 @@ export function UsersPage() {
           <tbody className="divide-y divide-linea">
             {users.map((u) => (
               <tr key={u.id}>
-                <td className="td font-medium">{u.displayName}</td>
-                <td className="td text-sm">{u.email}</td>
-                <td className="td">{u.role === 'pos' && u.storeAccess === 'all' ? 'Cajero POS multi-tienda' : ROLE_LABEL[u.role]}</td>
-                <td className="td">{u.role === 'pos' && u.storeAccess === 'all' ? 'Elige dentro del POS' : stores.find((s) => s.id === u.storeId)?.name ?? '—'}</td>
-                <td className="td">{u.role === 'admin' ? 'Incluido' : u.role === 'pos' ? <button className="btn-ghost text-xs" onClick={async () => {
+                <td data-label="Nombre" className="td font-medium">{u.displayName}</td>
+                <td data-label="Correo" className="td text-sm">{u.email}</td>
+                <td data-label="Rol" className="td">{u.role === 'pos' && u.storeAccess === 'all' ? 'Cajero POS multi-tienda' : ROLE_LABEL[u.role]}</td>
+                <td data-label="Tienda" className="td">{u.role === 'pos' && u.storeAccess === 'all' ? 'Elige dentro del POS' : stores.find((s) => s.id === u.storeId)?.name ?? '—'}</td>
+                <td data-label="Calendario" className="td">{u.role === 'admin' ? 'Incluido' : u.role === 'pos' ? <button className="btn-ghost text-xs" onClick={async () => {
                   const enabled = !(u.canManageCalendar === true || (u.canManageCalendar === undefined && u.storeAccess === 'all'));
                   try { await httpsCallable(functions, 'setCalendarPermission')({ uid: u.id, enabled }); flash(enabled ? 'Acceso al calendario activado' : 'Acceso al calendario retirado'); }
                   catch (error) { flash(`Error: ${error instanceof Error ? error.message : 'no se pudo actualizar'}`); }
                 }}>{u.canManageCalendar === true || (u.canManageCalendar === undefined && u.storeAccess === 'all') ? 'Permitido' : 'Sin acceso'}</button> : '—'}</td>
-                <td className="td text-right">
+                <td data-label="Estado" className="td text-right">
                   <button onClick={() => void toggleActive(u)} className={`badge ${u.active ? 'bg-emerald-50 text-success' : 'bg-slate-100 text-slate-500'}`}>
                     {u.active ? 'activo' : 'inactivo'}
                   </button>
@@ -201,7 +201,7 @@ export function UsersPage() {
             </div>
           )}
           {newRole === 'pos' && posStoreAccess === 'all' && (
-            <p className="rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-xs text-indigo-900">
+            <p className="rounded-xl border border-brand-200 bg-brand-50 p-3 text-xs text-brand-900">
               Esta cuenta podrá escoger la tienda dentro del POS y modificar el precio únicamente para la venta actual. Los precios del catálogo no cambiarán.
             </p>
           )}

@@ -33,7 +33,7 @@ export function WorkerIngressPage() {
     return () => { current = false; };
   }, [storeId, tenantId, allowed]);
   if (!storeId || (!canIngress && !canCreateProducts)) return <section className="card space-y-2 p-4"><h1 className="font-display text-xl font-bold">Ingreso de mercadería</h1><p className="text-sm text-slate-500">No tienes permisos activos. Pide al administrador o al POS multitiendas que habilite tu acceso.</p></section>;
-  return <div className="space-y-4">
+  return <div className="mx-auto max-w-3xl space-y-5">
     <h1 className="font-display text-xl font-bold">Ingreso de mercadería</h1>
     <p className="text-sm text-slate-500">Registra la mercadería que llega directamente a {storeName || 'tu tienda'}.</p>
     {error && <p className="text-sm text-critical" role="alert">{error}</p>}

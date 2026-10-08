@@ -22,6 +22,10 @@ service cloud.firestore {
         || (!('canManageCalendar' in profile().data) && profile().data.get('storeAccess', 'assigned') == 'all')));
     }
     function userTenantId() { return profile().data.tenantId; }
+    function canAccessStore(storeId) {
+      return storeId == userStoreId() || (isPos() && canApproveReplenishment());
+    }
+    function boundedList() { return request.query.limit != null && request.query.limit <= 500; }
     function userStoreId() { return profile().data.storeId; }
     function belongsToTenant(tenantId) { return activeUser() && userTenantId() == tenantId; }
     function validTenantData(data, tenantId) { return data.tenantId is string && data.tenantId == tenantId; }
@@ -162,16 +166,11 @@ service cloud.firestore {
 
     match /users/{uid} {
       allow get: if activeUser() && (request.auth.uid == uid || (isAdmin() && resource.data.tenantId == userTenantId()));
-      allow list: if isAdmin() && resource.data.tenantId == userTenantId();
-      allow create: if isAdmin() && validUser(request.resource.data) && request.resource.data.tenantId == userTenantId()
-        && !('inventoryAccess' in request.resource.data);
-      allow update: if (isAdmin() && resource.data.tenantId == userTenantId()
-          && validUser(request.resource.data) && request.resource.data.tenantId == userTenantId()
-          && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['inventoryAccess']))
-        || (activeUser() && request.auth.uid == uid
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName'])
-          && validUser(request.resource.data)
-          && shortString(request.resource.data.displayName, 120));
+      allow list: if boundedList() && (isAdmin() && resource.data.tenantId == userTenantId());
+      allow create: if false;
+      allow update: if activeUser() && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName'])
+        && validUser(request.resource.data) && shortString(request.resource.data.displayName, 120);
       allow delete: if false;
     }
 
@@ -180,7 +179,7 @@ service cloud.firestore {
 
       match /worker_permission_events/{eventId} {
         allow get: if belongsToTenant(tenantId) && canApproveReplenishment();
-        allow list: if belongsToTenant(tenantId) && canApproveReplenishment() && request.query.limit <= 25;
+        allow list: if boundedList() && (belongsToTenant(tenantId) && canApproveReplenishment() && request.query.limit <= 25);
         allow write: if false;
       }
       match /stock_ingresses/{ingressId} {
@@ -190,59 +189,54 @@ service cloud.firestore {
               && resource.data.locationType == 'store' && resource.data.locationId == userStoreId()));
         }
         allow get: if canReadIngress();
-        allow list: if canReadIngress() && request.query.limit <= 25;
+        allow list: if boundedList() && (canReadIngress() && request.query.limit <= 25);
         allow write: if false;
       }
 
       match /calendar_events/{eventId} {
-        allow read: if belongsToTenant(tenantId) && canUseCalendar();
+        allow get: if belongsToTenant(tenantId) && canUseCalendar();
+        allow list: if boundedList() && (belongsToTenant(tenantId) && canUseCalendar());
         allow write: if false;
       }
       match /calendar_inboxes/{uid}/notifications/{notificationId} {
-        allow read: if belongsToTenant(tenantId) && canUseCalendar() && request.auth.uid == uid;
+        allow get: if belongsToTenant(tenantId) && canUseCalendar() && request.auth.uid == uid;
+        allow list: if boundedList() && (belongsToTenant(tenantId) && canUseCalendar() && request.auth.uid == uid);
         allow write: if false;
       }
 
       match /config/{configId} {
-        allow read: if belongsToTenant(tenantId)
+        allow get: if belongsToTenant(tenantId)
           && !resource.data.keys().hasAny(['solUser', 'solPassword', 'apiFactUrl', 'apiFactToken']);
+        allow list: if boundedList() && (belongsToTenant(tenantId)
+          && !resource.data.keys().hasAny(['solUser', 'solPassword', 'apiFactUrl', 'apiFactToken']));
         allow create: if belongsToTenant(tenantId) && isAdmin() && validCompany(request.resource.data) && defaultCustomUnits(request.resource.data);
         allow update: if belongsToTenant(tenantId) && isAdmin() && validCompany(request.resource.data)
           && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['customUnits']) || defaultCustomUnits(request.resource.data));
         allow delete: if false;
       }
       match /stores/{storeId} {
-        allow read: if belongsToTenant(tenantId);
-        allow create, update: if belongsToTenant(tenantId) && isAdmin()
-          && validTenantData(request.resource.data, tenantId)
-          && request.resource.data.keys().hasAll(['tenantId', 'name', 'code', 'address'])
-          && request.resource.data.keys().hasOnly(['tenantId', 'name', 'code', 'address'])
-          && shortString(request.resource.data.name, 120)
-          && shortString(request.resource.data.code, 30)
-          && shortString(request.resource.data.address, 240);
-        allow delete: if belongsToTenant(tenantId) && isAdmin();
+        allow get: if belongsToTenant(tenantId);
+        allow list: if boundedList() && (belongsToTenant(tenantId));
+        allow write: if false;
       }
       match /warehouses/{warehouseId} {
-        allow read: if belongsToTenant(tenantId);
-        allow create, update: if belongsToTenant(tenantId) && isAdmin()
-          && validTenantData(request.resource.data, tenantId)
-          && request.resource.data.keys().hasAll(['tenantId', 'name', 'code', 'isCentral'])
-          && request.resource.data.keys().hasOnly(['tenantId', 'name', 'code', 'isCentral'])
-          && shortString(request.resource.data.name, 120)
-          && shortString(request.resource.data.code, 30)
-          && request.resource.data.isCentral is bool;
-        allow delete: if belongsToTenant(tenantId) && isAdmin();
+        allow get: if belongsToTenant(tenantId);
+        allow list: if boundedList() && (belongsToTenant(tenantId));
+        allow write: if false;
       }
       match /products/{productId} {
-        allow read: if belongsToTenant(tenantId);
+        allow get: if belongsToTenant(tenantId);
+        allow list: if boundedList() && (belongsToTenant(tenantId));
         allow write: if false;
       }
       match /barcode_registry/{barcodeId} {
-        allow read: if belongsToTenant(tenantId) && isAdmin();
+        allow get: if belongsToTenant(tenantId) && isAdmin();
+        allow list: if boundedList() && (belongsToTenant(tenantId) && isAdmin());
         allow write: if false;
       }
       match /meta/{metaId} {
-        allow read: if belongsToTenant(tenantId);
+        allow get: if belongsToTenant(tenantId);
+        allow list: if boundedList() && (belongsToTenant(tenantId));
         allow create, update: if belongsToTenant(tenantId) && isAdmin()
           && metaId == 'catalog'
           && validTenantData(request.resource.data, tenantId)
@@ -252,66 +246,80 @@ service cloud.firestore {
         allow delete: if false;
       }
       match /product_stocks/{stockId} {
-        allow read: if belongsToTenant(tenantId);
+        allow get: if belongsToTenant(tenantId);
+        allow list: if boundedList() && (belongsToTenant(tenantId));
         allow write: if false;
       }
       match /stock_movements/{movementId} {
-        allow read: if belongsToTenant(tenantId) && isAdmin();
+        allow get: if belongsToTenant(tenantId) && isAdmin();
+        allow list: if boundedList() && (belongsToTenant(tenantId) && isAdmin());
         allow write: if false;
       }
       match /transfers/{transferId} {
-        allow get, list: if belongsToTenant(tenantId)
+        allow get: if belongsToTenant(tenantId)
           && (isAdmin() || (isPos() && resource.data.toLocationId == userStoreId()));
+        allow list: if boundedList() && (belongsToTenant(tenantId)
+          && (isAdmin() || (isPos() && resource.data.toLocationId == userStoreId())));
         allow write: if false;
       }
       match /replenishment_requests/{requestId} {
-        allow get, list: if belongsToTenant(tenantId)
-          && (canApproveReplenishment() || (isPos() && resource.data.storeId == userStoreId()
+        allow get: if belongsToTenant(tenantId)
+          && (canApproveReplenishment() || (isPos() && canAccessStore(resource.data.storeId)
             && resource.data.createdBy == request.auth.uid));
+        allow list: if boundedList() && (belongsToTenant(tenantId)
+          && (canApproveReplenishment() || (isPos() && canAccessStore(resource.data.storeId)
+            && resource.data.createdBy == request.auth.uid)));
         allow write: if false;
       }
       match /incidents/{incidentId} {
-        allow get, list: if belongsToTenant(tenantId)
-          && (isAdmin() || ((isPos() || isWorker()) && resource.data.storeId == userStoreId()));
+        allow get: if belongsToTenant(tenantId)
+          && (isAdmin() || ((isPos() || isWorker()) && canAccessStore(resource.data.storeId)));
+        allow list: if boundedList() && (belongsToTenant(tenantId)
+          && (isAdmin() || ((isPos() || isWorker()) && canAccessStore(resource.data.storeId))));
         allow create: if belongsToTenant(tenantId) && (isPos() || isWorker())
           && validIncident(request.resource.data, tenantId)
-          && request.resource.data.storeId == userStoreId()
+          && canAccessStore(request.resource.data.storeId)
           && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.createdByName == profile().data.displayName
+          && request.resource.data.createdAt > 0
+          && !request.resource.data.keys().hasAny(['resolutionNote', 'resolvedBy', 'resolvedByName', 'resolvedAt'])
           && request.resource.data.status == 'abierta'
           && (!('photoUrl' in request.resource.data) || request.resource.data.photoUrl == null);
         allow update: if belongsToTenant(tenantId) && isAdmin()
-          && validIncident(request.resource.data, tenantId);
+          && validIncident(request.resource.data, tenantId)
+          && resource.data.status == 'abierta' && request.resource.data.status == 'resuelta'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'resolutionNote', 'resolvedBy', 'resolvedByName', 'resolvedAt'])
+          && request.resource.data.resolvedBy == request.auth.uid
+          && request.resource.data.resolvedByName == profile().data.displayName
+          && request.resource.data.resolvedAt is number && request.resource.data.resolvedAt > 0;
         allow delete: if false;
       }
       match /sales/{saleId} {
-        allow get, list: if belongsToTenant(tenantId)
+        allow get: if belongsToTenant(tenantId)
           && (isAdmin() || (isPos() && resource.data.userId == request.auth.uid
-            && resource.data.storeId == userStoreId()));
+            && canAccessStore(resource.data.storeId)));
+        allow list: if boundedList() && (belongsToTenant(tenantId)
+          && (isAdmin() || (isPos() && resource.data.userId == request.auth.uid
+            && canAccessStore(resource.data.storeId))));
         allow create: if false;
-        allow update: if belongsToTenant(tenantId) && isPos()
-          && resource.data.tenantId == tenantId
-          && resource.data.userId == request.auth.uid && resource.data.storeId == userStoreId()
-          && (!('anulationRequest' in resource.data) || resource.data.anulationRequest == null)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['anulationRequest', 'anulationStatus'])
-          && request.resource.data.anulationRequest is map
-          && request.resource.data.anulationRequest.keys().hasOnly(['reason', 'byUserId', 'byUserName', 'requestedAt'])
-          && request.resource.data.anulationRequest.reason is string
-          && request.resource.data.anulationRequest.reason.size() > 0
-          && request.resource.data.anulationRequest.reason.size() <= 250
-          && request.resource.data.anulationRequest.byUserId == request.auth.uid
-          && request.resource.data.anulationStatus == 'solicitada';
+        allow update: if false;
         allow delete: if false;
       }
       match /cash_sessions/{sessionId} {
-        allow get, list: if belongsToTenant(tenantId)
+        allow get: if belongsToTenant(tenantId)
           && (isAdmin() || (isPos() && resource.data.userId == request.auth.uid
-            && resource.data.storeId == userStoreId()));
+            && canAccessStore(resource.data.storeId)));
+        allow list: if boundedList() && (belongsToTenant(tenantId)
+          && (isAdmin() || (isPos() && resource.data.userId == request.auth.uid
+            && canAccessStore(resource.data.storeId))));
         allow write: if false;
       }
       match /clients/{clientId} { allow read, write: if false; }
       match /quotations/{quotationId} {
-        allow get, list: if belongsToTenant(tenantId)
-          && (isAdmin() || ((isPos() || isWorker()) && resource.data.storeId == userStoreId()));
+        allow get: if belongsToTenant(tenantId)
+          && (isAdmin() || ((isPos() || isWorker()) && canAccessStore(resource.data.storeId)));
+        allow list: if boundedList() && (belongsToTenant(tenantId)
+          && (isAdmin() || ((isPos() || isWorker()) && canAccessStore(resource.data.storeId))));
         allow write: if false;
       }
       match /counters/{counterId} { allow read, write: if false; }

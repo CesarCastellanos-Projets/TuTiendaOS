@@ -17,8 +17,8 @@ export function FlashBar({ msg }: { msg: string | null }): ReactNode {
   return (
     <div
       role="status"
-      className={`fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-lg px-4 py-2.5 text-sm font-semibold shadow-lg ${
-        error ? 'bg-critical text-white' : 'bg-slate-900 text-slate-50'
+      className={`notice-toast text-sm font-medium ${
+        error ? 'notice-error' : 'text-slate-900'
       }`}
     >
       {msg}
@@ -37,7 +37,7 @@ export function EmptyState({
 }) {
   return (
     <div className="card flex flex-col items-center gap-2 p-8 text-center">
-      <p className="font-display text-lg uppercase tracking-wide">{title}</p>
+      <p className="font-display text-lg font-semibold">{title}</p>
       {hint && <p className="max-w-sm text-sm text-slate-500">{hint}</p>}
       {action}
     </div>

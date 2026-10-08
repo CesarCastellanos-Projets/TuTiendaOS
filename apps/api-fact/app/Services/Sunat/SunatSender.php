@@ -12,6 +12,7 @@ use Greenter\Model\Response\StatusResult;
 use Greenter\Model\Response\SummaryResult;
 use Greenter\See;
 use Throwable;
+use Illuminate\Support\Facades\DB;
 
 final class SunatSender
 {
@@ -22,7 +23,7 @@ final class SunatSender
 
     public function send(See $see, DocumentInterface $document, SunatDocument $record): SunatDocument
     {
-        $this->beginAttempt($record);
+        if (! $this->beginAttempt($record)) return $record;
         try {
             $result = $see->send($document);
             $this->storeXml($see, $record);
@@ -42,7 +43,7 @@ final class SunatSender
 
     public function sendAsync(See $see, DocumentInterface $document, SunatDocument $record): SunatDocument
     {
-        $this->beginAttempt($record);
+        if (! $this->beginAttempt($record)) return $record;
         try {
             $result = $see->send($document);
             $this->storeXml($see, $record);
@@ -51,6 +52,7 @@ final class SunatSender
             }
 
             $record->forceFill([
+                'send_lease_until' => null,
                 'ticket' => $result->getTicket(),
                 'estado_sunat' => 'procesando',
                 'mensaje_sunat' => 'Documento enviado; CDR pendiente de consulta.',
@@ -72,7 +74,7 @@ final class SunatSender
             return $this->scheduleRetry($record, 'El documento no tiene ticket SUNAT.');
         }
 
-        $this->beginAttempt($record);
+        if (! $this->beginAttempt($record, false)) return $record;
         try {
             $result = $see->getStatus($record->ticket);
             if ($result->getCode() === '98') {
@@ -89,13 +91,25 @@ final class SunatSender
         }
     }
 
-    private function beginAttempt(SunatDocument $record): void
+    private function beginAttempt(SunatDocument $record, bool $respectBackoff = true): bool
     {
-        $record->forceFill([
-            'attempts' => $record->attempts + 1,
-            'last_attempt_at' => now(),
-            'next_retry_at' => now()->addMinutes(5),
-        ])->save();
+        return DB::transaction(function () use ($record, $respectBackoff): bool {
+            $current = SunatDocument::query()->lockForUpdate()->findOrFail($record->id);
+            if (in_array($current->estado_sunat, ['aceptado', 'observado', 'rechazado', 'requiere_revision'], true)
+                || $current->send_lease_until?->isFuture()
+                || ($respectBackoff && $current->attempts > 0 && $current->next_retry_at?->isFuture())) {
+                $record->setRawAttributes($current->getAttributes(), true);
+                return false;
+            }
+            $current->forceFill([
+                'attempts' => $current->attempts + 1,
+                'last_attempt_at' => now(),
+                'next_retry_at' => now()->addMinutes(5),
+                'send_lease_until' => now()->addMinutes(5),
+            ])->save();
+            $record->setRawAttributes($current->getAttributes(), true);
+            return true;
+        }, 3);
     }
 
     private function applyCdr(SunatDocument $record, ?CdrResponse $cdr, ?string $cdrZip): SunatDocument
@@ -114,6 +128,7 @@ final class SunatSender
         };
         $message = trim(implode(' ', array_filter([$cdr->getDescription(), ...$notes])));
         $record->forceFill([
+            'send_lease_until' => null,
             'estado_sunat' => $status,
             'mensaje_sunat' => mb_substr($message !== '' ? $message : 'CDR recibido.', 0, 2000),
             'cdr_code' => (string) $cdr->getCode(),
@@ -137,6 +152,7 @@ final class SunatSender
         $maxAttempts = max(1, (int) config('sunat.retry_max_attempts', 6));
         if ($record->attempts >= $maxAttempts) {
             $record->forceFill([
+                'send_lease_until' => null,
                 'estado_sunat' => 'requiere_revision',
                 'mensaje_sunat' => mb_substr($message, 0, 2000),
                 'next_retry_at' => null,
@@ -147,6 +163,7 @@ final class SunatSender
 
         $backoffIndex = min(max($record->attempts - 1, 0), count(self::BACKOFF_MINUTES) - 1);
         $record->forceFill([
+            'send_lease_until' => null,
             'estado_sunat' => $retryStatus,
             'mensaje_sunat' => mb_substr($message, 0, 2000),
             'next_retry_at' => now()->addMinutes(self::BACKOFF_MINUTES[$backoffIndex]),

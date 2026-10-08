@@ -1,6 +1,6 @@
+import { Link } from 'react-router-dom';
 import { useEffect, useMemo, useState } from 'react';
 import {
-  getDocs,
   limit,
   query,
   where
@@ -8,8 +8,8 @@ import {
 import { onSnapshot } from '../../lib/firestore-listener';
 import { AlertTriangle, ArrowLeftRight, ReceiptText, TrendingUp } from 'lucide-react';
 import { tenantCollection } from '../../lib/tenant-firestore';
-import { useAuth } from '../../lib/auth';
-import { money, todayStart } from '../../lib/utils';
+import { peruToday } from '../../lib/calendar';
+import { money } from '../../lib/utils';
 import type { Sale, Transfer, ProductStock } from '../../types';
 
 interface KpiProps {
@@ -21,16 +21,21 @@ interface KpiProps {
 }
 
 export function AdminDashboard() {
-  const [salesToday, setSalesToday] = useState<Sale[]>([]);
+  const [days, setDays] = useState<Array<{ name: string; revenue: number; tickets: number; payments: Record<string, number> }>>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [today, setToday] = useState(peruToday);
   const [pendingTransfers, setPendingTransfers] = useState<Transfer[]>([]);
   const [criticalStock, setCriticalStock] = useState<ProductStock[]>([]);
   const [sunatIssues, setSunatIssues] = useState<Sale[]>([]);
 
-  const uid = useAuth((s) => s.user?.uid);
+  useEffect(() => { const timer = setInterval(() => setToday(peruToday()), 60000); return () => clearInterval(timer); }, []);
 
   useEffect(() => {
-    const since = todayStart();
-    void loadToday(since);
+    const unSummary = onSnapshot(query(tenantCollection('sales_statistics'), where('month', '==', today.slice(0, 7)), limit(100)), (snapshot) => {
+      setDays(snapshot.docs.map((doc) => ({ name: String(doc.data().storeName ?? doc.data().storeId), ...(doc.data().days?.[today] ?? { revenue: 0, tickets: 0, payments: {} }) })));
+      setError(snapshot.size === 100 ? 'Resumen limitado a 100 tiendas. Consulta Estadísticas para filtrar.' : null);
+    }, () => setError('No se pudo actualizar el resumen de ventas.'));
+    const unStock = onSnapshot(query(tenantCollection('product_stocks'), where('locationType', '==', 'store'), where('isLowStock', '==', true), limit(13)), (snapshot) => setCriticalStock(snapshot.docs.map((doc) => doc.data() as ProductStock)));
 
     const qT = query(
       tenantCollection('transfers'),
@@ -41,7 +46,8 @@ export function AdminDashboard() {
 
     const qs = query(
       tenantCollection('sales'),
-      where('sunatStatus', 'in', ['rechazado', 'observado', 'pendiente']),
+      where('sunatStatus', 'in', ['rechazado', 'observado', 'pendiente', 'error']),
+      where('consolidated', '==', false),
       limit(20)
     );
     const un2 = onSnapshot(qs, (snap) => setSunatIssues(snap.docs.map((d) => d.data() as Sale)));
@@ -49,71 +55,52 @@ export function AdminDashboard() {
     return () => {
       un1();
       un2();
+      unSummary();
+      unStock();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [today]);
 
-  async function loadToday(since: number) {
-    const q = query(tenantCollection('sales'), where('createdAt', '>=', since), limit(500));
-    const snap = await getDocs(q);
-    setSalesToday(snap.docs.filter((d) => !d.data().consolidated).map((d) => d.data() as Sale));
-    void loadCritical();
-    void uid;
-  }
-
-  async function loadCritical() {
-    // Stock bajo mínimo: se revisa contra el mínimo del producto en stocks de tiendas
-    const q = query(tenantCollection('product_stocks'), where('locationType', '==', 'store'), limit(300));
-    const snap = await getDocs(q);
-    setCriticalStock(
-      snap.docs
-        .map((d) => d.data() as ProductStock)
-        .filter((p) => p.quantity <= 5)
-        .slice(0, 12)
-    );
-  }
-
-  const totalDay = useMemo(() => salesToday.reduce((s, x) => s + x.total, 0), [salesToday]);
+  const totalDay = useMemo(() => days.reduce((sum, day) => sum + day.revenue, 0), [days]);
+  const ticketCount = days.reduce((sum, day) => sum + day.tickets, 0);
   const byMethod = useMemo(() => {
-    const m = new Map<string, number>();
-    salesToday.forEach((s) => m.set(s.paymentMethod, (m.get(s.paymentMethod) ?? 0) + s.total));
-    return [...m.entries()].sort((a, b) => b[1] - a[1]);
-  }, [salesToday]);
-  const byStore = useMemo(() => {
-    const m = new Map<string, number>();
-    salesToday.forEach((s) => m.set(s.storeName, (m.get(s.storeName) ?? 0) + s.total));
-    return [...m.entries()].sort((a, b) => b[1] - a[1]);
-  }, [salesToday]);
+    const totals = new Map<string, number>();
+    days.forEach((day) => Object.entries(day.payments).forEach(([method, amount]) => totals.set(method, (totals.get(method) ?? 0) + amount)));
+    return [...totals.entries()].sort((a, b) => b[1] - a[1]);
+  }, [days]);
+  const byStore = useMemo(() => days.map((day): [string, number] => [day.name, day.revenue]).sort((a, b) => b[1] - a[1]), [days]);
 
   return (
     <div className="space-y-6">
-      <h1 className="font-display text-2xl uppercase tracking-wide">Panel del día</h1>
+      <div className="dashboard-intro"><div><span className="eyebrow">Resumen de la operación</span><h1>Así va tu día.</h1></div><span className="dashboard-date">{new Intl.DateTimeFormat('es-PE', { dateStyle: 'long', timeZone: 'America/Lima' }).format(new Date())}</span></div>
 
-      <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Kpi icon={<TrendingUp size={18} />} label="Ventas de hoy" value={money(totalDay)} sub={`${salesToday.length} tickets`} tone="good" />
+      {error && <p role="alert" className="text-sm text-critical">{error}</p>}
+      <p className="text-xs text-slate-500">Las ventas se actualizan al procesar sus resúmenes. Incluye ventas consolidadas y excluye anulaciones aceptadas.</p>
+      <section className="dashboard-kpis">
+        <Kpi icon={<TrendingUp size={18} />} label="Ventas de hoy" value={money(totalDay)} sub={`${ticketCount} tickets`} tone="good" />
         <Kpi
           icon={<ArrowLeftRight size={18} />}
           label="Transferencias por recibir"
-          value={String(pendingTransfers.length)}
+          value={`${pendingTransfers.length}${pendingTransfers.length === 20 ? '+' : ''}`}
           sub={pendingTransfers.length ? 'Revisa con las tiendas' : 'Todo al día'}
           tone={pendingTransfers.length ? 'warn' : 'default'}
         />
         <Kpi
           icon={<AlertTriangle size={18} />}
           label="Stock crítico"
-          value={String(criticalStock.length)}
-          sub="Productos ≤ 5 unidades"
+          value={criticalStock.length > 12 ? '12+' : String(criticalStock.length)}
+          sub="Según el mínimo configurado del producto"
           tone={criticalStock.length ? 'bad' : 'default'}
         />
         <Kpi
           icon={<ReceiptText size={18} />}
           label="SUNAT por atender"
-          value={String(sunatIssues.length)}
+          value={`${sunatIssues.length}${sunatIssues.length === 20 ? '+' : ''}`}
           sub="Rechazados / observados / pendientes"
           tone={sunatIssues.some((s) => s.sunatStatus === 'rechazado') ? 'bad' : 'default'}
         />
       </section>
 
+      <div className="dashboard-shortcuts"><Link to="/admin/ingresos">Registrar ingreso</Link><Link to="/admin/reposiciones">Revisar reposiciones</Link><Link to="/admin/comprobantes">Ver comprobantes</Link></div>
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="card p-4">
           <h2 className="mb-3 font-semibold">Ventas por tienda</h2>
@@ -153,7 +140,7 @@ export function AdminDashboard() {
             <p className="text-sm text-slate-500">Ningún producto en nivel crítico.</p>
           ) : (
             <ul className="divide-y divide-linea">
-              {criticalStock.map((p) => (
+              {criticalStock.slice(0, 12).map((p) => (
                 <li key={`${p.productId}-${p.locationId}`} className="flex items-center justify-between py-2">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium">{p.productName}</p>
@@ -204,21 +191,6 @@ function StatusBadge({ status }: { status: Sale['sunatStatus'] }) {
   return <span className={`badge ${map[status]}`}>{status}</span>;
 }
 
-function Kpi({ icon, label, value, sub, tone = 'default' }: KpiProps) {
-  const tones = {
-    default: '',
-    good: 'border-l-verde',
-    warn: 'border-l-sol',
-    bad: 'border-l-acento'
-  } as const;
-  return (
-    <div className={`card border-l-4 p-3.5 ${tones[tone]}`}>
-      <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-slate-500">
-        {icon}
-        {label}
-      </div>
-      <p className="mt-1 font-display text-2xl leading-none">{value}</p>
-      {sub && <p className="mt-1 truncate text-xs text-slate-500">{sub}</p>}
-    </div>
-  );
+function Kpi({ icon, label, value, sub }: KpiProps) {
+  return <div className="dashboard-kpi"><div className="kpi-label">{icon}{label}</div><p className="kpi-value">{value}</p>{sub && <p className="kpi-hint">{sub}</p>}</div>;
 }

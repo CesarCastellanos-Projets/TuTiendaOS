@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { availableBase, availablePresentation } from '../lib/stock-availability';
-import { onSnapshot } from '../lib/firestore-listener';
-import { documentId, getDocs, limit, orderBy, query, startAfter, where, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
-import { cacheCatalog, localDb } from '../lib/catalog-cache';
-import { getProductsCatalog, syncProductsCatalog, type ProductWithId } from '../lib/catalog-repository';
-import { requireCurrentTenantId, tenantCollection } from '../lib/tenant-firestore';
+import { storeCatalogRepository } from '../lib/stock-repository';
+import { getProductsCatalog, syncProductsCatalog, subscribeCatalogError, type ProductWithId } from '../lib/catalog-repository';
+import { requireCurrentTenantId } from '../lib/tenant-firestore';
 import { useAuth } from '../lib/auth';
 import { useProductsCatalog } from './useProductsCatalog';
 import type { ProductStock } from '../types';
@@ -28,79 +26,25 @@ export function useStoreCatalog(storeId: string | undefined): {
   items: ProductStock[];
   products: ProductWithId[];
   offline: boolean;
+  error: string | null;
 } {
   const [items, setItems] = useState<ProductStock[]>([]);
   const products = useProductsCatalog();
   const tenantId = useAuth((state) => state.profile?.tenantId);
   const [offline, setOffline] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [productError, setProductError] = useState<string | null>(null);
+  useEffect(() => {
+    setProductError(null);
+    if (tenantId) return subscribeCatalogError(tenantId, setProductError);
+  }, [tenantId]);
 
   useEffect(() => {
+    setItems([]); setError(null);
     if (!storeId || !tenantId) return;
-    let alive = true;
-    let syncing = false;
-    let again = false;
-    let initialized = false;
-    let watermark = 0;
-    const stockMap = new Map<string, ProductStock>();
-    setItems([]);
-
-    void localDb.products.where('[tenantId+locationId]').equals([tenantId, storeId]).toArray().then((cached) => {
-      if (!alive || initialized || cached.length === 0) return;
-      setItems(cached.map(({ id: _id, cachedAt: _c, ...p }) => p));
-      setOffline(!navigator.onLine);
+    return storeCatalogRepository(tenantId, storeId).subscribe((state) => {
+      setItems(state.rows); setOffline(state.offline); setError(state.error);
     });
-
-    const sync = async () => {
-      if (!alive) return;
-      if (syncing) { again = true; return; }
-      syncing = true;
-      try {
-        do {
-          again = false;
-          const initial = !initialized;
-          const next = initial ? new Map<string, ProductStock>() : new Map(stockMap);
-          let cursor: QueryDocumentSnapshot<DocumentData> | undefined;
-          let newest = watermark;
-          do {
-            const constraints = initial
-              ? [where('locationId', '==', storeId), orderBy(documentId())]
-              : [where('locationId', '==', storeId), where('updatedAt', '>=', Math.max(0, watermark - 60000)), orderBy('updatedAt'), orderBy(documentId())];
-            const page = await getDocs(query(tenantCollection('product_stocks'), ...constraints, ...(cursor ? [startAfter(cursor)] : []), limit(300)));
-            if (!alive) return;
-            for (const doc of page.docs) {
-              const stock = doc.data() as ProductStock;
-              next.set(stock.productId, stock);
-              newest = Math.max(newest, Number(stock.updatedAt ?? 0));
-            }
-            cursor = page.size === 300 ? page.docs.at(-1) : undefined;
-          } while (cursor);
-          stockMap.clear(); next.forEach((stock, id) => stockMap.set(id, stock));
-          watermark = newest; initialized = true;
-          const fresh = [...stockMap.values()];
-          setItems(fresh); setOffline(false);
-          if (initial) {
-            await localDb.transaction('rw', localDb.products, async () => {
-              await localDb.products.where('[tenantId+locationId]').equals([tenantId, storeId]).delete();
-              await cacheCatalog(tenantId, fresh);
-            });
-          } else await cacheCatalog(tenantId, fresh);
-        } while (again && alive);
-      } catch { if (alive) setOffline(true); }
-      finally { syncing = false; }
-    };
-    void sync();
-    const unsubStocks = onSnapshot(
-      query(tenantCollection('product_stocks'), where('locationId', '==', storeId), orderBy('updatedAt', 'desc'), limit(1)),
-      () => void sync(),
-      () => {
-        if (alive) setOffline(true);
-      }
-    );
-
-    return () => {
-      alive = false;
-      unsubStocks();
-    };
   }, [storeId, tenantId]);
 
   const currentItems = useMemo(() => {
@@ -110,19 +54,21 @@ export function useStoreCatalog(storeId: string | undefined): {
       return { ...stock, productName: product.name, salePrice: product.salePrice, barcode: product.barcode, unit: product.unit };
     });
   }, [items, products]);
-  return { items: currentItems, products, offline };
+  return { items: currentItems, products, offline, error: error ?? productError };
 }
 
+const lastMissingRefresh = new Map<string, number>();
 export async function findInCatalog(
   _storeId: string,
   code: string,
-  catalog: ProductStock[]
+  catalog: ProductStock[],
+  refreshed = false
 ): Promise<SearchableCatalogItem | null> {
   const c = code.trim().toLowerCase();
   if (!c) return null;
 
   const tenantId = requireCurrentTenantId();
-  await syncProductsCatalog(tenantId).catch(() => undefined);
+  if (!getProductsCatalog(tenantId).length) await syncProductsCatalog(tenantId).catch(() => undefined);
   const products = getProductsCatalog(tenantId).filter((product) => product.active);
 
   // Vercel Best Practice (js-index-maps): Map para resolución O(1) de stocks por productId
@@ -153,6 +99,7 @@ export async function findInCatalog(
           presentationId,
           presentationLabel: matchPres.description || label,
           factor: matchPres.factor || 1,
+          autoUnpackEnabled: matchPres.autoUnpackEnabled === true,
           allowFractionalSale: matchPres.allowFractionalSale === true,
           fractionStep: matchPres.fractionStep ?? 0.5,
           quantity: availablePresentation(foundStock, p.presentations, matchPres),
@@ -207,6 +154,11 @@ export async function findInCatalog(
     };
   }
 
+  if (!refreshed && navigator.onLine && Date.now() - (lastMissingRefresh.get(tenantId) ?? 0) > 15000) {
+    lastMissingRefresh.set(tenantId, Date.now());
+    await syncProductsCatalog(tenantId).catch(() => undefined);
+    return findInCatalog(_storeId, code, catalog, true);
+  }
   return null;
 }
 
@@ -225,7 +177,7 @@ export function useCatalogSearch(items: ProductStock[]) {
   const allSearchable = useMemo(() => {
     const list: SearchableCatalogItem[] = [];
 
-    for (const p of productsList) {
+    for (const p of productsList.filter((product) => product.active)) {
       const stock = stockMap.get(p.id);
       const baseStockQty = availableBase(stock, p.presentations);
 
@@ -262,6 +214,7 @@ export function useCatalogSearch(items: ProductStock[]) {
           presentationId,
           presentationLabel: pres.description || label,
           factor: pres.factor || 1,
+          autoUnpackEnabled: pres.autoUnpackEnabled === true,
           allowFractionalSale: pres.allowFractionalSale === true,
           fractionStep: pres.fractionStep ?? 0.5,
           quantity: availablePresentation(stock, p.presentations, pres),

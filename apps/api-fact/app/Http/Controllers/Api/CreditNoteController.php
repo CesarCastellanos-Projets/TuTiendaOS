@@ -9,6 +9,7 @@ use App\Models\SunatDocument;
 use App\Services\Sunat\FiscalPayloadValidator;
 use App\Services\Sunat\GreenterFactory;
 use App\Services\Sunat\SunatSender;
+use App\Services\Sunat\FiscalSequence;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -23,6 +24,25 @@ final class CreditNoteController extends Controller
             'serie' => ['required', 'string', 'max:4'],
             'correlativo' => ['required', 'integer', 'min:1'],
             'motivo' => ['nullable', 'string', 'max:250'],
+            'original' => ['nullable', 'array'],
+            'original_summary_ref' => ['required_with:original', 'string', 'max:64'],
+            'original.ref' => ['required_with:original', 'string', 'max:64'],
+            'original.tipo' => ['required_with:original', 'in:boleta'],
+            'original.serie' => ['required_with:original', 'string', 'max:4'],
+            'original.correlativo' => ['required_with:original', 'integer', 'min:1'],
+            'original.fecha' => ['required_with:original', 'date'],
+            'original.igv_rate' => ['required_with:original', 'numeric', 'gt:0', 'lte:100'],
+            'original.cliente.tipo' => ['nullable', 'in:-,DNI,RUC,1,6'],
+            'original.cliente.numero' => ['nullable', 'string', 'max:15'],
+            'original.cliente.nombre' => ['nullable', 'string', 'max:120'],
+            'original.items' => ['required_with:original', 'array', 'min:1', 'max:100'],
+            'original.items.*.codigo' => ['nullable', 'string', 'max:30'],
+            'original.items.*.descripcion' => ['required', 'string', 'max:250'],
+            'original.items.*.cantidad' => ['required', 'numeric', 'gt:0'],
+            'original.items.*.precio' => ['required', 'numeric', 'min:0'],
+            'original.totals.subtotal' => ['required_with:original', 'numeric', 'min:0'],
+            'original.totals.igv' => ['required_with:original', 'numeric', 'min:0'],
+            'original.totals.total' => ['required_with:original', 'numeric', 'min:0'],
         ]);
 
         $original = SunatDocument::query()
@@ -30,6 +50,14 @@ final class CreditNoteController extends Controller
             ->where('correlativo', $data['correlativo'])
             ->whereIn('tipo', ['boleta', 'factura'])
             ->first();
+
+        if (! $original && isset($data['original'])) {
+            $invoice = $validator->canonicalizeInvoice($data['original']);
+            if ($invoice['serie'] !== $data['serie'] || $invoice['correlativo'] !== $data['correlativo']) {
+                return response()->json(['ok' => false, 'message' => 'La identidad original no coincide.'], 409);
+            }
+            $original = \App\Services\Sunat\ConsolidatedReceipt::restore($invoice, $validator, $data['original_summary_ref']);
+        }
 
         if (! $original) {
             return response()->json([
@@ -45,6 +73,11 @@ final class CreditNoteController extends Controller
         }
 
         $record = DB::transaction(function () use ($data, $original, $validator): SunatDocument {
+            $series = $original->tipo === 'factura'
+                ? (string) config('sunat.serie_nc_factura', 'FC01')
+                : (string) config('sunat.serie_nc_boleta', 'BC01');
+            FiscalSequence::lock('nota_credito', $series);
+            $original = SunatDocument::query()->lockForUpdate()->findOrFail($original->id);
             $existing = SunatDocument::query()->where('ref', $data['ref'])->lockForUpdate()->first();
             if ($existing) {
                 if ($existing->tipo !== 'nota_credito' || $existing->original_document_id !== $original->id) {
@@ -71,11 +104,7 @@ final class CreditNoteController extends Controller
             $serieNc = $original->tipo === 'factura'
                 ? (string) config('sunat.serie_nc_factura', 'FC01')
                 : (string) config('sunat.serie_nc_boleta', 'BC01');
-            $correlativoNc = (int) (SunatDocument::query()
-                ->where('tipo', 'nota_credito')
-                ->where('serie', $serieNc)
-                ->lockForUpdate()
-                ->max('correlativo') ?? 0) + 1;
+            $correlativoNc = FiscalSequence::next('nota_credito', $serieNc);
 
             $payload = [
                 'igv_rate' => $original->payload['igv_rate'] ?? 18,

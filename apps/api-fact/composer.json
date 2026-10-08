@@ -1,10 +1,10 @@
 {
     "name": "denzoz/api-fact",
-    "description": "Motor tributario D'ENZOZ: boletas/facturas electrónicas SUNAT con Greenter",
+    "description": "Motor tributario D'ENZOZ: boletas/facturas electr\u00c3\u00b3nicas SUNAT con Greenter",
     "type": "project",
     "require": {
         "php": "^8.2",
-        "laravel/framework": "^11.0",
+        "laravel/framework": "^12.69.0",
         "greenter/greenter": "^5.1",
         "barryvdh/laravel-dompdf": "^3.0"
     },
@@ -38,7 +38,7 @@
             "php-http/discovery": true
         },
         "audit": {
-            "block": false
+            "block": true
         }
     },
     "minimum-stability": "stable",

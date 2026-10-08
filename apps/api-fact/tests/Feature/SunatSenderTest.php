@@ -20,6 +20,24 @@ final class SunatSenderTest extends TestCase
 {
     use RefreshDatabase;
 
+    public function test_an_active_lease_and_backoff_prevent_another_send(): void
+    {
+        $document = SunatDocument::query()->create([
+            'ref' => 'summary-leased', 'tipo' => 'resumen', 'serie' => 'RC', 'correlativo' => 1,
+            'estado_sunat' => 'pendiente', 'attempts' => 1, 'send_lease_until' => now()->addMinute(),
+            'next_retry_at' => now()->subMinute(), 'payload' => [],
+        ]);
+        $see = Mockery::mock(See::class);
+        $see->shouldNotReceive('send');
+        $summary = new \Greenter\Model\Summary\Summary;
+        $sender = app(SunatSender::class);
+        $sender->sendAsync($see, $summary, $document);
+        self::assertSame(1, $document->fresh()->attempts);
+        $document->update(['send_lease_until' => null, 'next_retry_at' => now()->addMinute()]);
+        $sender->sendAsync($see, $summary, $document);
+        self::assertSame(1, $document->fresh()->attempts);
+    }
+
     public function test_async_flow_persists_ticket_then_cdr_and_artifacts(): void
     {
         Storage::fake('local');

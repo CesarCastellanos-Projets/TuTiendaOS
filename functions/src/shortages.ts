@@ -1,10 +1,11 @@
+import { appCheckOptions } from './app-check';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { db } from './firebase';
-import { requireAdmin } from './authz';
+import { assertCurrentProfile, requireAdmin } from './authz';
 import { tenantCollection, tenantDoc } from './tenant';
 import { parsePresentations, readStockState, changeSelectedStock, round3, stockEquivalent, stockPatch, type StockState } from './stock-model';
 
-export const resolveTransferShortage = onCall(async (request) => {
+export const resolveTransferShortage = onCall(appCheckOptions, async (request) => {
   const profile = await requireAdmin(request);
   const { transferId, action, reason } = request.data as Record<string, unknown>;
   if (typeof transferId !== 'string' || !/^[\w-]{1,128}$/.test(transferId)
@@ -14,10 +15,15 @@ export const resolveTransferShortage = onCall(async (request) => {
   }
   const ref = tenantDoc(profile.tenantId, 'transfers', transferId);
   await db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const snap = await tx.get(ref);
     const transfer = snap.data();
     if (!transfer || transfer.status !== 'recibido') throw new HttpsError('failed-precondition', 'La transferencia aún no fue recibida.');
     if (['devuelto', 'merma'].includes(String(transfer.shortageStatus))) return;
+    if (action === 'devolver') {
+      const source = await tx.get(tenantDoc(profile.tenantId, transfer.fromLocationType === 'store' ? 'stores' : 'warehouses', String(transfer.fromLocationId)));
+      if (!source.exists || source.data()?.active === false) throw new HttpsError('failed-precondition', 'La ubicación de origen ya no está activa.');
+    }
     const items = transfer.items as Record<string, unknown>[];
     if (!Array.isArray(items) || items.length < 1 || items.length > 100) throw new HttpsError('failed-precondition', 'Transferencia inconsistente.');
     const ids = [...new Set(items.map((item) => String(item.productId)))];
@@ -60,7 +66,7 @@ export const resolveTransferShortage = onCall(async (request) => {
     if (!hasShortage) throw new HttpsError('failed-precondition', 'La transferencia no tiene faltantes.');
     for (const [id, state] of states) {
       const index = ids.indexOf(id);
-      tx.update(stocks[index].ref, stockPatch(state, parsePresentations(products[index].data()!)));
+      tx.update(stocks[index].ref, stockPatch(state, parsePresentations(products[index].data()!), Number(products[index].data()!.minStock ?? 0), products[index].data()!.active === true));
     }
     tx.update(ref, {
       shortageStatus: action === 'devolver' ? 'devuelto' : 'merma',

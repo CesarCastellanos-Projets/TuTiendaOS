@@ -31,7 +31,7 @@ export function saleQuantityError(quantity: number, presentation?: SalePresentat
   if (!Number.isFinite(quantity) || quantity <= 0 || quantity > 1_000_000
     || Math.abs(quantity * 1000 - Math.round(quantity * 1000)) > 0.000001) return 'La cantidad debe ser positiva y tener hasta tres decimales.';
   if (!presentation) return baseQuantityStep(baseUnit) === 1 && !Number.isInteger(quantity) ? 'Este producto se vende en unidades completas.' : null;
-  if (Math.abs(quantity * presentation.factor - Math.round(quantity * presentation.factor)) > 0.000001) return 'La cantidad debe equivaler a unidades base completas.';
+  if (baseQuantityStep(baseUnit) === 1 && Math.abs(quantity * presentation.factor - Math.round(quantity * presentation.factor)) > 0.000001) return 'La cantidad debe equivaler a unidades base completas.';
   if (Number.isInteger(quantity)) return null;
   if (presentation.autoUnpackEnabled !== true) return 'Esta presentación debe venderse cerrada y completa.';
   if (presentation.allowFractionalSale !== true) return 'Esta presentación no permite venta fraccionada.';

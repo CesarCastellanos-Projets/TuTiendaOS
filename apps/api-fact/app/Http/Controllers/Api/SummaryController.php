@@ -9,6 +9,7 @@ use App\Models\SunatDocument;
 use App\Services\Sunat\FiscalPayloadValidator;
 use App\Services\Sunat\GreenterFactory;
 use App\Services\Sunat\SunatSender;
+use App\Services\Sunat\FiscalSequence;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -38,6 +39,7 @@ final class SummaryController extends Controller
         $reference = $data['ref'];
 
         $record = DB::transaction(function () use ($data, $payloadHash, $reference, $validator): SunatDocument {
+            FiscalSequence::lock('resumen', 'RC');
             $existing = SunatDocument::query()->where('ref', $reference)->lockForUpdate()->first();
             if ($existing) {
                 $existingHash = $existing->payload_hash ?? $validator->hash((array) $existing->payload);
@@ -50,7 +52,7 @@ final class SummaryController extends Controller
 
                 return $existing;
             }
-            $correlative = (int) (SunatDocument::query()->where('tipo', 'resumen')->lockForUpdate()->max('correlativo') ?? 0) + 1;
+            $correlative = FiscalSequence::next('resumen', 'RC');
 
             return SunatDocument::query()->create([
                 'ref' => $reference,

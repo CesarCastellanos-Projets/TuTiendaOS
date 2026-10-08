@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
-import { limit, orderBy, query, updateDoc } from 'firebase/firestore';
-import { onSnapshot } from '../../lib/firestore-listener';
+import { useMemo, useState } from 'react';
+import { orderBy, query, updateDoc, where } from 'firebase/firestore';
+import { usePagedQuery } from '../../hooks/usePagedQuery';
+import { Pagination } from '../../components/ui/Pagination';
 import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import type { Incident, IncidentStatus } from '../../types';
@@ -19,19 +20,14 @@ const TYPE_LABEL: Record<Incident['type'], string> = {
 
 export function IncidentsAdminPage() {
   const [filter, setFilter] = useState<IncidentStatus>('abierta');
-  const [incidents, setIncidents] = useState<(Incident & { id: string })[]>([]);
   const [resolving, setResolving] = useState<(Incident & { id: string }) | null>(null);
   const profile = useAuth((s) => s.profile)!;
   const user = useAuth((s) => s.user);
   const { msg, flash } = useFlash();
 
-  useEffect(() => {
-    const q = query(tenantCollection('incidents'), orderBy('createdAt', 'desc'), limit(100));
-    return onSnapshot(q, (s) => {
-      const all = s.docs.map((d) => ({ ...(d.data() as Incident), id: d.id }));
-      setIncidents(all.filter((x) => x.status === filter));
-    });
-  }, [filter]);
+  const incidentQuery = useMemo(() => query(tenantCollection('incidents'), where('status', '==', filter), orderBy('createdAt', 'desc')), [filter]);
+  const incidentPage = usePagedQuery<Incident & { id: string }>(incidentQuery);
+  const incidents = incidentPage.rows;
 
   const resolve = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -62,6 +58,8 @@ export function IncidentsAdminPage() {
         </select>
       </div>
 
+      {incidentPage.error && <p role="alert" className="text-critical">{incidentPage.error}</p>}
+      <Pagination {...incidentPage} />
       {incidents.length === 0 ? (
         <EmptyState title={`Sin incidencias ${filter === 'abierta' ? 'abiertas' : 'resueltas'}`} />
       ) : (

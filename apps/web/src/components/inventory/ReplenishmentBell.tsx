@@ -43,12 +43,12 @@ export function ReplenishmentBell() {
   if (!allowed) return null;
   const current = items.find((item) => item.id === toast);
   return <>
-    <button type="button" className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-indigo-50"
+    <button type="button" className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-brand-50"
       aria-label={`Reposiciones pendientes, ${items.length}${items.length >= REPLENISHMENT_PAGE_SIZE ? ' o más' : ''}`} onClick={() => setOpen(true)}>
       <PackageOpen size={19} />
-      {items.length > 0 && <span className="absolute -right-1 -top-1 rounded-full bg-primary px-1.5 text-[10px] font-bold text-white">{items.length >= REPLENISHMENT_PAGE_SIZE ? `${REPLENISHMENT_PAGE_SIZE}+` : items.length}</span>}
+      {items.length > 0 && <span className="absolute -right-1 -top-1 rounded-full bg-primary px-1.5 text-xs font-bold text-white">{items.length >= REPLENISHMENT_PAGE_SIZE ? `${REPLENISHMENT_PAGE_SIZE}+` : items.length}</span>}
     </button>
-    {current && <div role="status" className="fixed bottom-4 left-4 z-40 w-[calc(100vw-2rem)] max-w-sm rounded-2xl border border-indigo-200 bg-white p-4 shadow-xl">
+    {current && <div role="status" className="fixed bottom-4 left-4 z-40 w-[calc(100vw-2rem)] max-w-sm rounded-2xl border border-brand-200 bg-white p-4 shadow-xl">
       <button className="float-right p-1" aria-label="Cerrar aviso de reposición" onClick={() => setToast(null)}><X size={16} /></button>
       <strong className="block pr-6">Nueva reposición: {current.storeName}</strong>
       <p className="mt-1 text-xs text-slate-500">Solicitada por {current.createdByName} · {current.items.length} líneas</p>
@@ -63,7 +63,7 @@ export function ReplenishmentBell() {
       {error && <p role="alert" className="mb-3 text-sm text-critical">{error}</p>}
       <p className="mb-3 text-xs text-slate-500">Avisos compartidos en tiempo real. Aprobar una solicitud crea el traspaso; la tienda debe recibirlo.</p>
       {!items.length && <p className="py-4 text-sm text-slate-500">{loading ? 'Cargando…' : 'No hay solicitudes pendientes.'}</p>}
-      <div className="space-y-2">{items.map((item) => <article key={item.id} className="rounded-xl border border-indigo-100 p-3"><strong className="text-sm">{item.storeName}</strong><p className="mt-1 text-xs text-slate-500">{item.createdByName} · {fmtDateTime(item.createdAt)} · {item.items.length} líneas</p></article>)}</div>
+      <div className="space-y-2">{items.map((item) => <article key={item.id} className="rounded-xl border border-brand-100 p-3"><strong className="text-sm">{item.storeName}</strong><p className="mt-1 text-xs text-slate-500">{item.createdByName} · {fmtDateTime(item.createdAt)} · {item.items.length} líneas</p></article>)}</div>
       <button className="btn-primary mt-4 w-full" onClick={() => { setOpen(false); navigate(path); }}>Revisar reposiciones</button>
     </Modal>
   </>;

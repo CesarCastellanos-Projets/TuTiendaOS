@@ -1,9 +1,10 @@
+import { appCheckOptions } from './app-check';
 import { onCall, HttpsError, type CallableRequest } from 'firebase-functions/v2/https';
 import { createHash } from 'node:crypto';
 import { db } from './firebase';
-import { requireActiveProfile } from './authz';
+import { assertCurrentProfile, requireActiveProfile } from './authz';
 import { normalizePayments, addCashSummary } from './payment-model';
-import { updateSalesStatistics } from './statistics-model';
+
 import { tenantCollection, tenantDoc } from './tenant';
 import {
   consumeSaleStock,
@@ -85,7 +86,7 @@ const PUBLIC_COMPANY_FIELDS = [
   'customUnits', 'updatedAt'
 ] as const;
 
-export const getCompanyConfig = onCall(async (request) => {
+export const getCompanyConfig = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request);
   const snapshot = await tenantDoc(profile.tenantId, 'config', 'company').get();
   if (!snapshot.exists) return null;
@@ -105,6 +106,9 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
   }
 
   const data = request.data as Record<string, unknown>;
+  if (!data || typeof data !== 'object' || Array.isArray(data) || typeof data.paidAmount !== 'number' || !Number.isFinite(data.paidAmount) || data.paidAmount < 0) {
+    throw new HttpsError('invalid-argument', 'Indica un importe recibido válido.');
+  }
   const storeId = shortText(data.storeId, 128);
   if (!storeId || (profile.role === 'pos' && profile.storeId !== storeId)) {
     throw new HttpsError('permission-denied', 'La tienda no corresponde a tu usuario.');
@@ -135,7 +139,7 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
     tenantDoc(profile.tenantId, 'config', 'company').get(),
     tenantDoc(profile.tenantId, 'stores', storeId).get()
   ]);
-  if (!companySnap.exists || !storeSnap.exists) {
+  if (!companySnap.exists || !storeSnap.exists || storeSnap.data()?.active === false) {
     throw new HttpsError('failed-precondition', 'Falta configurar la empresa o la tienda.');
   }
   const company = companySnap.data() ?? {};
@@ -178,8 +182,10 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
   if (!data.payments && paymentMethod === 'transferencia' && !shortText(data.bankName, 80)) {
     throw new HttpsError('invalid-argument', 'Selecciona el banco de la transferencia.');
   }
+  const quotationId = data.quotationId ? shortText(data.quotationId, 128) : '';
+  if (quotationId && !/^[\w-]{1,128}$/.test(quotationId)) throw new HttpsError('invalid-argument', 'Cotización inválida.');
   const fingerprint = createHash('sha256').update(JSON.stringify(canonical({
-    storeId, items: requestedItems, type, paymentMethod, clientDoc,
+    storeId, items: requestedItems, type, paymentMethod, clientDoc, quotationId,
     cashSessionId, paidAmount: data.paidAmount, bankName: data.bankName ?? null,
     operationNumber: data.operationNumber ?? null,
     ...(data.payments !== undefined ? { payments: data.payments } : {})
@@ -189,6 +195,7 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
   );
   const reservation = tenantDoc(profile.tenantId, 'sale_requests', saleRef.id);
   await db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const snap = await tx.get(reservation);
     if (snap.data()?.cancelled === true) throw new HttpsError('failed-precondition', 'Esta operación fue cancelada antes del cobro.');
     if (snap.exists && snap.data()?.fingerprint !== fingerprint) {
@@ -196,12 +203,13 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
     }
     if (!snap.exists) tx.set(reservation, {
       userId: profile.uid, storeId, fingerprint, createdAt: Date.now(),
-      input: { requestId, storeId, items: requestedItems, type, paymentMethod, clientDoc,
+      input: { requestId, storeId, items: requestedItems, type, paymentMethod, clientDoc, quotationId,
         cashSessionId, paidAmount: data.paidAmount, bankName: data.bankName ?? null,
         operationNumber: data.operationNumber ?? null, ...(data.payments !== undefined ? { payments: data.payments } : {}) }
     });
   });
   const result = await db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const [existing, reserved] = await Promise.all([tx.get(saleRef), tx.get(reservation)]);
     if (existing.exists) {
       if (existing.data()?.requestFingerprint !== fingerprint) {
@@ -210,6 +218,21 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
       return { id: existing.id, sale: existing.data()! };
     }
     if (reserved.data()?.cancelled === true) throw new HttpsError('failed-precondition', 'La operación fue cancelada antes del cobro.');
+    const [currentStore, currentCompany] = await tx.getAll(
+      tenantDoc(profile.tenantId, 'stores', storeId), tenantDoc(profile.tenantId, 'config', 'company')
+    );
+    if (!currentStore.exists || currentStore.data()?.active === false || !currentCompany.exists) {
+      throw new HttpsError('failed-precondition', 'La tienda o la empresa ya no están disponibles para vender.');
+    }
+    const fiscalFields = ['serieFactura', 'serieBoleta', 'serieNota', 'igvRate', 'minBoletaSinDni', 'umbralConsolidacion'];
+    if (fiscalFields.some((field) => JSON.stringify(currentCompany.data()?.[field]) !== JSON.stringify(company[field]))) {
+      throw new HttpsError('failed-precondition', 'La configuración de comprobantes cambió. Revisa la venta y vuelve a cobrar.');
+    }
+    const quoteRef = quotationId ? tenantDoc(profile.tenantId, 'quotations', quotationId) : null;
+    const quote = quoteRef ? await tx.get(quoteRef) : null;
+    if (quoteRef && (!quote?.exists || quote.data()?.storeId !== storeId || quote.data()?.status !== 'pendiente')) {
+      throw new HttpsError('failed-precondition', 'La cotización ya fue procesada o pertenece a otra tienda.');
+    }
     const productIds = [...new Set(requestedItems.map((item) => shortText(item.productId, 128)))];
     if (productIds.some((id) => !/^[\w-]{1,128}$/.test(id))) {
       throw new HttpsError('invalid-argument', 'Hay un producto inválido.');
@@ -265,6 +288,9 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
         ? presentation.salePrice
         : positiveNumber(product.salePrice, 'El precio');
       const mayOverridePrice = profile.role === 'admin' || profile.canOverridePrices;
+      if (!mayOverridePrice && requested.unitPrice !== undefined && salePrice(requested.unitPrice) !== round2(catalogPrice)) {
+        throw new HttpsError('failed-precondition', 'El precio cambió. Revisa el carrito antes de cobrar.');
+      }
       const unitPrice = mayOverridePrice && requested.unitPrice !== undefined
         ? salePrice(requested.unitPrice)
         : round2(catalogPrice);
@@ -303,13 +329,14 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
     const sale = {
       tenantId: profile.tenantId,
       requestId,
+      quotationId: quotationId || null,
       requestFingerprint: fingerprint,
       code,
       serie,
       correlativo,
       type,
       storeId,
-      storeName: String(storeSnap.data()?.name ?? ''),
+      storeName: String(currentStore.data()?.name ?? ''),
       userId: profile.uid,
       userName: profile.displayName,
       clientDoc,
@@ -318,19 +345,23 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
       igv: round2(total - subtotal),
       total,
       ...paymentData,
-      statisticsVersion: 1,
+      statisticsVersion: 2,
+      statisticsApplied: false,
+      statisticsPending: true,
+      statisticsNextRetryAt: 0,
       consolidated: type === 'boleta' && total < Number(company.umbralConsolidacion ?? 5),
       igvRate,
       minBoletaSinDni: Number(company.minBoletaSinDni ?? 700),
       sunatStatus: type === 'nota' ? 'no_aplica' : 'no_enviado',
       sunatSummaryRef: null,
+      sunatNextRetryAt: 0,
       status: 'activa',
       cashSessionId: cashSessionId || null,
       anulationRequest: null,
       createdAt: now
     };
 
-    await updateSalesStatistics(tx, profile.tenantId, sale, 1);
+
     if (cashSessionSnap?.data()?.summaryVersion === 1) {
       tx.update(cashSessionSnap.ref, { salesSummary: addCashSummary(cashSessionSnap.data()?.salesSummary ?? {}, sale) });
     }
@@ -338,7 +369,7 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
     for (const productId of productIds) {
       const stockSnap = stocks.get(productId)!;
       const product = products.get(productId)!.data()!;
-      tx.update(stockSnap.ref, stockPatch(stockStates.get(productId)!, parsePresentations(product)));
+      tx.update(stockSnap.ref, stockPatch(stockStates.get(productId)!, parsePresentations(product), Number(product.minStock ?? 0), product.active === true));
     }
     for (const item of items) {
       tx.set(tenantCollection(profile.tenantId, 'stock_movements').doc(), {
@@ -359,6 +390,7 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
         createdAt: now
       });
     }
+    if (quoteRef) tx.update(quoteRef, { status: 'facturada', saleId: saleRef.id, processedAt: now, processedBy: profile.uid });
     tx.set(saleRef, sale);
     return { id: saleRef.id, sale };
   });
@@ -377,6 +409,7 @@ async function safeRegisterSale(request: CallableRequest<Record<string, unknown>
     const saleRef = tenantDoc(profile.tenantId, 'sales', id);
     const reservation = tenantDoc(profile.tenantId, 'sale_requests', id);
     const existing = await db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
       const [sale, pending] = await Promise.all([tx.get(saleRef), tx.get(reservation)]);
       if (sale.exists) return sale.data()!;
       tx.set(reservation, { ...pending.data(), userId: profile.uid, cancelled: true, failedAt: Date.now(), failureCode: error.code });
@@ -389,7 +422,7 @@ async function safeRegisterSale(request: CallableRequest<Record<string, unknown>
 
 export const createSaleRecord = onCall(safeRegisterSale);
 
-export const resumeSaleRecord = onCall(async (request) => {
+export const resumeSaleRecord = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request);
   const requestId = shortText(request.data?.requestId, 80);
   if (!/^[a-zA-Z0-9_-]{20,80}$/.test(requestId)) throw new HttpsError('invalid-argument', 'Operación inválida.');
@@ -398,6 +431,7 @@ export const resumeSaleRecord = onCall(async (request) => {
   if (existingSale.exists) return { id, sale: existingSale.data()! };
   const ref = tenantDoc(profile.tenantId, 'sale_requests', id);
   const input = await db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const snap = await tx.get(ref);
     if (!snap.exists) {
       tx.set(ref, { userId: profile.uid, cancelled: true, createdAt: Date.now() });
@@ -413,12 +447,11 @@ export const resumeSaleRecord = onCall(async (request) => {
   return safeRegisterSale({ ...request, data: input });
 });
 
-export const receiveTransfer = onCall(async (request) => {
+export const receiveTransfer = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request);
-  if (profile.role !== 'pos' || !profile.storeId) {
-    throw new HttpsError('permission-denied', 'Solo el POS de destino puede recibir transferencias.');
-  }
-  const storeId = profile.storeId;
+  if (!['admin', 'pos'].includes(profile.role)) throw new HttpsError('permission-denied', 'No puedes recibir transferencias.');
+  let storeId = profile.storeId ?? '';
+  let destinationType = 'store';
   const data = request.data as Record<string, unknown>;
   const transferId = shortText(data.transferId, 128);
   const quantities = data.quantities as Record<string, unknown> | undefined;
@@ -428,10 +461,13 @@ export const receiveTransfer = onCall(async (request) => {
 
   const transferRef = tenantDoc(profile.tenantId, 'transfers', transferId);
   await db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const transferSnap = await tx.get(transferRef);
     if (!transferSnap.exists) throw new HttpsError('not-found', 'La transferencia no existe.');
     const transfer = transferSnap.data()!;
-    if (transfer.toLocationId !== storeId || !['pendiente', 'en_transito'].includes(String(transfer.status))) {
+    destinationType = transfer.toLocationType === 'warehouse' ? 'warehouse' : 'store';
+    if (profile.role === 'admin') storeId = String(transfer.toLocationId);
+    if (transfer.toLocationId !== storeId || (profile.role === 'pos' && destinationType !== 'store') || !['pendiente', 'en_transito'].includes(String(transfer.status))) {
       throw new HttpsError('failed-precondition', 'La transferencia no puede recibirse en esta tienda.');
     }
     const items = Array.isArray(transfer.items) ? transfer.items as Record<string, unknown>[] : [];
@@ -446,7 +482,8 @@ export const receiveTransfer = onCall(async (request) => {
     ]);
     const stockSnaps = snapshots.slice(0, items.length);
     const productSnaps = snapshots.slice(items.length);
-    const storeSnap = await tx.get(tenantDoc(profile.tenantId, 'stores', storeId));
+    const storeSnap = await tx.get(tenantDoc(profile.tenantId, destinationType === 'warehouse' ? 'warehouses' : 'stores', storeId));
+    if (!storeSnap.exists || storeSnap.data()?.active === false) throw new HttpsError('failed-precondition', 'El destino ya no está activo.');
     const now = Date.now();
     const states = new Map<string, StockState>();
     const products = new Map<string, (typeof productSnaps)[number]>();
@@ -491,11 +528,11 @@ export const receiveTransfer = onCall(async (request) => {
           presentationId: presentation?.id ?? null,
           presentationLabel: presentation ? presentationLabel(presentation) : 'Unidad base',
           presentationQty: qtyReceived,
-          toLocationId: profile.storeId,
+          toLocationId: storeId,
           refId: String(transfer.code),
           userId: profile.uid,
           userName: profile.displayName,
-          userStoreId: profile.storeId,
+          userStoreId: profile.role === 'pos' ? storeId : null,
           createdAt: now
         });
       }
@@ -505,7 +542,7 @@ export const receiveTransfer = onCall(async (request) => {
     for (const [productId, state] of states) {
       const product = products.get(productId)!.data()!;
       const stockSnap = stocks.get(productId)!;
-      const updatedStock = stockPatch(state, parsePresentations(product));
+      const updatedStock = stockPatch(state, parsePresentations(product), Number(product.minStock ?? 0), product.active === true);
       if (stockSnap.exists) {
         tx.update(stockSnap.ref, updatedStock);
       } else {
@@ -515,8 +552,8 @@ export const receiveTransfer = onCall(async (request) => {
           productName: String(product.name),
           barcode: product.barcode ?? null,
           salePrice: Number(product.salePrice ?? 0),
-          locationType: 'store',
-          locationId: profile.storeId,
+          locationType: destinationType,
+          locationId: storeId,
           locationName: String(storeSnap.data()?.name ?? ''),
           ...updatedStock,
           unit: product.unit ?? null

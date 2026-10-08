@@ -94,7 +94,7 @@ export function CashPage() {
     let alive = true;
     const refresh = async () => {
       try {
-        const response = await httpsCallable<{ sessionId: string }, SalesSummary>(functions, 'getCashSessionSummary')({ sessionId: session.id });
+        const response = await httpsCallable<{ sessionId: string; storeId: string }, SalesSummary>(functions, 'getCashSessionSummary')({ sessionId: session.id, storeId: profile.storeId! });
         if (alive) setSummary(response.data);
       } catch (err) {
         if (alive) flash(err instanceof Error ? err.message : 'No se pudo consultar el resumen');
@@ -109,7 +109,7 @@ export function CashPage() {
     if (!user) return;
     setBusy(true);
     try {
-      await httpsCallable(functions, 'openCashSession')({ openingAmount: num(openingAmount) });
+      await httpsCallable(functions, 'openCashSession')({ openingAmount: num(openingAmount), storeId: profile.storeId });
       flash('Caja abierta exitosamente.');
     } catch (err) {
       flash(err instanceof Error ? err.message : 'Error al abrir caja');
@@ -122,7 +122,7 @@ export function CashPage() {
     if (!session || !user) return;
     setBusy(true);
     try {
-      const response = await httpsCallable<{ sessionId: string; closingAmount: number }, CashSession & { id: string }>(functions, 'closeCashSession')({ sessionId: session.id, closingAmount: num(closingAmount) });
+      const response = await httpsCallable<{ sessionId: string; closingAmount: number; storeId: string }, CashSession & { id: string }>(functions, 'closeCashSession')({ sessionId: session.id, storeId: profile.storeId!, closingAmount: num(closingAmount) });
       const closed = response.data;
       setLastClosedSession(closed);
       if (!closed.salesSummary) throw new Error('El cierre no contiene el desglose de ventas.');
@@ -219,7 +219,7 @@ export function CashPage() {
             <div className="flex justify-between text-xs pt-1 border-t border-dashed border-slate-200">
               <span className="text-slate-700 font-medium">Efectivo esperado en gaveta:</span>
               <b className="font-mono font-bold text-slate-900">
-                {money(session.openingAmount + summary.cashSales)}
+                {money(session.openingAmount + summary.cashSales + (session.cashBalanceAdjustment ?? 0))}
               </b>
             </div>
           </div>
@@ -243,7 +243,7 @@ export function CashPage() {
             <div className="rounded p-2 text-xs flex justify-between bg-slate-100 font-semibold">
               <span>Diferencia calculada:</span>
               <span className="font-mono">
-                {money(num(closingAmount) - (session.openingAmount + summary.cashSales))}
+                {money(num(closingAmount) - (session.openingAmount + summary.cashSales + (session.cashBalanceAdjustment ?? 0)))}
               </span>
             </div>
           )}
@@ -258,7 +258,7 @@ export function CashPage() {
             </button>
           </div>
 
-          <p className="text-[11px] text-slate-500 text-center">
+          <p className="text-xs text-slate-500 text-center">
             Al cerrar caja se imprimirá automáticamente el ticket de arqueo físico para firma.
           </p>
         </div>

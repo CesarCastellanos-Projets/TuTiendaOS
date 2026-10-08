@@ -1,7 +1,9 @@
+import { appCheckOptions } from './app-check';
 import { createHash, randomUUID } from 'node:crypto';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { db } from './firebase';
-import { requireActiveProfile, requireAdmin, requireReplenishmentApprover } from './authz';
+import { completeOperation, readOperation, operationId, documentId } from './operation-receipts';
+import { assertCurrentProfile, requireActiveProfile, requireAdmin, requireReplenishmentApprover } from './authz';
 import { assertInventoryTask } from './worker-permissions';
 import { tenantCollection, tenantDoc } from './tenant';
 import {
@@ -48,7 +50,7 @@ function quantityItems(value: unknown, quantityField: string): QuantityItem[] {
   return value.map((raw) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new HttpsError('invalid-argument', 'La lista de productos no es válida.');
     const item = raw as Record<string, unknown>;
-    const productId = shortText(item.productId, 128);
+    const productId = documentId(item.productId, 'Producto');
     const presentationId = shortText(item.presentationId, 80) || null;
     const key = `${productId}:${presentationId ?? 'base'}`;
     const quantity = positiveQuantity(item[quantityField]);
@@ -78,7 +80,7 @@ function locationRef(tenantId: string, type: LocationType, id: string) {
   return tenantDoc(tenantId, type === 'store' ? 'stores' : 'warehouses', id);
 }
 
-export const recordStockIngress = onCall(async (request) => {
+export const recordStockIngress = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request);
   if (!request.data || typeof request.data !== 'object' || Array.isArray(request.data)) throw new HttpsError('invalid-argument', 'Los datos del ingreso no son válidos.');
   const data = request.data as Record<string, unknown>;
@@ -89,7 +91,7 @@ export const recordStockIngress = onCall(async (request) => {
   if (profile.role !== 'admin' && (profile.role !== 'trabajador' || targetType !== 'store' || profile.storeId !== targetId)) {
     throw new HttpsError('permission-denied', 'Solo puedes registrar mercadería en tu tienda autorizada.');
   }
-  const requestId = data.requestId ?? (profile.role === 'admin' ? randomUUID() : '');
+  const requestId = operationId(data.requestId);
   if (typeof requestId !== 'string' || !/^[a-zA-Z0-9_-]{8,80}$/.test(requestId)) {
     throw new HttpsError('invalid-argument', 'Falta el identificador del ingreso.');
   }
@@ -117,7 +119,7 @@ export const recordStockIngress = onCall(async (request) => {
     const targetSnap = snapshots[0];
     const productSnaps = snapshots.slice(1, 1 + items.length);
     const stockSnaps = snapshots.slice(1 + items.length);
-    if (!targetSnap.exists) throw new HttpsError('not-found', 'La ubicación no existe.');
+    if (!targetSnap.exists || targetSnap.data()?.active === false) throw new HttpsError('not-found', 'La ubicación no está activa.');
     const now = Date.now();
     const states = new Map<string, StockState>();
     const products = new Map<string, (typeof productSnaps)[number]>();
@@ -164,7 +166,7 @@ export const recordStockIngress = onCall(async (request) => {
     for (const [productId, state] of states) {
       const product = products.get(productId)!.data()!;
       const stockSnap = stocks.get(productId)!;
-      const stockData = stockPatch(state, parsePresentations(product));
+      const stockData = stockPatch(state, parsePresentations(product), Number(product.minStock ?? 0), product.active === true);
       if (stockSnap.exists) {
         tx.update(stockSnap.ref, stockData);
       } else {
@@ -186,7 +188,7 @@ export const recordStockIngress = onCall(async (request) => {
   return { ok: true };
 });
 
-export const adjustInventory = onCall(async (request) => {
+export const adjustInventory = onCall(appCheckOptions, async (request) => {
   const profile = await requireAdmin(request);
   const data = request.data as Record<string, unknown>;
   const targetId = shortText(data.locationId, 128);
@@ -202,11 +204,16 @@ export const adjustInventory = onCall(async (request) => {
     throw new HttpsError('invalid-argument', 'La cantidad final no es válida.');
   }
 
+  const requestId = operationId(data.requestId);
   await db.runTransaction(async (tx) => {
+    const operation = await readOperation(tx, profile, 'adjustment', requestId, { targetId, productId, presentationId, reason, adjustmentType, newQty });
+    if (operation.result) return;
     const stockRef = tenantDoc(profile.tenantId, 'product_stocks', `${productId}_${targetId}`);
     const productRef = tenantDoc(profile.tenantId, 'products', productId);
     const [stockSnap, productSnap] = await Promise.all([tx.get(stockRef), tx.get(productRef)]);
     if (!stockSnap.exists || !productSnap.exists) throw new HttpsError('not-found', 'El producto no tiene stock en esa ubicación.');
+    const target = await tx.get(locationRef(profile.tenantId, stockSnap.data()?.locationType === 'warehouse' ? 'warehouse' : 'store', targetId));
+    if (!target.exists || target.data()?.active === false) throw new HttpsError('failed-precondition', 'La ubicación ya no está activa.');
     const product = productSnap.data()!;
     const presentations = parsePresentations(product);
     const presentation = selectedPresentation(product, presentationId);
@@ -229,7 +236,7 @@ export const adjustInventory = onCall(async (request) => {
     const now = Date.now();
     const requiresReconciliation = pendingReconciliation && presentations.some((p) => !p.autoUnpackEnabled && !reconciledIds.has(p.id));
     tx.update(stockRef, {
-      ...stockPatch(state, presentations),
+      ...stockPatch(state, presentations, Number(product.minStock ?? 0), product.active === true),
       requiresReconciliation,
       reconciledPresentationIds: requiresReconciliation ? [...reconciledIds] : []
     });
@@ -245,21 +252,22 @@ export const adjustInventory = onCall(async (request) => {
       fromLocationId: null,
       toLocationId: targetId,
       reason: adjustmentType === 'reclasificar' ? `Reclasificación sin cambiar el total: ${reason}` : reason,
-      refId: null,
+      refId: requestId,
       userId: profile.uid,
       userName: profile.displayName,
       userStoreId: null,
       createdAt: now
     });
+    completeOperation(tx, profile, 'adjustment', operation, { ok: true });
   });
   return { ok: true };
 });
 
-export const createInventoryTransfer = onCall(async (request) => {
+export const createInventoryTransfer = onCall(appCheckOptions, async (request) => {
   const profile = await requireAdmin(request);
   const data = request.data as Record<string, unknown>;
-  const fromId = shortText(data.fromLocationId, 128);
-  const toId = shortText(data.toLocationId, 128);
+  const fromId = documentId(data.fromLocationId, 'Origen');
+  const toId = documentId(data.toLocationId, 'Destino');
   const fromType = locationType(data.fromLocationType, 'El origen');
   const toType = locationType(data.toLocationType, 'El destino');
   const note = shortText(data.note, 250) || null;
@@ -270,7 +278,10 @@ export const createInventoryTransfer = onCall(async (request) => {
   const transferRef = tenantCollection(profile.tenantId, 'transfers').doc();
   const code = `TR-${transferRef.id.slice(0, 8).toUpperCase()}`;
 
-  await db.runTransaction(async (tx) => {
+  const requestId = operationId(data.requestId);
+  return db.runTransaction(async (tx) => {
+    const operation = await readOperation(tx, profile, 'transfer', requestId, { fromId, toId, fromType, toType, note, items });
+    if (operation.result) return operation.result;
     const fromRef = locationRef(profile.tenantId, fromType, fromId);
     const toRef = locationRef(profile.tenantId, toType, toId);
     const stockRefs = items.map((item) => tenantDoc(profile.tenantId, 'product_stocks', `${item.productId}_${fromId}`));
@@ -281,7 +292,7 @@ export const createInventoryTransfer = onCall(async (request) => {
       ...stockRefs.map((ref) => tx.get(ref)),
       ...productRefs.map((ref) => tx.get(ref))
     ]);
-    if (!snapshots[0].exists || !snapshots[1].exists) {
+    if (!snapshots[0].exists || !snapshots[1].exists || snapshots[0].data()?.active === false || snapshots[1].data()?.active === false) {
       throw new HttpsError('not-found', 'El origen o destino no existe.');
     }
     const stockSnaps = snapshots.slice(2, 2 + items.length);
@@ -333,7 +344,7 @@ export const createInventoryTransfer = onCall(async (request) => {
     });
     for (const [productId, state] of states) {
       const index = items.findIndex((item) => item.productId === productId);
-      tx.update(stockSnaps[index].ref, stockPatch(state, parsePresentations(productSnaps[index].data()!)));
+      tx.update(stockSnaps[index].ref, stockPatch(state, parsePresentations(productSnaps[index].data()!), Number(productSnaps[index].data()!.minStock ?? 0)));
     }
     tx.set(transferRef, {
       tenantId: profile.tenantId,
@@ -344,6 +355,8 @@ export const createInventoryTransfer = onCall(async (request) => {
       toLocationId: toId,
       toLocationName: String(snapshots[1].data()?.name ?? ''),
       toLocationType: toType,
+      requestId,
+      productIds: [...states.keys()],
       status: 'pendiente',
       items: transferItems,
       createdBy: profile.uid,
@@ -351,17 +364,20 @@ export const createInventoryTransfer = onCall(async (request) => {
       createdAt: now,
       note
     });
+    const result = { id: transferRef.id, code };
+    completeOperation(tx, profile, 'transfer', operation, result);
+    return result;
   });
-  return { id: transferRef.id, code };
 });
 
-export const cancelInventoryTransfer = onCall(async (request) => {
+export const cancelInventoryTransfer = onCall(appCheckOptions, async (request) => {
   const profile = await requireAdmin(request);
   const transferId = shortText(request.data?.transferId, 128);
   if (!transferId) throw new HttpsError('invalid-argument', 'Transferencia inválida.');
   const transferRef = tenantDoc(profile.tenantId, 'transfers', transferId);
 
   await db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const transferSnap = await tx.get(transferRef);
     if (!transferSnap.exists) throw new HttpsError('not-found', 'La transferencia no existe.');
     const transfer = transferSnap.data()!;
@@ -416,7 +432,7 @@ export const cancelInventoryTransfer = onCall(async (request) => {
     });
     for (const [productId, state] of states) {
       const index = items.findIndex((item) => String(item.productId) === productId);
-      tx.update(stockSnaps[index].ref, stockPatch(state, parsePresentations(productSnaps[index].data()!)));
+      tx.update(stockSnaps[index].ref, stockPatch(state, parsePresentations(productSnaps[index].data()!), Number(productSnaps[index].data()!.minStock ?? 0)));
     }
     tx.update(transferRef, {
       status: 'cancelado',
@@ -428,7 +444,7 @@ export const cancelInventoryTransfer = onCall(async (request) => {
   return { ok: true };
 });
 
-export const attendReplenishmentRequest = onCall(async (request) => {
+export const attendReplenishmentRequest = onCall(appCheckOptions, async (request) => {
   const profile = await requireReplenishmentApprover(request);
   const requestId = shortText(request.data?.requestId, 128);
   const warehouseId = shortText(request.data?.warehouseId, 128);
@@ -438,6 +454,7 @@ export const attendReplenishmentRequest = onCall(async (request) => {
   const code = `RP-${transferRef.id.slice(0, 8).toUpperCase()}`;
 
   await db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const requestSnap = await tx.get(replenishmentRef);
     if (!requestSnap.exists || requestSnap.data()?.status !== 'pendiente') {
       throw new HttpsError('failed-precondition', 'La solicitud ya fue atendida o no existe.');
@@ -461,7 +478,7 @@ export const attendReplenishmentRequest = onCall(async (request) => {
       ...stockRefs.map((ref) => tx.get(ref)),
       ...productRefs.map((ref) => tx.get(ref))
     ]);
-    if (!snapshots[0].exists || snapshots[0].data()?.isCentral !== true || !snapshots[1].exists) {
+    if (!snapshots[0].exists || snapshots[0].data()?.isCentral !== true || !snapshots[1].exists || snapshots[0].data()?.active === false || snapshots[1].data()?.active === false) {
       throw new HttpsError('failed-precondition', 'El almacén central o la tienda no son válidos.');
     }
     const stockSnaps = snapshots.slice(2, 2 + items.length);
@@ -513,7 +530,7 @@ export const attendReplenishmentRequest = onCall(async (request) => {
     });
     for (const [productId, state] of states) {
       const index = items.findIndex((item) => item.productId === productId);
-      tx.update(stockSnaps[index].ref, stockPatch(state, parsePresentations(productSnaps[index].data()!)));
+      tx.update(stockSnaps[index].ref, stockPatch(state, parsePresentations(productSnaps[index].data()!), Number(productSnaps[index].data()!.minStock ?? 0)));
     }
     tx.set(transferRef, {
       tenantId: profile.tenantId,
@@ -542,12 +559,13 @@ export const attendReplenishmentRequest = onCall(async (request) => {
   return { id: transferRef.id, code };
 });
 
-export const rejectReplenishmentRequest = onCall(async (request) => {
+export const rejectReplenishmentRequest = onCall(appCheckOptions, async (request) => {
   const profile = await requireReplenishmentApprover(request);
   const requestId = shortText(request.data?.requestId, 128);
   if (!requestId) throw new HttpsError('invalid-argument', 'Solicitud inválida.');
   const ref = tenantDoc(profile.tenantId, 'replenishment_requests', requestId);
   await db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const snapshot = await tx.get(ref);
     if (!snapshot.exists || snapshot.data()?.status !== 'pendiente') {
       throw new HttpsError('failed-precondition', 'La solicitud ya fue procesada o no existe.');

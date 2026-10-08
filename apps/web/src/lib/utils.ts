@@ -9,18 +9,17 @@ export function nowMs(): number {
 export function fmtDateTime(ms: number): string {
   return new Intl.DateTimeFormat('es-PE', {
     dateStyle: 'short',
-    timeStyle: 'short'
+    timeStyle: 'short', timeZone: 'America/Lima'
   }).format(new Date(ms));
 }
 
 export function fmtTime(ms: number): string {
-  return new Intl.DateTimeFormat('es-PE', { timeStyle: 'short' }).format(new Date(ms));
+  return new Intl.DateTimeFormat('es-PE', { timeStyle: 'short', timeZone: 'America/Lima' }).format(new Date(ms));
 }
 
 export function todayStart(): number {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+  const day = new Date(Date.now() - 5 * 3600000).toISOString().slice(0, 10);
+  return Date.parse(`${day}T00:00:00-05:00`);
 }
 
 export function pad(n: number, len: number): string {

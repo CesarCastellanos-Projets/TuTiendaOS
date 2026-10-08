@@ -35,3 +35,5 @@ ui-debug.log
 Thumbs.db
 
 migration-backup-*.json
+
+.secret.local

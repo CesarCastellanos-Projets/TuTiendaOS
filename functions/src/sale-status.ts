@@ -1,7 +1,8 @@
 import { db } from './firebase';
 import { tenantDoc } from './tenant';
-import { updateSalesStatistics } from './statistics-model';
+
 import { addCashSummary } from './payment-model';
+import { salePaymentParts } from './payment-model';
 
 export async function applySaleStatusPatch(tenantId: string, saleId: string, patch: Record<string, unknown>) {
   const ref = tenantDoc(tenantId, 'sales', saleId);
@@ -12,11 +13,14 @@ export async function applySaleStatusPatch(tenantId: string, saleId: string, pat
     const voiding = patch.status === 'anulada' && sale.status === 'activa';
     const cash = voiding && typeof sale.cashSessionId === 'string'
       ? await tx.get(tenantDoc(tenantId, 'cash_sessions', sale.cashSessionId)) : null;
-    if (voiding && sale.statisticsVersion === 1) await updateSalesStatistics(tx, tenantId, sale, -1);
-    if (voiding && cash?.data()?.summaryVersion === 1 && cash.data()?.status === 'abierta') {
-      tx.update(cash.ref, { salesSummary: addCashSummary(cash.data()?.salesSummary ?? {}, sale, -1) });
+
+    if (voiding && cash?.data()?.summaryVersion === 1 && ['abierta', 'cerrando'].includes(cash.data()?.status)) {
+      const retained = salePaymentParts(sale).filter((part) => part.method === 'efectivo').reduce((sum, part) => sum + part.amount, 0);
+      tx.update(cash.ref, { salesSummary: addCashSummary(cash.data()?.salesSummary ?? {}, sale, -1),
+        cashBalanceAdjustment: Math.round((Number(cash.data()?.cashBalanceAdjustment ?? 0) + retained) * 100) / 100 });
     }
-    const fields = { ...patch };
+    const fields: Record<string, unknown> = { ...patch, ...(voiding ? { statisticsPending: true, statisticsNextRetryAt: 0,
+      cashRetentionRecorded: true } : {}) };
     if (sale.status === 'anulada') {
       fields.status = 'anulada';
       if (sale.voidedAt !== undefined) fields.voidedAt = sale.voidedAt;

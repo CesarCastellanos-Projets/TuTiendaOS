@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { getDocs, limit, orderBy, query, startAfter, where, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { csvCell } from '../../lib/csv';
 import { onSnapshot } from '../../lib/firestore-listener';
@@ -9,13 +9,14 @@ import { fmtDateTime } from '../../lib/utils';
 import { EmptyState, FlashBar, useFlash } from '../../components/ui/Feedback';
 
 const TYPE_LABELS: Record<MovementType, { label: string; tone: string }> = {
+  devolucion: { label: 'Devolución', tone: 'bg-emerald-50 text-success' },
   venta: { label: 'Venta', tone: 'bg-red-50 text-critical' },
   ingreso: { label: 'Ingreso', tone: 'bg-emerald-50 text-success' },
   transferencia: { label: 'Transferencia', tone: 'bg-blue-50 text-blue-600' },
   recepcion: { label: 'Recepción', tone: 'bg-emerald-50 text-success' },
   ajuste: { label: 'Ajuste físico', tone: 'bg-amber-100 text-amber-800' },
   merma: { label: 'Merma / Baja', tone: 'bg-red-50 text-critical' },
-  conversion: { label: 'Conversión de empaque', tone: 'bg-indigo-50 text-primary' }
+  conversion: { label: 'Conversión de empaque', tone: 'bg-brand-50 text-primary' }
 };
 
 export function KardexPage() {
@@ -27,6 +28,8 @@ export function KardexPage() {
   const [cursor, setCursor] = useState<QueryDocumentSnapshot<DocumentData>>();
   const [hasMore, setHasMore] = useState(false);
   const [busy, setBusy] = useState(false);
+  const olderPages = useRef(false);
+  const queryGeneration = useRef(0);
   const { msg, flash } = useFlash();
 
   const movementQuery = useMemo(() => {
@@ -37,18 +40,25 @@ export function KardexPage() {
   }, [typeFilter, fromDate, toDate]);
 
   useEffect(() => {
+    queryGeneration.current += 1; olderPages.current = false;
     setMovements([]); setCursor(undefined); setHasMore(false);
     return onSnapshot(query(movementQuery, limit(150)), (snapshot) => {
-      setMovements(snapshot.docs.map((doc) => ({ ...doc.data() as StockMovement, id: doc.id })));
-      setCursor(snapshot.docs.at(-1)); setHasMore(snapshot.size === 150);
+      const current = snapshot.docs.map((doc) => ({ ...doc.data() as StockMovement, id: doc.id }));
+      setMovements((previous) => olderPages.current
+        ? [...new Map([...previous, ...current].map((item) => [item.id, item])).values()].sort((a, b) => b.createdAt - a.createdAt)
+        : current);
+      if (!olderPages.current) { setCursor(snapshot.docs.at(-1)); setHasMore(snapshot.size === 150); }
     }, (error) => flash(`Error al consultar el kardex: ${error.message}`));
   }, [movementQuery, flash]);
 
   const loadMore = async () => {
     if (!cursor || busy) return;
     setBusy(true);
+    const generation = queryGeneration.current;
     try {
       const page = await getDocs(query(movementQuery, startAfter(cursor), limit(150)));
+      if (generation !== queryGeneration.current) return;
+      olderPages.current = true;
       setMovements((previous) => [...new Map([...previous, ...page.docs.map((doc) => ({ ...doc.data() as StockMovement, id: doc.id }))].map((item) => [item.id, item])).values()]);
       setCursor(page.docs.at(-1)); setHasMore(page.size === 150);
     } catch (error) { flash(error instanceof Error ? error.message : 'Error al cargar movimientos'); }
@@ -119,6 +129,7 @@ export function KardexPage() {
           >
             <option value="todos">Todos los movimientos</option>
             <option value="venta">Ventas</option>
+            <option value="devolucion">Devoluciones</option>
             <option value="ingreso">Ingresos</option>
             <option value="transferencia">Transferencias</option>
             <option value="recepcion">Recepciones</option>
@@ -148,7 +159,7 @@ export function KardexPage() {
         <EmptyState title="Sin movimientos registrados" hint="Cada venta, ingreso o traslado quedará registrado automáticamente aquí." />
       ) : (
         <div className="card overflow-x-auto">
-          <table className="w-full min-w-[760px]">
+          <table className="responsive-table w-full min-w-[760px]">
             <thead className="border-b border-slate-200">
               <tr>
                 <th className="th">Fecha y hora</th>
@@ -165,25 +176,25 @@ export function KardexPage() {
                 const isPositive = m.qty > 0;
                 return (
                   <tr key={m.id}>
-                    <td className="td text-xs font-mono">{fmtDateTime(m.createdAt)}</td>
-                    <td className="td">
+                    <td data-label="Fecha y hora" className="td text-xs font-mono">{fmtDateTime(m.createdAt)}</td>
+                    <td data-label="Tipo" className="td">
                       <span className={`badge ${info.tone}`}>{info.label}</span>
                     </td>
-                    <td className="td font-medium text-sm">
+                    <td data-label="Producto" className="td font-medium text-sm">
                       {m.productName}
-                      <span className="mt-0.5 block text-[11px] font-normal text-slate-500">
+                      <span className="mt-0.5 block text-xs font-normal text-slate-500">
                         {m.presentationLabel || 'Unidad base'}
                         {m.presentationQty != null ? ` · ${Math.abs(m.presentationQty)} presentación(es)` : ''}
                       </span>
                     </td>
-                    <td className="td text-right font-mono font-bold text-sm">
+                    <td data-label="Variación" className="td text-right font-mono font-bold text-sm">
                       <span className={isPositive ? 'text-success' : 'text-critical'}>
                         {isPositive ? `+${m.qty}` : m.qty}
-                        {(m.transitLossBaseQty ?? 0) > 0 && <span className="block text-[11px]">Tránsito: -{m.transitLossBaseQty}</span>}
+                        {(m.transitLossBaseQty ?? 0) > 0 && <span className="block text-xs">Tránsito: -{m.transitLossBaseQty}</span>}
                       </span>
                     </td>
-                    <td className="td text-xs text-slate-600">{m.userName}</td>
-                    <td className="td text-xs text-slate-500 max-w-[200px] truncate">
+                    <td data-label="Usuario" className="td text-xs text-slate-600">{m.userName}</td>
+                    <td data-label="Referencia" className="td text-xs text-slate-500 max-w-[200px] truncate">
                       {m.refId || m.reason || '—'}
                     </td>
                   </tr>

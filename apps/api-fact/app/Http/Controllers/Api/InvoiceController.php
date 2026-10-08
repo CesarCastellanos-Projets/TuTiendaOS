@@ -48,7 +48,7 @@ final class InvoiceController extends Controller
             return response()->json(['ok' => false, 'message' => 'La referencia ya pertenece a otro contenido fiscal.'], 409);
         }
 
-        $record ??= SunatDocument::query()->create([
+        $record ??= SunatDocument::query()->firstOrCreate(['ref' => $data['ref']], [
             'ref' => $data['ref'],
             'tipo' => $data['tipo'],
             'serie' => $data['serie'],
@@ -62,6 +62,10 @@ final class InvoiceController extends Controller
             'payload_hash' => $payloadHash,
             'next_retry_at' => now(),
         ]);
+
+        if (($record->payload_hash ?? $validator->hash((array) $record->payload)) !== $payloadHash) {
+            return response()->json(['ok' => false, 'message' => 'La referencia ya pertenece a otro contenido fiscal.'], 409);
+        }
 
         if (in_array($record->estado_sunat, ['aceptado', 'observado', 'rechazado', 'requiere_revision'], true)) {
             return $this->responseFor($record);

@@ -253,9 +253,9 @@ export function SunatConfigPage() {
 
       {/* ─── BANNER DESTACADO DE ESTADO: MODO DEMO vs MODO REAL ─────────────── */}
       <div
-        className={`rounded-2xl border p-4 sm:p-5 shadow-xs transition-all ${
+        className={`rounded-2xl border p-4 sm:p-5 shadow-xs transition-colors ${
           isDemo
-            ? 'border-amber-200 bg-gradient-to-r from-amber-50 via-indigo-50/40 to-amber-50/30'
+            ? 'border-amber-200 bg-gradient-to-r from-amber-50 via-brand-50/40 to-amber-50/30'
             : 'border-emerald-200 bg-gradient-to-r from-emerald-50 via-teal-50/40 to-emerald-50/30'
         }`}
       >
@@ -315,7 +315,7 @@ export function SunatConfigPage() {
       <div className="flex border-b border-slate-200 gap-2">
         <button
           onClick={() => setActiveTab('estado')}
-          className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold transition-all border-b-2 ${
+          className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold transition-colors border-b-2 ${
             activeTab === 'estado'
               ? 'border-primary text-primary'
               : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -325,7 +325,7 @@ export function SunatConfigPage() {
         </button>
         <button
           onClick={() => setActiveTab('empresa')}
-          className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold transition-all border-b-2 ${
+          className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold transition-colors border-b-2 ${
             activeTab === 'empresa'
               ? 'border-primary text-primary'
               : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -335,7 +335,7 @@ export function SunatConfigPage() {
         </button>
         <button
           onClick={() => setActiveTab('sol')}
-          className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold transition-all border-b-2 ${
+          className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold transition-colors border-b-2 ${
             activeTab === 'sol'
               ? 'border-primary text-primary'
               : 'border-transparent text-slate-500 hover:text-slate-800'
@@ -358,7 +358,7 @@ export function SunatConfigPage() {
               <p className="text-lg font-extrabold text-slate-900">
                 {testResult ? (testResult.ok ? 'En Línea' : 'Desconectado') : 'Listo para probar'}
               </p>
-              <p className="text-[11px] text-slate-400 font-mono truncate">
+              <p className="text-xs text-slate-400 font-mono truncate">
                 Proxy seguro de Cloud Functions
               </p>
             </div>
@@ -367,12 +367,12 @@ export function SunatConfigPage() {
             <div className="card p-4 space-y-2 shadow-xs">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold uppercase text-slate-500">Certificado Digital</span>
-                <FileKey size={18} className="text-indigo-500" />
+                <FileKey size={18} className="text-brand-500" />
               </div>
               <p className="text-lg font-extrabold text-slate-900">
                 {cfg?.certFileName ? 'Instalado' : 'No configurado'}
               </p>
-              <p className="text-[11px] text-slate-400 truncate">
+              <p className="text-xs text-slate-400 truncate">
                 {cfg?.certIssuer || (cfg?.certFileName ? 'Certificado activo' : 'Requiere archivo .pfx')}
               </p>
             </div>
@@ -386,7 +386,7 @@ export function SunatConfigPage() {
               <p className="text-lg font-extrabold text-slate-900">
                 {isDemo ? 'Servidor Beta (Demo)' : 'Servidor Producción'}
               </p>
-              <p className="text-[11px] text-slate-400">
+              <p className="text-xs text-slate-400">
                 {isDemo ? 'Pruebas habilitadas' : 'Comprobantes oficiales'}
               </p>
             </div>
@@ -413,11 +413,11 @@ export function SunatConfigPage() {
               </h3>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
                 <div className="p-2.5 rounded-xl bg-white border border-slate-200">
-                  <span className="text-slate-400 block text-[10px] uppercase font-bold">Estado del Motor</span>
+                  <span className="text-slate-400 block text-xs uppercase font-bold">Estado del Motor</span>
                   <span className="font-bold text-slate-800">{testResult.status}</span>
                 </div>
                 <div className="p-2.5 rounded-xl bg-white border border-slate-200">
-                  <span className="text-slate-400 block text-[10px] uppercase font-bold">Entorno Detectado</span>
+                  <span className="text-slate-400 block text-xs uppercase font-bold">Entorno Detectado</span>
                   <span className="font-bold text-slate-800">{testResult.sunat?.entorno ?? (isDemo ? 'Beta / Pruebas' : 'Producción')}</span>
                 </div>
               </div>

@@ -18,6 +18,7 @@ export interface CachedProductDefinition extends Product {
 export interface CatalogMeta {
   key: string;
   value: number;
+  cursor?: { seconds: number; nanoseconds: number };
 }
 
 class DenzozDB extends Dexie {

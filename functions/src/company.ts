@@ -1,8 +1,9 @@
+import { appCheckOptions } from './app-check';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { requireAdmin } from './authz';
 import { tenantDoc } from './tenant';
 
-export const saveCustomUnits = onCall(async (request) => {
+export const saveCustomUnits = onCall(appCheckOptions, async (request) => {
   const profile = await requireAdmin(request);
   const units: unknown = request.data?.units;
   if (!Array.isArray(units) || units.length > 50 || units.some((value: unknown) => typeof value !== 'string' || value.trim().length === 0 || value.length > 40)) {

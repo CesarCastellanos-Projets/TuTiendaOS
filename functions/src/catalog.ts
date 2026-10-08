@@ -1,10 +1,13 @@
+import { appCheckOptions } from './app-check';
+import { FieldValue } from 'firebase-admin/firestore';
 import { createHash, randomUUID } from 'node:crypto';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { db } from './firebase';
 import { requireActiveProfile } from './authz';
 import { assertInventoryTask } from './worker-permissions';
 import { tenantCollection, tenantDoc } from './tenant';
-import { parsePresentations, round2, round3 } from './stock-model';
+import { completeOperation, operationId, readOperation } from './operation-receipts';
+import { isMeasuredUnit, parsePresentations, round2, round3 } from './stock-model';
 
 function text(value: unknown, max: number): string {
   return typeof value === 'string' ? value.trim().slice(0, max) : '';
@@ -14,19 +17,20 @@ function barcodeId(value: string): string {
   return Buffer.from(value.toLowerCase(), 'utf8').toString('base64url');
 }
 
-export const saveCatalogProduct = onCall(async (request) => {
+export const saveCatalogProduct = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request);
   if (!['admin', 'trabajador'].includes(profile.role)) throw new HttpsError('permission-denied', 'No tienes permiso para crear productos.');
   const input = (request.data?.product ?? {}) as Record<string, unknown>;
   const requestedId = text(request.data?.productId, 128);
   const creationId = request.data?.creationId;
+  const commandId = operationId(request.data?.requestId ?? creationId);
   if (profile.role === 'trabajador' && (requestedId || typeof creationId !== 'string' || !/^[a-zA-Z0-9_-]{8,80}$/.test(creationId))) {
     throw new HttpsError('permission-denied', 'El permiso solo permite crear productos nuevos.');
   }
   const productRef = requestedId
     ? tenantDoc(profile.tenantId, 'products', requestedId)
     : profile.role === 'trabajador' ? tenantDoc(profile.tenantId, 'products', creationId)
-    : tenantCollection(profile.tenantId, 'products').doc();
+    : tenantDoc(profile.tenantId, 'products', createHash('sha256').update(`${profile.uid}:${commandId}`).digest('hex').slice(0, 24));
   const name = text(input.name, 180);
   const category = text(input.category, 80) || 'General';
   const brand = text(input.brand, 80);
@@ -58,7 +62,7 @@ export const saveCatalogProduct = onCall(async (request) => {
       presentationIds.has(id) || !presentationUnit || !Number.isInteger(factor) || factor <= 1 || factor > 1_000_000
       || !Number.isFinite(price) || price <= 0 || price > 1_000_000
       || !Number.isFinite(fractionStep) || fractionStep < 0.001 || fractionStep >= 1 || Math.abs(fractionStep - round3(fractionStep)) > 0.0000001
-      || (fractionalSale && !Number.isInteger(Math.round(fractionStep * 1000) * factor / 1000))
+      || (fractionalSale && !isMeasuredUnit(unit) && !Number.isInteger(Math.round(fractionStep * 1000) * factor / 1000))
       || !Number.isInteger(priority) || priority <= 0
     ) {
       throw new HttpsError('invalid-argument', 'Hay una presentación con datos inválidos.');
@@ -98,17 +102,28 @@ export const saveCatalogProduct = onCall(async (request) => {
     updatedAt: Date.now()
   };
 
-  await db.runTransaction(async (tx) => {
+  return db.runTransaction(async (tx) => {
+    const operation = await readOperation(tx, profile, 'catalog-product', commandId, request.data);
+    if (operation.result) return operation.result;
     await assertInventoryTask(tx, profile, 'canCreateProducts', profile.storeId ?? '');
     const currentSnap = await tx.get(productRef);
     const creationRef = tenantDoc(profile.tenantId, 'worker_product_creations', productRef.id);
     const fingerprint = createHash('sha256').update(JSON.stringify({ ...product, updatedAt: 0 })).digest('hex');
     const creation = profile.role === 'trabajador' ? await tx.get(creationRef) : null;
     if (profile.role === 'trabajador' && currentSnap.exists) {
-      if (creation?.data()?.userId === profile.uid && creation.data()?.storeId === profile.storeId && creation.data()?.fingerprint === fingerprint) return;
+      if (creation?.data()?.userId === profile.uid && creation.data()?.storeId === profile.storeId && creation.data()?.fingerprint === fingerprint) return { id: productRef.id, presentations: currentSnap.data()?.presentations ?? [] };
       throw new HttpsError('already-exists', 'Este producto ya existe. No puedes modificarlo con este permiso.');
     }
     const current = currentSnap.data() ?? {};
+    const oldPresentations = parsePresentations(current);
+    const changesInventory = currentSnap.exists && (current.unit !== unit || oldPresentations.some((old) =>
+      presentations.find((p) => p.id === old.id)?.autoUnpackEnabled !== old.autoUnpackEnabled));
+    if (changesInventory) {
+      const [stocks, movements] = await Promise.all([
+        tx.get(tenantCollection(profile.tenantId, 'product_stocks').where('productId', '==', productRef.id).limit(1)),
+        tx.get(tenantCollection(profile.tenantId, 'stock_movements').where('productId', '==', productRef.id).limit(1))]);
+      if (!stocks.empty || !movements.empty) throw new HttpsError('failed-precondition', 'Este producto tiene inventario registrado. Conserva la unidad base y la política de apertura; realiza una conversión de stock explícita.');
+    }
     for (const old of parsePresentations(current)) {
       const next = presentations.find((p) => p.id === old.id);
       if (!next || next.factor !== old.factor) {
@@ -145,15 +160,17 @@ export const saveCatalogProduct = onCall(async (request) => {
         updatedAt: product.updatedAt
       });
     });
-    tx.set(productRef, product);
+    tx.set(productRef, { ...product, ...(current.internalCode ? { internalCode: current.internalCode } : {}), committedAt: FieldValue.serverTimestamp() });
     if (profile.role === 'trabajador') tx.create(creationRef, {
       tenantId: profile.tenantId, storeId: profile.storeId, userId: profile.uid, userName: profile.displayName,
       productId: productRef.id, productName: name, fingerprint, createdAt: product.updatedAt
     });
     tx.set(tenantDoc(profile.tenantId, 'meta', 'catalog'), {
       tenantId: profile.tenantId,
-      updatedAt: product.updatedAt
+      updatedAt: product.updatedAt, committedAt: FieldValue.serverTimestamp()
     });
+    const result = { id: productRef.id, presentations };
+    completeOperation(tx, profile, 'catalog-product', operation, result);
+    return result;
   });
-  return { id: productRef.id, presentations };
 });

@@ -1,9 +1,8 @@
+import { durableCommand } from '../../lib/durable-command';
 import { EditableNumberInput } from '../../components/ui/EditableNumberInput';
 import { availableBase, baseQuantityStep } from '../../lib/stock-availability';
 import { useStoreCatalog } from '../../hooks/useStoreCatalog';
 import { useMemo, useState } from 'react';
-import { httpsCallable } from 'firebase/functions';
-import { functions } from '../../lib/firebase';
 import { PackageOpen } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
 import { useProductsCatalog } from '../../hooks/useProductsCatalog';
@@ -78,12 +77,12 @@ export function RequestRestock() {
     if (lines.some((line) => {
       const product = products.find((p) => p.id === line.productId);
       const presentation = product?.presentations?.find((p, index) => (p.id || `legacy-${index + 1}`) === line.presentationId);
-      const step = presentation ? (presentation.autoUnpackEnabled ? 1 / presentation.factor : 1) : baseQuantityStep(product?.unit);
+      const step = presentation ? (presentation.autoUnpackEnabled ? Math.max(0.001, baseQuantityStep(product?.unit) / presentation.factor) : 1) : baseQuantityStep(product?.unit);
       return !Number.isFinite(line.requestedQty) || line.requestedQty <= 0 || Math.abs(line.requestedQty / step - Math.round(line.requestedQty / step)) > 0.000001;
     })) { flash('Error: las cajas cerradas deben pedirse completas y las abiertas deben equivaler a unidades completas.'); return; }
     setBusy(true);
     try {
-      await httpsCallable(functions, 'createReplenishmentRecord')({
+      await durableCommand('createReplenishmentRecord', {
         tenantId: profile.tenantId,
         storeId: effectiveStoreId,
         items: lines.map((l) => ({
@@ -111,7 +110,7 @@ export function RequestRestock() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-lg space-y-4 p-4">
+    <div className="mx-auto w-full max-w-3xl space-y-5">
       <h1 className="flex items-center gap-2 font-display text-2xl uppercase tracking-wide">
         <PackageOpen size={22} /> Pedir reposición
       </h1>
@@ -159,8 +158,8 @@ export function RequestRestock() {
       {lines.length > 0 && (
         <ul className="space-y-1.5">
           {lines.map((l, idx) => (
-            <li key={`${l.productId}:${l.presentationId ?? 'base'}`} className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
-              <span className="min-w-0 flex-1 truncate text-sm">{l.name}<small className="block text-xs text-slate-500">{l.presentationLabel}</small></span>
+            <li key={`${l.productId}:${l.presentationId ?? 'base'}`} className="restock-line rounded-xl border border-slate-200 bg-white p-4">
+              <span className="min-w-0 flex-1 text-sm font-medium">{l.name}<small className="block text-xs text-slate-500">{l.presentationLabel}</small></span>
               <span className="text-xs text-slate-500">hay {l.currentQty}</span>
               <label className="sr-only" htmlFor={`req-${l.productId}-${l.presentationId ?? 'base'}`}>Cantidad solicitada</label>
               <EditableNumberInput

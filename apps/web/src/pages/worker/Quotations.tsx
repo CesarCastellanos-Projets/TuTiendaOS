@@ -1,7 +1,9 @@
+import { durableCommand } from '../../lib/durable-command';
 import { EditableNumberInput } from '../../components/ui/EditableNumberInput';
 import { createQuotationPdf } from '../../lib/quotation-pdf';
 import { canShareQuotation, downloadQuotation, isMobileShareDevice, openQuotationWhatsApp, quotationPhone } from '../../lib/share-quotation';
-import { remainingPresentation, initialSaleQuantity, saleQuantityError } from '../../lib/stock-availability';
+import { availableBase, remainingPresentation, initialSaleQuantity, saleQuantityError } from '../../lib/stock-availability';
+import { escapeHtml } from '../../lib/html';
 import { useState, useMemo, useEffect } from 'react';
 import {
   getDocs,
@@ -10,9 +12,8 @@ import {
   query,
   where
 } from 'firebase/firestore';
-import { httpsCallable } from 'firebase/functions';
-import { functions } from '../../lib/firebase';
-import { onSnapshot } from '../../lib/firestore-listener';
+import { usePagedQuery } from '../../hooks/usePagedQuery';
+import { Pagination } from '../../components/ui/Pagination';
 import {
   Calculator,
   Camera,
@@ -44,7 +45,7 @@ import { useCompany } from '../../hooks/useCompany';
 import { fmtDateTime } from '../../lib/utils';
 import { FlashBar, useFlash } from '../../components/ui/Feedback';
 import { Modal } from '../../components/ui/Modal';
-import type { Quotation, QuotationItem } from '../../types';
+import type { ProductStock, Quotation, QuotationItem } from '../../types';
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -67,7 +68,7 @@ export function WorkerQuotations() {
   const company = useCompany();
   const storeId = profile.storeId || 'tienda-principal';
 
-  const { items: catalog, products } = useStoreCatalog(storeId);
+  const { items: catalog, products, error: catalogError } = useStoreCatalog(storeId);
   const searchIn = useCatalogSearch(catalog);
   const { msg, flash } = useFlash();
 
@@ -123,8 +124,10 @@ export function WorkerQuotations() {
   }, [whatsappModal, company, items, clientName, catalog, note]);
 
   // Historial de cotizaciones
-  const [savedQuotes, setSavedQuotes] = useState<Quotation[]>([]);
-  const [loadingQuotes, setLoadingQuotes] = useState(true);
+  const quoteSource = useMemo(() => tab === 'historial' ? query(tenantCollection('quotations'), where('storeId', '==', storeId), orderBy('createdAt', 'desc')) : null, [storeId, tab]);
+  const quotePagination = usePagedQuery<Quotation>(quoteSource);
+  const savedQuotes = quotePagination.rows;
+  const loadingQuotes = quotePagination.loading;
 
   // Escáner de cámara
   const onScan = (code: string) => {
@@ -139,31 +142,13 @@ export function WorkerQuotations() {
   };
   const scanner = useScanner(onScan);
 
-  // Suscripción a cotizaciones recientes
-  useEffect(() => {
-    const q = query(
-      tenantCollection('quotations'),
-      where('storeId', '==', storeId),
-      orderBy('createdAt', 'desc'),
-      limit(50)
-    );
-    return onSnapshot(
-      q,
-      (snap) => {
-        setSavedQuotes(snap.docs.map((d) => ({ id: d.id, ...d.data() } as Quotation)));
-        setLoadingQuotes(false);
-      },
-      () => setLoadingQuotes(false)
-    );
-  }, [storeId]);
-
   // Búsqueda de productos
   const searchResults = term.trim().length >= 1 ? searchIn(term) : [];
 
   // Agregar producto a la lista
   const addItem = (p: Omit<SearchableCatalogItem, 'searchKey'> & { searchKey?: string }) => {
     setTerm('');
-    const quantity = initialSaleQuantity(p.quantity, p.presentationId ? { factor: p.factor ?? 1, autoUnpackEnabled: p.autoUnpackEnabled, allowFractionalSale: p.allowFractionalSale, fractionStep: p.fractionStep } : null, p.presentationUnit) || 1;
+    const quantity = initialSaleQuantity(p.quantity, p.presentationId ? { factor: p.factor ?? 1, autoUnpackEnabled: p.autoUnpackEnabled, allowFractionalSale: p.allowFractionalSale, fractionStep: p.fractionStep } : null, products.find((product) => product.id === p.productId)?.unit) || 1;
     setItems((prev) => {
       const existing = prev.find((i) => i.productId === p.productId && i.presentationId === p.presentationId);
       if (existing) {
@@ -251,16 +236,17 @@ export function WorkerQuotations() {
     try {
       const q = query(
         tenantCollection('product_stocks'),
-        where('productId', '==', productId)
+        where('productId', '==', productId), limit(101)
       );
       const snap = await getDocs(q);
-      const list: OtherStockInfo[] = snap.docs.map((d) => {
+      if (snap.size > 100) flash('Se muestran las primeras 100 ubicaciones.');
+      const list: OtherStockInfo[] = snap.docs.slice(0, 100).map((d) => {
         const data = d.data();
         return {
           locationId: data.locationId as string,
           locationName: data.locationName as string,
           locationType: data.locationType as 'store' | 'warehouse',
-          quantity: Number(data.quantity) || 0
+          quantity: availableBase(data as ProductStock, products.find((product) => product.id === productId)?.presentations)
         };
       });
       // Ordenar: primero los que tienen mayor stock
@@ -291,12 +277,12 @@ export function WorkerQuotations() {
     }
     setBusy(true);
     try {
-      const response = await httpsCallable<Record<string, unknown>, Quotation>(functions, 'createQuotationRecord')({
+      const saved = await durableCommand<Quotation>('createQuotationRecord', {
         storeId, items: items.map((i) => ({ productId: i.productId, presentationId: i.presentationId ?? null, qty: i.qty })),
         clientName: clientName.trim(), clientPhone: clientPhone.trim(), note: note.trim()
       });
-      setItems(response.data.items);
-      const quoteCode = response.data.code;
+      setItems(saved.items);
+      const quoteCode = saved.code;
       flash(`Cotización ${quoteCode} guardada exitosamente`);
       return quoteCode;
     } catch (err) {
@@ -331,9 +317,9 @@ export function WorkerQuotations() {
 
   // Imprimir cotización térmica / papel
   const printQuotation = () => {
-    const companyName = company?.razonSocial || "D'ENZOZ";
-    const ruc = company?.ruc ? `RUC: ${company.ruc}` : '';
-    const phone = company?.phone ? `Tel: ${company.phone}` : '';
+    const companyName = escapeHtml(company?.razonSocial || "D'ENZOZ");
+    const ruc = company?.ruc ? `RUC: ${escapeHtml(company.ruc)}` : '';
+    const phone = company?.phone ? `Tel: ${escapeHtml(company.phone)}` : '';
     const dateStr = fmtDateTime(Date.now());
 
     const itemRows = items
@@ -341,7 +327,7 @@ export function WorkerQuotations() {
         (i) => `
       <tr style="border-bottom: 1px dashed #ddd;">
         <td style="padding: 4px 0;">
-          <strong>${i.name}</strong><br/>
+          <strong>${escapeHtml(i.name)}</strong><br/>
           <span style="font-size: 10px; color: #555;">${i.qty} x S/ ${i.unitPrice.toFixed(2)} ${
             i.isAvailable ? '' : `<em style="color:#d97706;">(Disp: ${i.availableQty})</em>`
           }</span>
@@ -374,7 +360,7 @@ export function WorkerQuotations() {
             <div>${phone}</div>
             <div style="font-weight: bold; margin-top: 6px; font-size: 14px;">COTIZACIÓN ESTIMADA</div>
             <div style="font-size: 10px; color: #444;">${dateStr}</div>
-            ${clientName ? `<div style="font-size: 11px; margin-top: 2px;">Cliente: ${clientName}</div>` : ''}
+            ${clientName ? `<div style="font-size: 11px; margin-top: 2px;">Cliente: ${escapeHtml(clientName)}</div>` : ''}
           </div>
           <div class="divider"></div>
           <table>
@@ -429,14 +415,16 @@ export function WorkerQuotations() {
   };
 
   return (
-    <div className="space-y-4">
+      <div className="quotation-workspace space-y-5">
+        {catalogError && <p role="alert" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{catalogError}</p>}
+      <h1 className="font-display text-2xl font-semibold">Cotizaciones</h1>
       <FlashBar msg={msg} />
 
       {/* ─── PESTAÑAS: CREAR VS HISTORIAL ──────────────────────────────────── */}
       <div className="flex rounded-2xl bg-slate-200/80 p-1">
         <button
           onClick={() => setTab('crear')}
-          className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-extrabold transition-all ${
+          className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-extrabold transition-colors ${
             tab === 'crear'
               ? 'bg-white text-slate-900 shadow-xs'
               : 'text-slate-600 hover:text-slate-900'
@@ -445,20 +433,20 @@ export function WorkerQuotations() {
           <Calculator size={16} className="text-primary" />
           <span>Nueva Cotización</span>
           {items.length > 0 && (
-            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-[10px] text-white">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary text-xs text-white">
               {items.length}
             </span>
           )}
         </button>
         <button
           onClick={() => setTab('historial')}
-          className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-extrabold transition-all ${
+          className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-2 text-xs font-extrabold transition-colors ${
             tab === 'historial'
               ? 'bg-white text-slate-900 shadow-xs'
               : 'text-slate-600 hover:text-slate-900'
           }`}
         >
-          <History size={16} className="text-indigo-600" />
+          <History size={16} className="text-brand-600" />
           <span>Historial ({savedQuotes.length})</span>
         </button>
       </div>
@@ -466,6 +454,8 @@ export function WorkerQuotations() {
       {tab === 'historial' ? (
         /* ─── VISTA: HISTORIAL DE COTIZACIONES ──────────────────────────────── */
         <div className="space-y-3">
+          <Pagination {...quotePagination} />
+          {quotePagination.error && <p role="alert">{quotePagination.error}</p>}
           {loadingQuotes ? (
             <div className="p-8 text-center text-sm text-slate-500">Cargando cotizaciones…</div>
           ) : savedQuotes.length === 0 ? (
@@ -494,7 +484,7 @@ export function WorkerQuotations() {
                   <span>
                      <strong>{q.clientName || 'Cliente anónimo'}</strong> ({q.items.length} productos)
                   </span>
-                  <span className="text-[11px] text-slate-400">Por {q.createdByName}</span>
+                  <span className="text-xs text-slate-400">Por {q.createdByName}</span>
                 </div>
 
                 <div className="flex gap-2 pt-1 border-t border-slate-100">
@@ -520,9 +510,9 @@ export function WorkerQuotations() {
         </div>
       ) : (
         /* ─── VISTA: CREAR COTIZACIÓN ───────────────────────────────────────── */
-        <div className="space-y-4">
+        <div className="quotation-editor">
           {/* Datos del Cliente */}
-          <div className="rounded-2xl border border-slate-200 bg-white p-3.5 space-y-2.5 shadow-xs">
+          <div className="quote-customer card p-4 space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <div className="relative">
                 <User size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -530,8 +520,8 @@ export function WorkerQuotations() {
                   type="text"
                   value={clientName}
                   onChange={(e) => setClientName(e.target.value)}
-                  placeholder="Nombre del cliente o empresa"
-                  className="field !pl-9 !text-xs !min-h-9"
+                  aria-label="Nombre del cliente o empresa" placeholder="Nombre del cliente o empresa"
+                  className="field !pl-9"
                 />
               </div>
               <div className="relative">
@@ -540,7 +530,7 @@ export function WorkerQuotations() {
                   type="tel"
                   value={clientPhone}
                   onChange={(e) => setClientPhone(e.target.value)}
-                  placeholder="WhatsApp del cliente (opcional)"
+                  aria-label="WhatsApp del cliente (opcional)" placeholder="WhatsApp del cliente (opcional)"
                   className="field !pl-9 !text-xs !min-h-9 font-mono"
                 />
               </div>
@@ -548,7 +538,7 @@ export function WorkerQuotations() {
           </div>
 
           {/* Buscador y Escáner de Productos */}
-          <div className="space-y-2">
+          <div className="quote-search space-y-2">
             <div className="flex gap-2">
               <form
                 onSubmit={(e) => {
@@ -623,7 +613,7 @@ export function WorkerQuotations() {
                 <AlertCircle size={18} className="text-amber-600 shrink-0 mt-0.5" />
                 <div className="space-y-1">
                   <p className="font-bold">{scanner.error}</p>
-                  <p className="text-amber-800 text-[11px]">
+                  <p className="text-amber-800 text-xs">
                     Puedes agregar el producto escribiendo su nombre en el buscador de arriba.
                   </p>
                 </div>
@@ -633,7 +623,7 @@ export function WorkerQuotations() {
             {/* Resultados de Búsqueda */}
             {term.trim().length >= 1 && (
               <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-lg max-h-60 overflow-y-auto divide-y divide-slate-100">
-                <div className="px-3 py-1.5 text-[11px] font-bold text-slate-400 flex items-center justify-between">
+                <div className="px-3 py-1.5 text-xs font-bold text-slate-400 flex items-center justify-between">
                   <span>Coincidencias encontradas ({searchResults.length})</span>
                   <span>Toca para agregar a la cotización</span>
                 </div>
@@ -646,13 +636,13 @@ export function WorkerQuotations() {
                     <button
                       key={p.searchKey}
                       onClick={() => addItem(p)}
-                      className="w-full flex items-center justify-between p-2.5 text-left hover:bg-indigo-50/50 rounded-xl transition-colors group"
+                      className="w-full flex items-center justify-between p-2.5 text-left hover:bg-brand-50/50 rounded-xl transition-colors group"
                     >
                       <div className="min-w-0 flex-1 pr-3">
                         <p className="font-bold text-xs text-slate-900 group-hover:text-primary truncate">
                           {p.productName}
                         </p>
-                        <span className="text-[11px] text-slate-400 font-mono block mt-0.5">
+                        <span className="text-xs text-slate-400 font-mono block mt-0.5">
                           Stock en tienda: {p.quantity} {p.quantity <= 0 ? '(Agotado)' : ''}
                         </span>
                       </div>
@@ -660,7 +650,7 @@ export function WorkerQuotations() {
                         <span className="font-mono font-extrabold text-sm text-slate-900 block">
                           S/ {p.salePrice.toFixed(2)}
                         </span>
-                        <span className="text-[10px] text-primary font-bold block mt-0.5">+ Agregar</span>
+                        <span className="text-xs text-primary font-bold block mt-0.5">+ Agregar</span>
                       </div>
                     </button>
                   ))
@@ -670,12 +660,12 @@ export function WorkerQuotations() {
           </div>
 
           {/* ─── BANNER DE TOTALES DUALES ELEGANTE Y CLARO ─────────────────────── */}
-          <div className="rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs space-y-3">
+          <div className="quote-totals rounded-2xl border border-slate-200/90 bg-white p-4 shadow-xs space-y-3">
             <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
               <span className="text-xs uppercase tracking-wider text-slate-500 font-bold flex items-center gap-1.5">
                 <Calculator size={15} className="text-primary" /> Resumen de Cotización
               </span>
-              <span className="badge bg-slate-100 text-slate-700 text-[11px] font-bold">
+              <span className="badge bg-slate-100 text-slate-700 text-xs font-bold">
                 {itemsCount} {itemsCount === 1 ? 'ítem' : 'ítems'} ({availableCount} disponibles)
               </span>
             </div>
@@ -683,33 +673,33 @@ export function WorkerQuotations() {
             <div className="grid grid-cols-2 gap-3">
               {/* Total Disponible */}
               <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-3">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 block">
+                <span className="text-xs font-bold uppercase tracking-wider text-emerald-800 block">
                    Para llevar hoy
                 </span>
                 <span className="font-mono text-2xl font-extrabold text-emerald-700 block my-0.5">
                   S/ {totalAvailable.toFixed(2)}
                 </span>
-                <span className="block text-[10px] text-emerald-600 font-medium">Stock en tu tienda</span>
+                <span className="block text-xs text-emerald-600 font-medium">Stock en tu tienda</span>
               </div>
 
               {/* Total Completo */}
               <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 block">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-600 block">
                    Total Pedido Completo
                 </span>
                 <span className="font-mono text-2xl font-extrabold text-slate-900 block my-0.5">
                   S/ {totalAll.toFixed(2)}
                 </span>
-                <span className="block text-[10px] text-slate-500 font-medium">Haya o no stock</span>
+                <span className="block text-xs text-slate-500 font-medium">Haya o no stock</span>
               </div>
             </div>
           </div>
 
           {/* ─── LISTA DE PRODUCTOS COTIZADOS ─────────────────────────────────── */}
-          <div className="space-y-2">
+          <div className="quote-items space-y-3">
             <div className="flex items-center justify-between px-1">
               <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Lista de Ítems ({items.length})
+                Productos ({items.length})
               </h2>
               {items.length > 0 && (
                 <button
@@ -734,7 +724,7 @@ export function WorkerQuotations() {
                 {items.map((item) => (
                   <div
                     key={quotationLineKey(item)}
-                    className={`rounded-2xl border bg-white p-3.5 space-y-2.5 shadow-xs transition-all ${
+                    className={`rounded-2xl border bg-white p-3.5 space-y-2.5 shadow-xs transition-colors ${
                       item.isAvailable
                         ? 'border-slate-200'
                         : item.availableQty > 0
@@ -744,22 +734,22 @@ export function WorkerQuotations() {
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
-                        <p className="font-bold text-xs text-slate-900 leading-tight">{item.name}</p>
+                        <p className="font-semibold text-sm text-slate-900 leading-snug">{item.name}</p>
                         <div className="flex items-center gap-2 mt-1">
                           <span className="font-mono text-xs font-bold text-slate-700">
                             S/ {item.unitPrice.toFixed(2)} c/u
                           </span>
                           {/* Badge de Estado de Stock */}
                           {item.isAvailable ? (
-                            <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                            <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-xs font-bold text-emerald-700">
                               <CheckCircle2 size={12} /> Hay {item.availableQty} en tienda
                             </span>
                           ) : item.availableQty > 0 ? (
-                            <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+                            <span className="inline-flex items-center gap-1 rounded-md bg-amber-50 px-2 py-0.5 text-xs font-bold text-amber-800">
                               <AlertTriangle size={12} /> Solo hay {item.availableQty} (faltan {item.qty - item.availableQty})
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 rounded-md bg-red-50 px-2 py-0.5 text-[10px] font-bold text-critical">
+                            <span className="inline-flex items-center gap-1 rounded-md bg-red-50 px-2 py-0.5 text-xs font-bold text-critical">
                               <XCircle size={12} /> Agotado en tu tienda
                             </span>
                           )}
@@ -786,7 +776,7 @@ export function WorkerQuotations() {
                       {!item.isAvailable && (
                         <button
                           onClick={() => void checkStockInOtherLocations(item.productId, item.name)}
-                          className="flex items-center gap-1 rounded-lg bg-indigo-50 px-2.5 py-1 text-[11px] font-bold text-primary hover:bg-indigo-100 transition-colors"
+                          className="flex items-center gap-1 rounded-lg bg-brand-50 px-2.5 py-1 text-xs font-bold text-primary hover:bg-brand-100 transition-colors"
                         >
                           <Building2 size={13} /> ¿Dónde hay stock?
                         </button>
@@ -795,7 +785,7 @@ export function WorkerQuotations() {
                       <div className="flex items-center gap-2 ml-auto">
                         <button
                           onClick={() => updateQty(quotationLineKey(item), item.qty - 1)}
-                          className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
+                          className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
                         >
                           <Minus size={13} />
                         </button>
@@ -807,7 +797,7 @@ export function WorkerQuotations() {
                           onChange={(e) =>
                             updateQty(quotationLineKey(item), Number(e.target.value))
                           }
-                          className="field !h-7 w-12 !p-0 text-center font-mono text-xs font-bold"
+                          className="field !h-10 w-16 !p-0 text-center font-mono text-xs font-bold"
                         />
                         <button
                           onClick={() => updateQty(quotationLineKey(item), item.qty + 1)}
@@ -825,7 +815,7 @@ export function WorkerQuotations() {
 
           {/* ─── BOTONES DE ACCIÓN FLOTANTES / PRINCIPALES ─────────────────────── */}
           {items.length > 0 && (
-            <div className="space-y-2 pt-2">
+            <div className="quote-actions space-y-2 pt-2">
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={() => setWhatsappModal(true)}
@@ -849,7 +839,7 @@ export function WorkerQuotations() {
                 className="btn-brand w-full !min-h-12 flex items-center justify-center gap-2 text-xs font-extrabold shadow-md shadow-primary/20"
               >
                 <Save size={16} />
-                <span>{busy ? 'Guardando…' : 'Guardar Cotización en el Sistema'}</span>
+                <span>{busy ? 'Guardando…' : 'Guardar cotización'}</span>
               </button>
             </div>
           )}
@@ -886,13 +876,13 @@ export function WorkerQuotations() {
                 >
                   <div className="flex items-center gap-2.5">
                     {loc.locationType === 'warehouse' ? (
-                      <WarehouseIcon size={18} className="text-indigo-600 shrink-0" />
+                      <WarehouseIcon size={18} className="text-brand-600 shrink-0" />
                     ) : (
                       <Store size={18} className="text-emerald-600 shrink-0" />
                     )}
                     <div>
                       <p className="font-bold text-xs text-slate-900">{loc.locationName}</p>
-                      <span className="text-[10px] text-slate-400 uppercase font-semibold">
+                      <span className="text-xs text-slate-400 uppercase font-semibold">
                         {loc.locationType === 'warehouse' ? 'Almacén' : 'Tienda'}
                       </span>
                     </div>
@@ -905,7 +895,7 @@ export function WorkerQuotations() {
                     >
                       {loc.quantity} uds
                     </span>
-                    <span className="block text-[10px] font-semibold text-slate-500">
+                    <span className="block text-xs font-semibold text-slate-500">
                       {loc.quantity > 0 ? 'Disponible' : 'Sin stock'}
                     </span>
                   </div>

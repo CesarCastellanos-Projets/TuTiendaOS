@@ -1,3 +1,4 @@
+import { appCheckOptions } from './app-check';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { FieldPath, type Transaction } from 'firebase-admin/firestore';
 import { db } from './firebase';
@@ -27,6 +28,8 @@ async function requireManager(request: Parameters<typeof requireActiveProfile>[0
 }
 
 export async function assertInventoryTask(tx: Transaction, profile: ActiveProfile, task: InventoryTask, storeId: string): Promise<void> {
+  const maintenance = await tx.get(tenantDoc(profile.tenantId, 'meta', 'inventory_maintenance'));
+  if (maintenance.data()?.active === true) throw new HttpsError('unavailable', 'Inventario en mantenimiento. Intenta nuevamente al terminar la migración.');
   const snapshot = await tx.get(db.doc(`users/${profile.uid}`));
   const data = snapshot.data();
   if (data?.active !== true || data.tenantId !== profile.tenantId || data.role !== profile.role) {
@@ -38,15 +41,15 @@ export async function assertInventoryTask(tx: Transaction, profile: ActiveProfil
     throw new HttpsError('permission-denied', 'Ya no tienes permiso para realizar esta operación en la tienda.');
   }
   const store = await tx.get(tenantDoc(profile.tenantId, 'stores', storeId));
-  if (!store.exists) throw new HttpsError('not-found', 'La tienda autorizada ya no existe.');
+  if (!store.exists || store.data()?.active === false) throw new HttpsError('failed-precondition', 'La tienda autorizada ya no está activa.');
 }
 
-export const listWorkerInventoryAccess = onCall(async (request) => {
+export const listWorkerInventoryAccess = onCall(appCheckOptions, async (request) => {
   const profile = await requireManager(request);
   const storeId = identifier(request.data?.storeId);
   const cursor = request.data?.cursor ? identifier(request.data.cursor) : '';
   const store = await tenantDoc(profile.tenantId, 'stores', storeId).get();
-  if (!store.exists) throw new HttpsError('not-found', 'La tienda no existe.');
+  if (!store.exists || store.data()?.active === false) throw new HttpsError('failed-precondition', 'La tienda no está activa.');
   let workers = db.collection('users').where('tenantId', '==', profile.tenantId)
     .where('storeId', '==', storeId).where('role', '==', 'trabajador').orderBy(FieldPath.documentId()).limit(26);
   if (cursor) workers = workers.startAfter(cursor);
@@ -70,7 +73,7 @@ export const listWorkerInventoryAccess = onCall(async (request) => {
   };
 });
 
-export const setWorkerInventoryAccess = onCall(async (request) => {
+export const setWorkerInventoryAccess = onCall(appCheckOptions, async (request) => {
   const profile = await requireManager(request);
   const workerId = identifier(request.data?.workerId);
   const storeId = identifier(request.data?.storeId);
@@ -84,7 +87,7 @@ export const setWorkerInventoryAccess = onCall(async (request) => {
     const [actor, worker, store] = await tx.getAll(actorRef, workerRef, tenantDoc(profile.tenantId, 'stores', storeId));
     assertManager(profile, actor.data() ?? {});
     const data = worker.data();
-    if (!store.exists || data?.tenantId !== profile.tenantId || data.role !== 'trabajador' || data.storeId !== storeId) {
+    if (!store.exists || store.data()?.active === false || data?.tenantId !== profile.tenantId || data.role !== 'trabajador' || data.storeId !== storeId) {
       throw new HttpsError('permission-denied', 'El trabajador no pertenece a esta tienda.');
     }
     if ((canIngress || canCreateProducts) && data.active !== true) {

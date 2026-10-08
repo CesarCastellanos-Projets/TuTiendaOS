@@ -18,6 +18,7 @@ interface SaleInput {
   profile: UserProfile;
   uid: string;
   requestId: string;
+  quotationId?: string;
   clientDoc: Sale['clientDoc'];
   items: SaleItem[];
   paymentMethod: Sale['paymentMethod'];
@@ -49,7 +50,7 @@ export async function resumePendingSale(tenantId: string, uid: string, storeId: 
   const requestId = localStorage.getItem(key);
   if (!requestId) return null;
   try {
-    const response = await httpsCallable<{ requestId: string }, CreateSaleResult | { cancelled: true }>(functions, 'resumeSaleRecord')({ requestId });
+    const response = await httpsCallable<{ requestId: string; storeId: string }, CreateSaleResult | { cancelled: true }>(functions, 'resumeSaleRecord')({ requestId, storeId });
     localStorage.removeItem(key);
     return 'cancelled' in response.data ? null : { ...response.data.sale, id: response.data.id };
   } catch (error) {
@@ -75,6 +76,7 @@ export async function createSale(input: SaleInput): Promise<Sale & { id: string 
   try {
     const response = await callable({
     requestId,
+    ...(input.quotationId ? { quotationId: input.quotationId } : {}),
     storeId: input.storeId,
     clientDoc: input.clientDoc,
     items: input.items,

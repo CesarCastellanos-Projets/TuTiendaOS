@@ -17,6 +17,12 @@ interface AuthState {
 
 let pendingProfile: { uid: string; promise: Promise<UserProfile | null> } | null = null;
 
+function sessionStore(profile: UserProfile, uid: string): string | null {
+  if (profile.role !== 'pos' || profile.storeAccess !== 'all') return profile.storeId ?? null;
+  const selected = sessionStorage.getItem(`active-store:${profile.tenantId}:${uid}`);
+  return selected && /^[\w-]{1,128}$/.test(selected) ? selected : profile.storeId ?? null;
+}
+
 function readProfile(user: User): Promise<UserProfile | null> {
   if (pendingProfile?.uid === user.uid) return pendingProfile.promise;
   const promise = Promise.all([
@@ -26,12 +32,13 @@ function readProfile(user: User): Promise<UserProfile | null> {
     .then(([snapshot, token]) => {
       if (!snapshot.exists()) return null;
       const profile = snapshot.data() as UserProfile;
-      return {
+      const resolved = {
         ...profile,
         storeAccess: profile.storeAccess === 'all' && token.claims.posStoreAccess === 'all' ? 'all' : 'assigned',
         canOverridePrices: profile.storeAccess === 'all' && token.claims.posStoreAccess === 'all' && token.claims.canOverridePrices === true,
         canManageCalendar: profile.role === 'admin' || (profile.role === 'pos' && (profile.canManageCalendar === true || (profile.canManageCalendar === undefined && profile.storeAccess === 'all')))
       } satisfies UserProfile;
+      return { ...resolved, storeId: sessionStore(resolved, user.uid) };
     })
     .finally(() => {
       if (pendingProfile?.promise === promise) pendingProfile = null;
@@ -88,7 +95,7 @@ export const useAuth = create<AuthState>((set) => {
             if (!active || currentRevision !== revision) return;
             const current = snapshot.data() as UserProfile | undefined;
             if (!current?.active || current.tenantId !== profile.tenantId || current.role !== profile.role) { void signOut(auth); return; }
-            set({ profile: { ...profile, ...current, storeAccess: profile.storeAccess === 'all' && current.storeAccess === 'all' ? 'all' : 'assigned', canOverridePrices: profile.canOverridePrices && current.storeAccess === 'all',
+            set({ profile: { ...profile, ...current, storeId: sessionStore({ ...current, storeAccess: profile.storeAccess === 'all' && current.storeAccess === 'all' ? 'all' : 'assigned' }, user.uid), storeAccess: profile.storeAccess === 'all' && current.storeAccess === 'all' ? 'all' : 'assigned', canOverridePrices: profile.canOverridePrices && current.storeAccess === 'all',
               canManageCalendar: current.role === 'admin' || (current.role === 'pos' && (current.canManageCalendar === true || (current.canManageCalendar === undefined && current.storeAccess === 'all'))) } });
           }, () => set((state) => ({ profile: state.profile ? { ...state.profile, canManageCalendar: false, inventoryAccess: undefined } : null })));
 
@@ -122,9 +129,11 @@ export const useAuth = create<AuthState>((set) => {
       await signOut(auth);
       set({ user: null, profile: null, loading: false, error: null });
     },
-    setProfileStoreId: (storeId) => set((state) => ({
-      profile: state.profile ? { ...state.profile, storeId } : null
-    }))
+    setProfileStoreId: (storeId) => set((state) => {
+      if (!state.profile || !state.user || state.profile.storeAccess !== 'all') return {};
+      sessionStorage.setItem(`active-store:${state.profile.tenantId}:${state.user.uid}`, storeId);
+      return { profile: { ...state.profile, storeId } };
+    })
   };
 });
 

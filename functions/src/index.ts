@@ -1,3 +1,4 @@
+import { appCheckOptions } from './app-check';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { setGlobalOptions } from 'firebase-functions/v2';
 import { defineString } from 'firebase-functions/params';
@@ -9,13 +10,16 @@ setGlobalOptions({ region: 'us-central1', maxInstances: 10 });
 const APISPERU_TOKEN = defineString('APISPERU_TOKEN', { default: 'disabled' });
 
 export { createSaleRecord, resumeSaleRecord, getCompanyConfig, receiveTransfer } from './operations';
+export { syncProductStockMetadata } from './stock-metadata';
+export { saveLocation, archiveLocation } from './locations';
+export { aggregateSaleStatistics, recoverSalesStatistics } from './statistics-processing';
 export { saveCustomUnits } from './company';
 export { saveCalendarEvent, completeCalendarEvent, setCalendarPermission, markCalendarNotification, registerCalendarDevice, unregisterCalendarDevice, sendCalendarReminders } from './calendar';
 export { saveCatalogProduct } from './catalog';
 export { listWorkerInventoryAccess, setWorkerInventoryAccess } from './worker-permissions';
 export { openCashSession, closeCashSession, getCashSessionSummary } from './cash';
 export { getSalesStatistics, backfillSalesStatistics } from './statistics';
-export { notifyReplenishmentRequest } from './replenishment-notifications';
+export { notifyReplenishmentRequest, retryReplenishmentPush } from './replenishment-notifications';
 export { createQuotationRecord, createReplenishmentRecord, discardQuotation } from './requests';
 export { resolveTransferShortage } from './shortages';
 export {
@@ -31,6 +35,7 @@ export {
   saveSunatCredentials,
   sendCreditNoteToSunat,
   sendDailySummaryToSunat,
+  sendCashCloseSummary,
   sendNewSaleToSunat,
   sendSaleToSunat,
   sendVoidedToSunat,
@@ -39,63 +44,12 @@ export {
   uploadSunatCertificate
 } from './tax';
 
-/** Crea usuario de Auth + perfil en Firestore. Solo Admin puede llamar. */
-export const createUser = onCall(async (request) => {
-  const profile = await requireAdmin(request);
-
-  const { email, password, displayName, role, storeId, storeAccess, canManageCalendar } = request.data as {
-    email?: string;
-    password?: string;
-    displayName?: string;
-    role?: string;
-    storeId?: string | null;
-    storeAccess?: string;
-    canManageCalendar?: boolean;
-  };
-
-  if (!email || !password || password.length < 6 || !displayName || !role) {
-    throw new HttpsError('invalid-argument', 'Faltan datos del usuario.');
-  }
-  if (!['admin', 'pos', 'trabajador'].includes(role)) {
-    throw new HttpsError('invalid-argument', 'Rol inválido.');
-  }
-  const isMultiStorePos = role === 'pos' && storeAccess === 'all';
-  if (canManageCalendar !== undefined && typeof canManageCalendar !== 'boolean') throw new HttpsError('invalid-argument', 'Permiso de calendario inválido.');
-  if (((role === 'pos' && !isMultiStorePos) || role === 'trabajador') && !storeId) {
-    throw new HttpsError('invalid-argument', 'POS y Trabajador requieren tienda.');
-  }
-
-  const userRecord = await admin.auth().createUser({
-    email,
-    password,
-    displayName,
-    emailVerified: true,
-    disabled: false
-  });
-
-  await db.doc(`users/${userRecord.uid}`).set({
-    tenantId: profile.tenantId,
-    displayName,
-    email,
-    role,
-    storeId: isMultiStorePos ? null : storeId ?? null,
-    storeAccess: isMultiStorePos ? 'all' : 'assigned',
-    canManageCalendar: role === 'admin' || (role === 'pos' && (canManageCalendar ?? isMultiStorePos)),
-    active: true,
-    createdAt: Date.now()
-  });
-  await admin.auth().setCustomUserClaims(userRecord.uid, {
-    tenantId: profile.tenantId,
-    role,
-    posStoreAccess: isMultiStorePos ? 'all' : 'assigned',
-    canOverridePrices: isMultiStorePos
-  });
-
-  return { uid: userRecord.uid };
-});
+export { createUser, setUserActive } from './users';
+export { recordSaleCompensation } from './sale-compensation';
+export { requestSaleAnulation } from './anulations';
 
 /** Selecciona la tienda operativa de un POS multi-tienda. */
-export const selectPosStore = onCall(async (request) => {
+export const selectPosStore = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request);
   if (profile.role !== 'pos' || profile.storeAccess !== 'all') {
     throw new HttpsError('permission-denied', 'Tu cuenta no puede cambiar de tienda.');
@@ -105,13 +59,12 @@ export const selectPosStore = onCall(async (request) => {
     : '';
   if (!storeId) throw new HttpsError('invalid-argument', 'Selecciona una tienda válida.');
   const store = await db.doc(`tenants/${profile.tenantId}/stores/${storeId}`).get();
-  if (!store.exists) throw new HttpsError('not-found', 'La tienda seleccionada no existe.');
-  await db.doc(`users/${profile.uid}`).update({ storeId });
+  if (!store.exists || store.data()?.active === false) throw new HttpsError('not-found', 'La tienda seleccionada no está activa.');
   return { storeId, storeName: String(store.data()?.name ?? 'Tienda') };
 });
 
 /** Consulta DNI/RUC desde el servidor y cachea en Firestore. */
-export const lookupClient = onCall(async (request) => {
+export const lookupClient = onCall(appCheckOptions, async (request) => {
     if (!request.auth) {
       throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
     }
@@ -190,7 +143,7 @@ export const lookupClient = onCall(async (request) => {
     return result;
 });
 
-export const migrateCatalogAndStocks = onCall(async (request) => {
+export const migrateCatalogAndStocks = onCall(appCheckOptions, async (request) => {
   await requireAdmin(request);
   throw new HttpsError('failed-precondition', 'Esta migración fue retirada. Usa tools/migrate-presentation-stock.mjs con credenciales administrativas y revisión del dry-run.');
 });

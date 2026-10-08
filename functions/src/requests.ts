@@ -1,5 +1,9 @@
+import { appCheckOptions } from './app-check';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
-import { requireActiveProfile } from './authz';
+import { db } from './firebase';
+import type { Transaction } from 'firebase-admin/firestore';
+import { completeOperation, readOperation, operationId } from './operation-receipts';
+import { assertCurrentProfile, requireActiveProfile, type ActiveProfile } from './authz';
 import { tenantCollection, tenantDoc } from './tenant';
 import { assertSaleStep, consumeSaleStock, parsePresentations, positiveQuantity, presentationLabel, readStockState, changeSelectedStock, selectedAvailable, resolvePresentation, round2, stockEquivalent } from './stock-model';
 
@@ -9,8 +13,7 @@ function text(value: unknown, max: number): string {
   return value.trim();
 }
 
-async function prepare(request: Parameters<typeof requireActiveProfile>[0], quotation: boolean) {
-  const profile = await requireActiveProfile(request);
+async function prepare(request: Parameters<typeof requireActiveProfile>[0], quotation: boolean, tx: Transaction, profile: ActiveProfile) {
   if (!['pos', 'trabajador'].includes(profile.role) || !profile.storeId) {
     throw new HttpsError('permission-denied', 'Tu usuario necesita una tienda asignada.');
   }
@@ -37,8 +40,8 @@ async function prepare(request: Parameters<typeof requireActiveProfile>[0], quot
   const ids = [...new Set(parsed.map((item) => item.productId))];
   const snapshots = await Promise.all(ids.map(async (id) => {
     const [product, stock] = await Promise.all([
-      tenantDoc(profile.tenantId, 'products', id).get(),
-      tenantDoc(profile.tenantId, 'product_stocks', `${id}_${profile.storeId}`).get()
+      tx.get(tenantDoc(profile.tenantId, 'products', id)),
+      tx.get(tenantDoc(profile.tenantId, 'product_stocks', `${id}_${profile.storeId}`))
     ]);
     return { id, product, stock };
   }));
@@ -70,13 +73,18 @@ async function prepare(request: Parameters<typeof requireActiveProfile>[0], quot
       unitPrice, qty, total: round2(qty * unitPrice), availableQty, isAvailable
     };
   });
-  const store = await tenantDoc(profile.tenantId, 'stores', profile.storeId).get();
-  if (!store.exists) throw new HttpsError('failed-precondition', 'La tienda ya no existe.');
+  const store = await tx.get(tenantDoc(profile.tenantId, 'stores', profile.storeId));
+  if (!store.exists || store.data()?.active === false) throw new HttpsError('failed-precondition', 'La tienda ya no existe.');
   return { profile, input, items, storeName: String(store.data()?.name ?? '') };
 }
 
-export const createQuotationRecord = onCall(async (request) => {
-  const { profile, input, items, storeName } = await prepare(request, true);
+export const createQuotationRecord = onCall(appCheckOptions, async (request) => {
+  const profile = await requireActiveProfile(request);
+  const requestId = operationId(request.data?.requestId);
+  return db.runTransaction(async (tx) => {
+  const operation = await readOperation(tx, profile, 'quotation', requestId, request.data);
+  if (operation.result) return operation.result;
+  const { input, items, storeName } = await prepare(request, true, tx, profile);
   const ref = tenantCollection(profile.tenantId, 'quotations').doc();
   const totalAll = round2(items.reduce((sum, item) => sum + ('total' in item ? item.total ?? 0 : 0), 0));
   if (totalAll > 100_000_000) throw new HttpsError('invalid-argument', 'Cotización demasiado grande.');
@@ -88,28 +96,39 @@ export const createQuotationRecord = onCall(async (request) => {
     note: text(input.note, 500), createdBy: profile.uid, createdByName: profile.displayName,
     status: 'pendiente', createdAt: Date.now()
   };
-  await ref.set(quotation);
+  tx.create(ref, quotation);
+  completeOperation(tx, profile, 'quotation', operation, quotation);
   return quotation;
+  });
 });
 
-export const createReplenishmentRecord = onCall(async (request) => {
-  const { profile, input, items, storeName } = await prepare(request, false);
+export const createReplenishmentRecord = onCall(appCheckOptions, async (request) => {
+  const profile = await requireActiveProfile(request);
+  const requestId = operationId(request.data?.requestId);
+  return db.runTransaction(async (tx) => {
+  const operation = await readOperation(tx, profile, 'replenishment', requestId, request.data);
+  if (operation.result) return operation.result;
+  const { input, items, storeName } = await prepare(request, false, tx, profile);
   const ref = tenantCollection(profile.tenantId, 'replenishment_requests').doc();
-  await ref.set({
+  tx.create(ref, {
     tenantId: profile.tenantId, storeId: profile.storeId, storeName, items,
     status: 'pendiente', createdBy: profile.uid, createdByName: profile.displayName,
     createdAt: Date.now(), note: text(input.note, 250)
   });
-  return { id: ref.id };
+  const result = { id: ref.id };
+  completeOperation(tx, profile, 'replenishment', operation, result);
+  return result;
+  });
 });
 
-export const discardQuotation = onCall(async (request) => {
+export const discardQuotation = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request);
   const id = text(request.data?.quotationId, 128);
   if (!/^[\w-]+$/.test(id)) throw new HttpsError('invalid-argument', 'Cotización inválida.');
   const ref = tenantDoc(profile.tenantId, 'quotations', id);
   const { db } = await import('./firebase');
   await db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const snap = await tx.get(ref);
     const quote = snap.data();
     if (!quote || (profile.role !== 'admin' && (quote.createdBy !== profile.uid || quote.storeId !== profile.storeId))) {

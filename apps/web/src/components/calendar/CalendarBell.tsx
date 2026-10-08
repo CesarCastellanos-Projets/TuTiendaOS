@@ -104,13 +104,13 @@ export function CalendarBell() {
   return (
     <>
       <button
-        className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-indigo-50"
+        className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-brand-50"
         aria-label={`Recordatorios del calendario${pending.length ? `, ${pending.length} pendientes` : ''}`}
         onClick={() => setOpen(true)}
       >
         <Bell size={19} />
         {pending.length > 0 && (
-          <span className="absolute -right-1 -top-1 rounded-full bg-primary px-1.5 text-[10px] font-bold text-white">
+          <span className="absolute -right-1 -top-1 rounded-full bg-primary px-1.5 text-xs font-bold text-white">
             {pending.length >= 50 ? '50+' : pending.length}
           </span>
         )}
@@ -118,7 +118,7 @@ export function CalendarBell() {
       {toast && items.some((item) => item.id === toast.id && !item.readAt) && (
         <div
           role="status"
-          className="fixed bottom-4 right-4 z-40 w-[calc(100vw-2rem)] max-w-sm rounded-2xl border border-indigo-200 bg-white p-4 shadow-xl"
+          className="notice-toast notice-calendar"
         >
           <button className="float-right p-1" aria-label="Cerrar aviso" onClick={() => setToast(null)}>
             <X size={16} />
@@ -157,7 +157,7 @@ export function CalendarBell() {
           {items.map((item) => (
             <article
               key={item.id}
-              className={`rounded-xl border p-3 ${item.readAt ? 'border-slate-100 text-slate-500' : 'border-indigo-100 bg-indigo-50/40'}`}
+              className={`rounded-xl border p-3 ${item.readAt ? 'border-slate-100 text-slate-500' : 'border-brand-100 bg-brand-50/40'}`}
             >
               <strong className="block break-words text-sm">{item.title}</strong>
               <p className="mt-1 text-xs">

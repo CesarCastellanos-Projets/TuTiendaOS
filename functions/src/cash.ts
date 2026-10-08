@@ -1,7 +1,8 @@
+import { appCheckOptions } from './app-check';
 import { createHash } from 'node:crypto';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { db } from './firebase';
-import { requireActiveProfile } from './authz';
+import { assertCurrentProfile, requireActiveProfile } from './authz';
 import { tenantCollection, tenantDoc } from './tenant';
 import { round2 } from './stock-model';
 import { addCashSummary } from './payment-model';
@@ -36,7 +37,7 @@ function lockId(uid: string, storeId: string) {
   return createHash('sha256').update(`${uid}:${storeId}`).digest('hex');
 }
 
-export const openCashSession = onCall(async (request) => {
+export const openCashSession = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request);
   if (profile.role !== 'pos' || !profile.storeId) {
     throw new HttpsError('permission-denied', 'Solo el POS con tienda puede abrir una caja.');
@@ -45,6 +46,7 @@ export const openCashSession = onCall(async (request) => {
   const lock = tenantDoc(profile.tenantId, 'cash_session_locks', lockId(profile.uid, profile.storeId));
   const ref = tenantCollection(profile.tenantId, 'cash_sessions').doc();
   return db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const [locked, legacy, store] = await Promise.all([
       tx.get(lock),
       tx.get(tenantCollection(profile.tenantId, 'cash_sessions')
@@ -52,7 +54,7 @@ export const openCashSession = onCall(async (request) => {
         .where('status', 'in', ['abierta', 'cerrando']).limit(2)),
       tx.get(tenantDoc(profile.tenantId, 'stores', profile.storeId!))
     ]);
-    if (!store.exists) throw new HttpsError('failed-precondition', 'La tienda no existe.');
+    if (!store.exists || store.data()?.active === false) throw new HttpsError('failed-precondition', 'La tienda no existe.');
     if (locked.exists || !legacy.empty) {
       throw new HttpsError('failed-precondition', 'Ya tienes una caja abierta o un cierre pendiente en esta tienda.');
     }
@@ -68,7 +70,7 @@ export const openCashSession = onCall(async (request) => {
   });
 });
 
-export const getCashSessionSummary = onCall(async (request) => {
+export const getCashSessionSummary = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request);
   const id = request.data?.sessionId;
   if (typeof id !== 'string' || !/^[\w-]{1,128}$/.test(id)) {
@@ -87,7 +89,7 @@ export const getCashSessionSummary = onCall(async (request) => {
   return summarize(profile.tenantId, id);
 });
 
-export const closeCashSession = onCall(async (request) => {
+export const closeCashSession = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request);
   const id = request.data?.sessionId;
   if (profile.role !== 'pos' || typeof id !== 'string' || !/^[\w-]{1,128}$/.test(id)) {
@@ -96,6 +98,7 @@ export const closeCashSession = onCall(async (request) => {
   const counted = money(request.data?.closingAmount);
   const ref = tenantDoc(profile.tenantId, 'cash_sessions', id);
   const frozen = await db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const snap = await tx.get(ref);
     const session = snap.data();
     if (!session || session.userId !== profile.uid || session.storeId !== profile.storeId) {
@@ -116,15 +119,17 @@ export const closeCashSession = onCall(async (request) => {
   const salesSummary = frozen.summaryVersion === 1 && frozen.salesSummary
     ? frozen.salesSummary : await summarize(profile.tenantId, id, Number(frozen.closingStartedAt ?? Date.now()));
   return db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const [snap, lock] = await Promise.all([
       tx.get(ref), tx.get(tenantDoc(profile.tenantId, 'cash_session_locks', lockId(profile.uid, profile.storeId!)))
     ]);
     const session = snap.data()!;
     if (session.status === 'cerrada') return { id, ...session };
-    const expectedAmount = round2(Number(session.openingAmount) + salesSummary.cashSales);
+    const finalSummary = session.summaryVersion === 1 ? session.salesSummary : salesSummary;
+    const expectedAmount = round2(Number(session.openingAmount) + finalSummary.cashSales + Number(session.cashBalanceAdjustment ?? 0));
     const closed = {
       ...session, status: 'cerrada', closingAmount: counted, expectedAmount,
-      difference: round2(counted - expectedAmount), closedAt: Date.now(), salesSummary
+      difference: round2(counted - expectedAmount), closedAt: Date.now(), salesSummary: finalSummary
     };
     tx.set(ref, closed);
     if (lock.data()?.sessionId === id) tx.delete(lock.ref);

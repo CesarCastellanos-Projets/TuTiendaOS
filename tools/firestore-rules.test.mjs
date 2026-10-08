@@ -66,6 +66,24 @@ beforeEach(async () => {
 
 after(async () => env?.cleanup?.());
 
+test('incidencias conservan origen, actor y transición de resolución', async () => {
+  const path = `tenants/${TENANT_A}/incidents/incident-a`;
+  const workerRef = doc(env.authenticatedContext('worker-a').firestore(), path);
+  const adminRef = doc(env.authenticatedContext('admin-a').firestore(), path);
+  const incident = { tenantId: TENANT_A, storeId: 'A01', storeName: 'Tienda', type: 'otro', description: 'Producto dañado',
+    status: 'abierta', createdBy: 'worker-a', createdByName: 'trabajador', createdAt: Date.now() };
+  await assertFails(setDoc(workerRef, { ...incident, resolvedBy: 'admin-a' }));
+  await assertFails(setDoc(workerRef, { ...incident, createdByName: 'Administrador' }));
+  await assertSucceeds(setDoc(workerRef, incident));
+  const resolution = { status: 'resuelta', resolutionNote: 'Revisado', resolvedBy: 'admin-a', resolvedByName: 'admin', resolvedAt: Date.now() };
+  await assertFails(updateDoc(workerRef, resolution));
+  await assertFails(updateDoc(adminRef, { ...resolution, description: 'Origen alterado' }));
+  await assertFails(updateDoc(adminRef, { ...resolution, resolvedByName: 'Otro actor' }));
+  await assertSucceeds(updateDoc(adminRef, resolution));
+  await assertFails(updateDoc(adminRef, { ...resolution, status: 'abierta' }));
+  await assertFails(updateDoc(adminRef, { ...resolution, resolutionNote: 'Reescrito' }));
+});
+
 test('bloquea usuarios anónimos, perfiles inexistentes y rutas heredadas', async () => {
   const path = `tenants/${TENANT_A}/product_stocks/p1_A01`;
   await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), path)));
@@ -87,7 +105,8 @@ test('impide lecturas y escrituras entre empresas incluso a administradores', as
 
 test('el administrador solo enumera perfiles de su empresa', async () => {
   const db = env.authenticatedContext('admin-a').firestore();
-  await assertSucceeds(getDocs(query(collection(db, 'users'), where('tenantId', '==', TENANT_A))));
+  await assertSucceeds(getDocs(query(collection(db, 'users'), where('tenantId', '==', TENANT_A), limit(100))));
+  await assertFails(getDocs(query(collection(db, 'users'), where('tenantId', '==', TENANT_A))));
   await assertFails(getDocs(query(collection(db, 'users'), where('tenantId', '==', TENANT_B))));
   await assertFails(getDoc(doc(db, 'users/admin-b')));
 });
@@ -127,12 +146,12 @@ test('el cliente no puede abrir cajas directamente ni falsificar tenantId', asyn
   }));
 });
 
-test('POS solo solicita la anulación de su venta', async () => {
+test('POS lee su venta pero solo Functions pueden registrar la solicitud de anulación', async () => {
   const db = env.authenticatedContext('pos-a').firestore();
   const saleRef = doc(db, `tenants/${TENANT_A}/sales/sale1`);
   await assertSucceeds(getDoc(saleRef));
   await assertFails(updateDoc(saleRef, { status: 'anulada' }));
-  await assertSucceeds(updateDoc(saleRef, {
+  await assertFails(updateDoc(saleRef, {
     anulationRequest: { reason: 'Error de cobro', byUserId: 'pos-a', byUserName: 'Caja', requestedAt: 2 },
     anulationStatus: 'solicitada'
   }));
@@ -211,7 +230,8 @@ test('calendario compartido protege empresa, rol, permisos y escritura de servid
   await assertFails(updateDoc(doc(pos, `tenants/${TENANT_A}/calendar_inboxes/pos-a/notifications/n1`), { readAt: 1 }));
   await assertFails(getDoc(doc(pos, 'calendar_push_devices/token')));
   await assertFails(updateDoc(doc(pos, 'users/pos-a'), { canManageCalendar: false }));
-  await assertSucceeds(updateDoc(doc(admin, 'users/pos-a'), { canManageCalendar: false }));
+  await assertFails(updateDoc(doc(admin, 'users/pos-a'), { canManageCalendar: false }));
+  await env.withSecurityRulesDisabled(async (context) => updateDoc(doc(context.firestore(), 'users/pos-a'), { canManageCalendar: false }));
   await assertFails(getDoc(doc(pos, `tenants/${TENANT_A}/calendar_events/event1`)));
 });
 

@@ -58,10 +58,10 @@ export function IngressPage() {
   };
 
   return (
-    <div className="mx-auto w-full max-w-2xl space-y-4">
+    <div className="mx-auto w-full max-w-3xl space-y-5">
       <h1 className="font-display text-2xl uppercase tracking-wide">Ingreso de mercadería</h1>
 
-      <div className="card max-w-2xl space-y-4 p-4">
+      <div className="card space-y-5 p-5 sm:p-6">
         <div>
           <label className="label">Destino *</label>
           <select className="field" value={locationId} onChange={(e) => setLocationId(e.target.value)}>
@@ -77,7 +77,7 @@ export function IngressPage() {
 
         <ProductLines lines={lines} setLines={setLines} searchFn={search} />
 
-        <p className="text-xs text-slate-500">Las presentaciones que permiten apertura se suman al stock suelto. Las cajas sin apertura conservan su cantidad por presentación; su contenido también cuenta en el total equivalente.</p>
+        <p className="inventory-hint">Las presentaciones que permiten apertura se suman al stock suelto. Las cajas sin apertura conservan su cantidad por presentación; su contenido también cuenta en el total equivalente.</p>
         {lines.length > 0 && <div className="space-y-1 rounded-xl bg-slate-50 p-3 text-sm">
           {[...new Set(lines.map((line) => line.productId))].map((productId) => {
             const productLines = lines.filter((line) => line.productId === productId);

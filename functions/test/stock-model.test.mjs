@@ -125,3 +125,13 @@ test('saldo unificado previo nunca inventa cajas cerradas', () => {
   assert.throws(() => consumeSaleStock(state, presentations, presentations[0], 1));
   assert.equal(stockPatch(state, presentations).quantity, 34);
 });
+
+test('presentaciones medibles admiten fracciones base y cajas cerradas siguen enteras', () => {
+  const product = { unit: 'KG', presentations: [{ id: 'saco', unit: 'SACO', factor: 3, salePrice: 30, autoUnpackEnabled: true, allowFractionalSale: true, fractionStep: 0.25 }] };
+  const presentations = parsePresentations(product);
+  const state = readStockState({ quantity: 2, baseQuantity: 2, presentationQuantities: {}, stockModelVersion: 4 }, presentations, 'KG');
+  consumeSaleStock(state, presentations, presentations[0], 0.25);
+  assert.equal(state.baseQuantity, 1.25);
+  assert.throws(() => parsePresentations({ ...product, unit: 'UN' }));
+  assert.throws(() => consumeSaleStock(state, [{ ...presentations[0], autoUnpackEnabled: false }], { ...presentations[0], autoUnpackEnabled: false }, 0.25));
+});

@@ -1,5 +1,6 @@
+import { durableCommand } from '../../lib/durable-command';
 import { EditableNumberInput } from '../../components/ui/EditableNumberInput';
-import { availableBase, availablePresentation, needsStockReconciliation } from '../../lib/stock-availability';
+import { availableBase, availablePresentation, needsStockReconciliation, baseQuantityStep } from '../../lib/stock-availability';
 import { useMemo, useState, type FormEvent } from 'react';
 import { query, where, getDocs, limit, orderBy, startAfter, documentId, type QueryDocumentSnapshot, type DocumentData } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
@@ -218,7 +219,7 @@ export function ProductsPage() {
       .filter((p) => p.unit && p.salePrice > 0);
 
     const invalidFraction = validPresentations.find((presentation) =>
-      presentation.allowFractionalSale
+      presentation.allowFractionalSale && baseQuantityStep(mainUnit) === 1
       && !Number.isInteger(Math.round((presentation.fractionStep ?? 0.5) * 1000) * presentation.factor / 1000)
     );
     if (invalidFraction) {
@@ -247,11 +248,7 @@ export function ProductsPage() {
     }
 
     try {
-      const callable = httpsCallable<
-        { productId?: string; product: Product },
-        { id: string; presentations: ProductPresentation[] }
-      >(functions, 'saveCatalogProduct');
-      await callable({ productId: editing?.id, product: data });
+      await durableCommand('saveCatalogProduct', { ...(editing?.id ? { productId: editing.id } : {}), product: { ...data, updatedAt: 0 } });
       await refreshProductsCatalog(data.tenantId!);
       setEditing(null);
       flash(editing?.id ? 'Producto actualizado con éxito' : 'Producto creado con éxito');
@@ -264,7 +261,7 @@ export function ProductsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="font-display text-2xl uppercase tracking-wide">Productos y Catálogo</h1>
+          <h1 className="font-display text-2xl uppercase tracking-wide">Productos</h1>
           <p className="text-xs text-slate-500">
             Control de productos, múltiples unidades de venta, códigos de barra y precios.
           </p>
@@ -296,7 +293,7 @@ export function ProductsPage() {
         />
       ) : (
         <div className="card overflow-x-auto">
-          <table className="w-full min-w-[700px]">
+          <table className="responsive-table w-full min-w-[700px]">
             <thead className="border-b border-slate-200">
               <tr>
                 <th className="th">Producto</th>
@@ -311,23 +308,23 @@ export function ProductsPage() {
             <tbody className="divide-y divide-slate-100">
               {filtered.map((p) => (
                 <tr key={p.id} className={p.active ? 'hover:bg-slate-50/60' : 'opacity-40 hover:bg-slate-50/60'}>
-                    <td className="td">
+                    <td data-label="Producto" className="td">
                       <p className="font-bold text-slate-900 leading-tight">{p.name}</p>
                       {p.brand && <span className="text-xs text-slate-400 font-medium">{p.brand}</span>}
                     </td>
-                    <td className="td text-xs font-semibold text-slate-600">{p.category}</td>
-                    <td className="td font-mono text-xs text-slate-700">{p.barcode || '—'}</td>
-                    <td className="td text-right font-mono font-bold text-slate-900">
+                    <td data-label="Categoría" className="td text-xs font-semibold text-slate-600">{p.category}</td>
+                    <td data-label="Código" className="td font-mono text-xs text-slate-700">{p.barcode || '—'}</td>
+                    <td data-label="Precio base" className="td text-right font-mono font-bold text-slate-900">
                       S/ {p.salePrice.toFixed(2)} <span className="text-xs text-slate-400 font-normal">/{p.unit}</span>
                     </td>
-                    <td className="td">
+                    <td data-label="Presentaciones" className="td">
                       {p.presentations && p.presentations.length > 0 ? (
                         <div className="flex flex-wrap gap-1">
-                          <span className="badge bg-indigo-50 text-primary border border-indigo-200 text-[11px]">
+                          <span className="badge bg-brand-50 text-primary border border-brand-200 text-xs">
                             {p.unit}: S/ {p.salePrice.toFixed(2)}
                           </span>
                           {p.presentations.map((pr, index) => (
-                            <span key={pr.id || `legacy-${index + 1}`} className="badge bg-slate-100 text-slate-700 border border-slate-200 text-[11px]">
+                            <span key={pr.id || `legacy-${index + 1}`} className="badge bg-slate-100 text-slate-700 border border-slate-200 text-xs">
                               {pr.description || `${pr.unit} x${pr.factor}`}: S/ {pr.salePrice.toFixed(2)}
                             </span>
                           ))}
@@ -336,17 +333,17 @@ export function ProductsPage() {
                         <span className="badge bg-slate-100 text-slate-600 text-xs">{p.unit} (Única)</span>
                       )}
                     </td>
-                    <td className="td">
+                    <td data-label="Ubicación" className="td">
                       {p.locationHint && (
                         <span className="text-xs font-medium text-slate-700 block truncate max-w-[140px]">
                           {p.locationHint}
                         </span>
                       )}
-                      <span className="text-[11px] font-mono text-slate-400 block">
+                      <span className="text-xs font-mono text-slate-400 block">
                         Mín: {p.minStock ?? 5} un.
                       </span>
                     </td>
-                    <td className="td text-right">
+                    <td data-label="Acciones" className="td text-right">
                       <div className="flex items-center justify-end gap-2">
                         <button
                           className="flex items-center gap-1 rounded-xl bg-slate-100 px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-200 transition-colors"
@@ -395,7 +392,7 @@ export function ProductsPage() {
                     <span className="badge bg-slate-100 text-xs text-slate-600 font-semibold capitalize mt-0.5">
                       {s.locationType === 'warehouse' ? 'Almacén' : 'Tienda'}
                     </span>
-                    <p className="mt-1 text-[11px] text-slate-500">
+                    <p className="mt-1 text-xs text-slate-500">
                       {needsStockReconciliation(s, viewingStockProduct?.presentations) ? 'Requiere reclasificar cajas en Ajustes. Total registrado: ' : 'Unidades disponibles: '}{needsStockReconciliation(s, viewingStockProduct?.presentations) ? s.quantity : availableBase(s, viewingStockProduct?.presentations)} {viewingStockProduct?.unit}
                       {(viewingStockProduct?.presentations ?? []).map((presentation) => {
                         return ` · Disponible: ${availablePresentation(s, viewingStockProduct?.presentations, presentation)} ${presentation.description || presentation.unit}`;
@@ -436,7 +433,7 @@ export function ProductsPage() {
           {/* 1. Datos Principales del Producto */}
           <div className="space-y-3">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500 font-display flex items-center gap-1.5">
-              <Tag size={15} className="text-primary" /> Información Base del Producto
+              <Tag size={15} className="text-primary" /> Datos del producto
             </h3>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="sm:col-span-2">
@@ -471,9 +468,9 @@ export function ProductsPage() {
           </div>
 
           {/* 2. Unidad Base y Presentaciones de Venta */}
-          <div className="rounded-2xl border border-indigo-100 bg-indigo-50/30 p-4 space-y-3.5">
+          <div className="rounded-2xl border border-brand-100 bg-brand-50/30 p-4 space-y-3.5">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-bold uppercase tracking-wider text-indigo-950 font-display flex items-center gap-1.5">
+              <span className="text-xs font-bold uppercase tracking-wider text-brand-950 font-display flex items-center gap-1.5">
                 <Boxes size={16} className="text-primary" /> Presentaciones y Precios
               </span>
 
@@ -489,7 +486,7 @@ export function ProductsPage() {
 
             {/* Input para nueva unidad personalizada */}
             {showAddUnitInput && (
-              <div className="flex gap-2 rounded-xl border border-indigo-200 bg-white p-2.5 animate-in fade-in">
+              <div className="flex gap-2 rounded-xl border border-brand-200 bg-white p-2.5 animate-in fade-in">
                 <input
                   value={customUnitInput}
                   onChange={(e) => setCustomUnitInput(e.target.value)}
@@ -509,13 +506,13 @@ export function ProductsPage() {
             {/* Fila 1: Presentación Principal / Unidad Base */}
             <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
               <div className="flex items-center justify-between">
-                <span className="badge bg-primary/10 text-primary text-[10px] font-bold uppercase tracking-wider">
+                <span className="badge bg-primary/10 text-primary text-xs font-bold uppercase tracking-wider">
                   Presentación Base (Por Defecto)
                 </span>
               </div>
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-12">
                 <div className="sm:col-span-3">
-                  <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Unidad Base *</label>
+                  <label className="text-xs font-bold uppercase text-slate-600 block mb-1">Unidad Base *</label>
                   <select name="unit" value={baseUnit} onChange={(event) => setBaseUnit(event.target.value)} className="field !h-10 text-xs font-bold">
                     {availableUnits.map((u) => (
                       <option key={u} value={u}>
@@ -525,11 +522,11 @@ export function ProductsPage() {
                   </select>
                 </div>
                 <div className="sm:col-span-2">
-                  <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Contiene</label>
+                  <label className="text-xs font-bold uppercase text-slate-600 block mb-1">Contiene</label>
                   <div className="field !h-10 flex items-center justify-center text-xs font-bold text-slate-600">1 unidad base</div>
                 </div>
                 <div className="sm:col-span-4">
-                  <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Código de Barras</label>
+                  <label className="text-xs font-bold uppercase text-slate-600 block mb-1">Código de Barras</label>
                   <div className="relative">
                     <Barcode size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                     <input
@@ -541,7 +538,7 @@ export function ProductsPage() {
                   </div>
                 </div>
                 <div className="sm:col-span-3">
-                  <label className="text-[11px] font-bold uppercase text-slate-600 block mb-1">Precio Venta S/ *</label>
+                  <label className="text-xs font-bold uppercase text-slate-600 block mb-1">Precio Venta S/ *</label>
                   <input
                     name="salePrice"
                     type="text"
@@ -562,7 +559,7 @@ export function ProductsPage() {
             {/* Presentaciones Adicionales */}
             {presentations.length > 0 && (
               <div className="space-y-2.5">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600 block">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-600 block">
                   Presentaciones de venta
                 </span>
                 {presentations.map((pres, index) => (
@@ -571,7 +568,7 @@ export function ProductsPage() {
                     className="grid grid-cols-1 gap-2 rounded-xl border border-slate-200 bg-white p-3 animate-in fade-in sm:grid-cols-12"
                   >
                     <div className="sm:col-span-4">
-                      <label className="text-[10px] font-bold uppercase text-slate-500 block mb-0.5">Nombre de la presentación</label>
+                      <label className="text-xs font-bold uppercase text-slate-500 block mb-0.5">Nombre de la presentación</label>
                       <input
                         value={pres.description ?? ''}
                         onChange={(e) => updatePresentationRow(index, 'description', e.target.value)}
@@ -580,7 +577,7 @@ export function ProductsPage() {
                       />
                     </div>
                     <div className="sm:col-span-2">
-                      <label className="text-[10px] font-bold uppercase text-slate-500 block mb-0.5">Presentación</label>
+                      <label className="text-xs font-bold uppercase text-slate-500 block mb-0.5">Presentación</label>
                       <select
                         value={pres.unit}
                         onChange={(e) => updatePresentationRow(index, 'unit', e.target.value)}
@@ -595,7 +592,7 @@ export function ProductsPage() {
                     </div>
 
                     <div className="sm:col-span-2">
-                      <label className="text-[10px] font-bold uppercase text-slate-500 block mb-0.5">Contiene ({baseUnit})</label>
+                      <label className="text-xs font-bold uppercase text-slate-500 block mb-0.5">Contiene ({baseUnit})</label>
                       <input
                         type="text"
                         inputMode="numeric"
@@ -608,7 +605,7 @@ export function ProductsPage() {
                     </div>
 
                     <div className="relative sm:col-span-4">
-                      <label className="text-[10px] font-bold uppercase text-slate-500 block mb-0.5">Código de barras / QR</label>
+                      <label className="text-xs font-bold uppercase text-slate-500 block mb-0.5">Código de barras / QR</label>
                       <Barcode size={14} className="pointer-events-none absolute left-3 top-[2rem] -translate-y-1/2 text-slate-400" />
                       <input
                         value={pres.barcode ?? ''}
@@ -619,7 +616,7 @@ export function ProductsPage() {
                     </div>
 
                     <div className="sm:col-span-3">
-                      <label className="text-[10px] font-bold uppercase text-slate-500 block mb-0.5">Precio por {pres.unit.toLowerCase()} S/</label>
+                      <label className="text-xs font-bold uppercase text-slate-500 block mb-0.5">Precio por {pres.unit.toLowerCase()} S/</label>
                       <input
                         type="text"
                         inputMode="decimal"
@@ -640,15 +637,15 @@ export function ProductsPage() {
                           <input type="checkbox" disabled={!pres.autoUnpackEnabled} checked={pres.autoUnpackEnabled === true && pres.allowFractionalSale === true} onChange={(e) => updatePresentationRow(index, 'allowFractionalSale', e.target.checked)} />
                           Permitir venta fraccionada
                         </label>
-                        <label className="text-[10px] font-bold uppercase text-slate-500">
+                        <label className="text-xs font-bold uppercase text-slate-500">
                           Paso permitido
                           <EditableNumberInput min="0.001" max="0.999" step="0.001" disabled={!pres.autoUnpackEnabled || !pres.allowFractionalSale} value={pres.fractionStep ?? 0.5} onChange={(e) => updatePresentationRow(index, 'fractionStep', e.target.value)} className="field mt-1 !h-9 text-center text-xs" />
                         </label>
                       </div>
                     </div>
 
-                    <div className="sm:col-span-12 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-indigo-50 px-3 py-2">
-                      <p className="text-xs font-semibold text-indigo-950">
+                    <div className="sm:col-span-12 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-brand-50 px-3 py-2">
+                      <p className="text-xs font-semibold text-brand-950">
                         1 {pres.unit} = {pres.factor} {baseUnit} · S/ {(pres.salePrice || 0).toFixed(2)} por {pres.unit.toLowerCase()}
                       </p>
                       <button type="button" onClick={() => removePresentationRow(index)} className="flex min-h-11 items-center justify-center gap-2 rounded-xl px-2 text-xs font-semibold text-slate-600 hover:bg-red-50 hover:text-critical">
@@ -668,9 +665,9 @@ export function ProductsPage() {
             <button
               type="button"
               onClick={addPresentationRow}
-              className="btn-ghost w-full !min-h-[38px] !py-2 text-xs font-bold border-dashed border-indigo-200 text-primary hover:bg-indigo-50/50"
+              className="btn-ghost w-full !min-h-[38px] !py-2 text-xs font-bold border-dashed border-brand-200 text-primary hover:bg-brand-50/50"
             >
-              <Plus size={15} /> Agregar otra unidad con su código y precio
+              <Plus size={15} /> Agregar presentación
             </button>
           </div>
 
@@ -686,7 +683,7 @@ export function ProductsPage() {
                 placeholder="Ej.: 5"
                 className="field font-mono"
               />
-              <span className="text-[10px] text-slate-400 mt-1 block">
+              <span className="text-xs text-slate-400 mt-1 block">
                 Avisa cuando el stock baje de este umbral
               </span>
             </div>
@@ -698,7 +695,7 @@ export function ProductsPage() {
                 placeholder="Ej.: Pasillo 3, estante B"
                 className="field"
               />
-              <span className="text-[10px] text-slate-400 mt-1 block">
+              <span className="text-xs text-slate-400 mt-1 block">
                 Ayuda al personal a ubicar el producto en tienda
               </span>
             </div>
@@ -715,13 +712,13 @@ export function ProductsPage() {
               />
               <span>Producto Activo (Habilitado para venta en POS)</span>
             </label>
-            <span className="text-[11px] text-slate-400 hidden sm:inline">
+            <span className="text-xs text-slate-400 hidden sm:inline">
               Desmarca para pausar su venta sin borrarlo
             </span>
           </div>
 
           {/* Botones de Acción */}
-          <div className="flex justify-end gap-2.5 pt-2 border-t border-slate-100">
+          <div className="form-actions flex justify-end gap-2.5">
             <button type="button" className="btn-ghost" onClick={() => setEditing(null)}>
               Cancelar
             </button>

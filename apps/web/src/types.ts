@@ -93,11 +93,13 @@ export interface Product {
   active: boolean;
   presentations?: ProductPresentation[];
   updatedAt?: number;
+  committedAt?: { seconds: number; nanoseconds: number };
 }
 
 export type LocationType = 'store' | 'warehouse';
 
 export interface LocationBase {
+  active?: boolean;
   id: string;
   name: string;
   code: string;
@@ -132,9 +134,10 @@ export interface ProductStock {
   requiresReconciliation?: boolean;
   unit?: string | null;
   updatedAt?: number;
+  committedAt?: { seconds: number; nanoseconds: number };
 }
 
-export type MovementType = 'venta' | 'ingreso' | 'transferencia' | 'ajuste' | 'merma' | 'recepcion' | 'conversion';
+export type MovementType = 'venta' | 'ingreso' | 'transferencia' | 'ajuste' | 'merma' | 'recepcion' | 'conversion' | 'devolucion';
 
 export interface StockMovement {
   transitLossBaseQty?: number;
@@ -174,6 +177,8 @@ export interface TransferItem {
 export type TransferStatus = 'pendiente' | 'en_transito' | 'recibido' | 'cancelado';
 
 export interface Transfer {
+  fromLocationType?: 'store' | 'warehouse';
+  toLocationType?: 'store' | 'warehouse';
   tenantId?: string;
   code: string;
   fromLocationId: string;
@@ -282,6 +287,9 @@ export interface AnulationRequest {
 export type AnulationStatus = 'solicitada' | 'nc_pendiente' | 'anulada' | 'error';
 
 export interface Sale {
+  stockReturnedAt?: number;
+  refundedAt?: number;
+  refundMethod?: PaymentMethod;
   tenantId?: string;
   code: string;
   serie: string;
@@ -322,6 +330,7 @@ export interface Sale {
 }
 
 export interface CashSession {
+  cashBalanceAdjustment?: number;
   summaryVersion?: number;
   tenantId?: string;
   storeId: string;
@@ -379,6 +388,7 @@ export interface CompanyConfig {
   ticketDesign?: TicketDesign;
   customUnits?: string[];
   updatedAt?: number;
+  committedAt?: { seconds: number; nanoseconds: number };
 }
 
 export const DEFAULT_COMPANY: CompanyConfig = {

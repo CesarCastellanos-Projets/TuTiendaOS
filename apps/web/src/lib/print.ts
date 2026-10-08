@@ -118,6 +118,7 @@ export function cashCloseTicketHtml(
     closingAmount?: number;
     expectedAmount?: number;
     difference?: number;
+    cashBalanceAdjustment?: number;
     openedAt: number;
     closedAt?: number;
   },
@@ -147,13 +148,14 @@ export function cashCloseTicketHtml(
   <hr />
   <div class="row"><span>Monto inicial en caja:</span><span class="mono r">S/ ${session.openingAmount.toFixed(2)}</span></div>
   <div class="row"><span>Ventas en Efectivo:</span><span class="mono r">S/ ${salesSummary.cashSales.toFixed(2)}</span></div>
+  ${session.cashBalanceAdjustment ? `<div class="row"><span>Anulaciones / reembolsos:</span><span class="mono r">S/ ${session.cashBalanceAdjustment.toFixed(2)}</span></div>` : ''}
   <div class="row"><span>Ventas Yape / Plin:</span><span class="mono r">S/ ${salesSummary.yapeSales.toFixed(2)}</span></div>
   <div class="row"><span>Ventas Tarjeta:</span><span class="mono r">S/ ${salesSummary.cardSales.toFixed(2)}</span></div>
   ${salesSummary.otherSales > 0 ? `<div class="row"><span>Otros medios:</span><span class="mono r">S/ ${salesSummary.otherSales.toFixed(2)}</span></div>` : ''}
   <hr />
   <div class="row total"><span>TOTAL VENTAS (${salesSummary.salesCount}):</span><span class="mono r">S/ ${salesSummary.totalSales.toFixed(2)}</span></div>
   <hr />
-  <div class="row"><span>Efectivo Esperado:</span><span class="mono r">S/ ${(session.expectedAmount ?? (session.openingAmount + salesSummary.cashSales)).toFixed(2)}</span></div>
+  <div class="row"><span>Efectivo Esperado:</span><span class="mono r">S/ ${(session.expectedAmount ?? (session.openingAmount + salesSummary.cashSales + (session.cashBalanceAdjustment ?? 0))).toFixed(2)}</span></div>
   <div class="row"><span>Efectivo Contado:</span><span class="mono r">S/ ${(session.closingAmount ?? 0).toFixed(2)}</span></div>
   <div class="row" style="font-weight:bold;"><span>DIFERENCIA:</span><span class="mono r">${diffLabel}</span></div>
   <br /><br />

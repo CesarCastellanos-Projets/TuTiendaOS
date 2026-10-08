@@ -1,9 +1,13 @@
+import { appCheckOptions } from './app-check';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { randomUUID } from 'node:crypto';
 import { requireActiveProfile, requireAdmin } from './authz';
 import { db } from './firebase';
 import { tenantCollection, tenantDoc } from './tenant';
-import { emptyDay, limaDay, PRODUCT_BUCKETS, updateSalesStatistics, type DayStatistics, type ProductStatistics } from './statistics-model';
+import { emptyDay, limaDay, updateSalesStatistics, type DayStatistics, type ProductStatistics } from './statistics-model';
+
+const resultCache = new Map<string, { expiresAt: number; result: Record<string, unknown> }>();
+const pendingQueries = new Map<string, Promise<Record<string, unknown>>>();
 
 function date(value: unknown): string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)
@@ -13,7 +17,7 @@ function date(value: unknown): string {
   return value;
 }
 
-export const getSalesStatistics = onCall(async (request) => {
+export const getSalesStatistics = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request, false);
   if (!['admin', 'pos'].includes(profile.role)) throw new HttpsError('permission-denied', 'Tu rol no puede consultar estadísticas.');
   const start = date(request.data?.start);
@@ -33,7 +37,21 @@ export const getSalesStatistics = onCall(async (request) => {
   if (profile.role === 'pos' && (storeIds.length !== 1 || storeIds[0] !== profile.storeId)) {
     throw new HttpsError('permission-denied', 'Selecciona la tienda activa para consultar sus estadísticas.');
   }
-  return db.runTransaction(async (tx) => {
+  const cacheKey = JSON.stringify([profile.tenantId, [...storeIds].sort(), start, end]);
+  const cached = resultCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.result;
+  const running = pendingQueries.get(cacheKey);
+  if (running) return running;
+  if (Date.parse(end) - Date.parse(start) > 31 * 86400000 || storeIds.length > 3) {
+    const quota = tenantDoc(profile.tenantId, 'query_limits', `statistics_${profile.uid}`);
+    await db.runTransaction(async (tx) => {
+      const data = (await tx.get(quota)).data() ?? {};
+      const fresh = Number(data.expiresAt ?? 0) <= Date.now();
+      if (!fresh && Number(data.count) >= 5) throw new HttpsError('resource-exhausted', 'Espera un minuto antes de consultar otro periodo amplio.');
+      tx.set(quota, { count: fresh ? 1 : Number(data.count) + 1, expiresAt: fresh ? Date.now() + 60000 : data.expiresAt });
+    });
+  }
+  const promise = db.runTransaction(async (tx) => {
     const stores = await tx.getAll(...storeIds.map((id) => tenantDoc(profile.tenantId, 'stores', id)));
     if (stores.some((store) => !store.exists)) throw new HttpsError('not-found', 'Una de las tiendas ya no existe.');
     const firstMonth = start.slice(0, 7);
@@ -62,12 +80,13 @@ export const getSalesStatistics = onCall(async (request) => {
         }
       }
     }
-    // Se recorren meses, no ventas; el límite total es 10 tiendas × 13 meses × 32 documentos.
+    // Las particiones se dividen cuando crecen; una consulta nunca devuelve resultados truncados.
     for (const id of storeIds) {
       const storeIndex = storeIds.indexOf(id);
       const pages = await Promise.all(summaries[storeIndex].docs.map((summary) => tx.get(tenantCollection(profile.tenantId, 'sales_statistics_products')
-        .where('storeId', '==', id).where('month', '==', summary.data().month).limit(PRODUCT_BUCKETS))));
+        .where('storeId', '==', id).where('month', '==', summary.data().month).limit(513))));
       for (const page of pages) {
+        if (page.size > 512 || documentsRead + page.size > 5000) throw new HttpsError('resource-exhausted', 'Selecciona menos tiendas o un periodo más corto para este volumen de productos.');
         documentsRead += Math.max(1, page.size);
         for (const document of page.docs) {
           for (const [productId, value] of Object.entries(document.data().products as Record<string, ProductStatistics>)) {
@@ -84,7 +103,7 @@ export const getSalesStatistics = onCall(async (request) => {
     const rounding = (n: number) => Math.round(n * 100) / 100;
     const sold = [...products.values()].filter((item) => item.tickets > 0)
       .map((item) => ({ ...item, revenue: rounding(item.revenue), units: Math.round(item.units * 1000) / 1000 }));
-    const sort = (a: typeof sold[number], b: typeof sold[number]) => b.tickets - a.tickets || b.revenue - a.revenue || a.productId.localeCompare(b.productId);
+    const sort = (a: typeof sold[number], b: typeof sold[number]) => b.units - a.units || b.revenue - a.revenue || a.productId.localeCompare(b.productId);
     const coverage = await tx.get(tenantDoc(profile.tenantId, 'meta', 'statistics'));
     return { start, end, revenue: rounding(total.revenue), tickets: total.tickets, averageTicket: total.tickets ? rounding(total.revenue / total.tickets) : 0,
       hourly: total.hourly, payments: Object.fromEntries(Object.entries(total.payments).map(([method, amount]) => [method, rounding(amount)])),
@@ -104,9 +123,16 @@ export const getSalesStatistics = onCall(async (request) => {
     if (['4', '14'].includes(code)) throw new HttpsError('unavailable', 'Firebase no respondió a tiempo. Vuelve a pulsar Actualizar.');
     throw new HttpsError('internal', 'No se pudieron cargar las estadísticas. Intenta actualizar nuevamente.');
   });
+  pendingQueries.set(cacheKey, promise);
+  try {
+    const result = await promise;
+    if (resultCache.size >= 60) resultCache.delete(resultCache.keys().next().value!);
+    resultCache.set(cacheKey, { result, expiresAt: Date.now() + (end === limaDay(Date.now()) ? 15000 : 60000) });
+    return result;
+  } finally { pendingQueries.delete(cacheKey); }
 });
 
-export const backfillSalesStatistics = onCall({ timeoutSeconds: 120 }, async (request) => {
+export const backfillSalesStatistics = onCall({ ...appCheckOptions, timeoutSeconds: 120 }, async (request) => {
   const profile = await requireAdmin(request);
   const stateRef = tenantDoc(profile.tenantId, 'meta', 'statistics');
   const leaseId = randomUUID();
@@ -128,9 +154,9 @@ export const backfillSalesStatistics = onCall({ timeoutSeconds: 120 }, async (re
       const added = await db.runTransaction(async (tx) => {
         const snapshot = await tx.get(document.ref);
         const sale = snapshot.data();
-        if (!sale || sale.statisticsVersion === 1 || sale.status !== 'activa') return false;
+        if (!sale || sale.statisticsVersion === 1 || sale.statisticsVersion === 2 || sale.status !== 'activa') return false;
         await updateSalesStatistics(tx, profile.tenantId, sale, 1);
-        tx.update(document.ref, { statisticsVersion: 1 });
+        tx.update(document.ref, { statisticsVersion: 2, statisticsApplied: true, statisticsPending: false });
         return true;
       });
       if (added) imported++;

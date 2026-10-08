@@ -62,8 +62,6 @@ final class SunatRetryService
             if (! $document->next_retry_at || $document->next_retry_at->isFuture()) {
                 return null;
             }
-            $document->next_retry_at = now()->addMinutes(5);
-            $document->save();
 
             return $document;
         });

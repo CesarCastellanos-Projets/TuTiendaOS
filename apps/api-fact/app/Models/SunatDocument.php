@@ -16,7 +16,7 @@ final class SunatDocument extends Model
         'cliente_nombre', 'total', 'estado_sunat', 'mensaje_sunat',
         'xml_path', 'cdr_path', 'pdf_path', 'payload', 'payload_hash',
         'ticket', 'cdr_code', 'attempts', 'last_attempt_at', 'next_retry_at',
-        'sent_at', 'processed_at',
+        'sent_at', 'processed_at', 'send_lease_until',
     ];
 
     protected static function booted(): void
@@ -36,6 +36,7 @@ final class SunatDocument extends Model
         'attempts' => 'integer',
         'last_attempt_at' => 'immutable_datetime',
         'next_retry_at' => 'immutable_datetime',
+        'send_lease_until' => 'immutable_datetime',
         'sent_at' => 'immutable_datetime',
         'processed_at' => 'immutable_datetime',
     ];

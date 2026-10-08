@@ -1,15 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   doc,
   getDoc,
-  limit,
   orderBy,
   query,
   setDoc,
   where
 } from 'firebase/firestore';
-import { onSnapshot } from '../../lib/firestore-listener';
+import { usePagedQuery } from '../../hooks/usePagedQuery';
+import { Pagination } from '../../components/ui/Pagination';
 import { storage } from '../../lib/firebase';
+import { optimizeIncidentPhoto } from '../../lib/incident-photo';
 import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
 import { deleteObject, ref, uploadBytes } from 'firebase/storage';
 import { useAuth } from '../../lib/auth';
@@ -30,28 +31,14 @@ const TYPES: { value: IncidentType; label: string }[] = [
 export function IncidentsWorkerPage() {
   const profile = useAuth((s) => s.profile)!;
   const uid = useAuth((s) => s.user?.uid);
-  const [incidents, setIncidents] = useState<(Incident & { id: string })[]>([]);
   const [creating, setCreating] = useState(false);
   const [mineOnly, setMineOnly] = useState(false);
 
-  useEffect(() => {
-    if (!profile.storeId) return;
-    return onSnapshot(
-      query(
-        tenantCollection('incidents'),
-        where('storeId', '==', profile.storeId),
-        orderBy('createdAt', 'desc'),
-        limit(50)
-      ),
-      (s) =>
-        setIncidents(
-          s.docs
-            .map((d) => ({ ...(d.data() as Incident), id: d.id }))
-            .filter((i) => !mineOnly || i.createdBy === uid)
-        )
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile.storeId, mineOnly]);
+  const incidentQuery = useMemo(() => profile.storeId ? query(tenantCollection('incidents'),
+    where('storeId', '==', profile.storeId), ...(mineOnly ? [where('createdBy', '==', uid)] : []), orderBy('createdAt', 'desc')) : null,
+  [profile.storeId, mineOnly, uid]);
+  const incidentPage = usePagedQuery<Incident & { id: string }>(incidentQuery);
+  const incidents = incidentPage.rows;
 
   return (
     <div className="space-y-4">
@@ -67,6 +54,8 @@ export function IncidentsWorkerPage() {
         Solo las mías
       </label>
 
+      {incidentPage.error && <p role="alert" className="text-critical">{incidentPage.error}</p>}
+      <Pagination {...incidentPage} />
       {incidents.length === 0 ? (
         <EmptyState title="Sin incidencias" hint="Reporta productos dañados, vencidos o sin precio." />
       ) : (
@@ -131,8 +120,9 @@ export function IncidentFormModal({
     let saved = false;
     try {
       if (file) {
+        const image = await optimizeIncidentPhoto(file);
         photoPath = `tenants/${profile.tenantId}/incidents/${profile.storeId}/${user.uid}/${crypto.randomUUID()}`;
-        await uploadBytes(ref(storage, photoPath), file, { contentType: file.type });
+        await uploadBytes(ref(storage, photoPath), image, { contentType: image.type });
       }
       await setDoc(doc(tenantCollection('incidents')), {
         tenantId: profile.tenantId,

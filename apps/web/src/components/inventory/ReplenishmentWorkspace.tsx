@@ -94,18 +94,18 @@ export function ReplenishmentWorkspace() {
                     {fmtDateTime(r.createdAt)} · por {r.createdByName}
                   </p>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <button className="btn-primary !min-h-9 !px-3 !py-1.5 text-sm" disabled={busyId !== null} onClick={() => void attend(r)}>
-                    <CheckCircle2 size={15} /> Atender con transferencia
+                    <CheckCircle2 size={15} /> Crear transferencia
                   </button>
                   <button className="btn-danger !min-h-9 !px-3 !py-1.5 text-sm" disabled={busyId !== null} onClick={() => void reject(r)}>
                     <XCircle size={15} /> Rechazar
                   </button>
                 </div>
               </div>
-              <ul className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
+              <ul className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {r.items.map((i) => (
-                  <li key={`${i.productId}:${i.presentationId ?? 'base'}`} className="truncate text-xs text-slate-500">
+                  <li key={`${i.productId}:${i.presentationId ?? 'base'}`} className="rounded-lg bg-slate-50 p-3 text-sm text-slate-600">
                     {i.name} ({i.presentationLabel ?? 'Unidad base'}) · hay <b className="text-slate-900">{i.currentQty}</b> → pide <b className="text-slate-900">{i.requestedQty}</b>
                   </li>
                 ))}

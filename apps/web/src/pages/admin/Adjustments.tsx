@@ -68,10 +68,10 @@ export function AdjustmentsPage() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="adjustments-workspace space-y-5">
       <h1 className="font-display text-2xl uppercase tracking-wide">Ajustes de inventario</h1>
 
-      <div className="card max-w-2xl space-y-4 p-4">
+      <div className="card adjustment-editor space-y-5 p-5">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <label className="label">Ubicación *</label>
@@ -107,7 +107,7 @@ export function AdjustmentsPage() {
         </button>
       </div>
 
-      <section className="card p-4">
+      <section className="card adjustment-history p-5">
         <h2 className="mb-3 font-semibold">Últimos ajustes y mermas</h2>
         {movements.length === 0 ? (
           <p className="text-sm text-slate-500">Sin movimientos aún.</p>
@@ -116,8 +116,8 @@ export function AdjustmentsPage() {
             {movements.map((m, i) => (
               <li key={i} className="flex items-center justify-between gap-3 py-2">
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-medium">{m.productName}</p>
-                  <p className="truncate text-xs text-slate-500">{m.reason ?? '—'} · {fmtDateTime(m.createdAt)}</p>
+                  <p className="text-sm font-medium">{m.productName}</p>
+                  <p className="text-xs text-slate-500">{m.reason ?? '—'} · {fmtDateTime(m.createdAt)}</p>
                 </div>
                 <span className={`badge ${m.qty < 0 ? 'bg-red-50 text-critical' : 'bg-emerald-50 text-success'}`}>
                   {m.qty > 0 ? '+' : ''}{m.qty}

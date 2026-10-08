@@ -1,3 +1,4 @@
+import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-check';
 import { initializeApp, type FirebaseApp } from 'firebase/app';
 import { connectAuthEmulator, getAuth } from 'firebase/auth';
 import { connectFirestoreEmulator, initializeFirestore } from 'firebase/firestore';
@@ -31,6 +32,10 @@ export const firebaseApp: FirebaseApp = initializeApp(
       }
 );
 
+if (firebaseReady && env.VITE_APP_CHECK_SITE_KEY && env.VITE_USE_EMULATORS !== '1') {
+  initializeAppCheck(firebaseApp, { provider: new ReCaptchaEnterpriseProvider(env.VITE_APP_CHECK_SITE_KEY), isTokenAutoRefreshEnabled: true });
+}
+
 export const auth = getAuth(firebaseApp);
 export const db = initializeFirestore(firebaseApp, {
   ignoreUndefinedProperties: true
@@ -47,7 +52,7 @@ if (env.DEV && env.VITE_USE_EMULATORS === '1' && firebaseReady) {
 
 /** Analytics opcional: chunk separado, silencioso si el navegador no lo soporta. */
 export async function initAnalytics(): Promise<void> {
-  if (!firebaseConfig.measurementId || typeof window === 'undefined') return;
+  if (!firebaseConfig.measurementId || typeof window === 'undefined' || env.VITE_USE_EMULATORS === '1') return;
   try {
     const { getAnalytics, isSupported } = await import('firebase/analytics');
     if (await isSupported()) getAnalytics(firebaseApp);

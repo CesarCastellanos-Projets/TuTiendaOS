@@ -1,0 +1,175 @@
+{
+  "date": "2026-10-08",
+  "project": "demo-denzoz-ops",
+  "environment": "Emuladores locales; sin escrituras de producción",
+  "existingJavascriptTests": 48,
+  "phpTests": 15,
+  "phpAssertions": 59,
+  "targetedProbes": [
+    {
+      "name": "Repetir transferencia vuelve a descontar",
+      "status": "confirmed",
+      "evidence": {
+        "first": "6PAHHgGWOPnEicckq5Qp",
+        "second": "LEQc7R03iHyhixhkgKXg",
+        "remaining": 92
+      }
+    },
+    {
+      "name": "Destino almacén sin receptor autorizado",
+      "status": "confirmed",
+      "evidence": {
+        "admin": "PERMISSION_DENIED",
+        "pos": "FAILED_PRECONDITION"
+      }
+    },
+    {
+      "name": "Cambiar UN a KG con stock existente se acepta",
+      "status": "confirmed",
+      "evidence": {
+        "originalUnit": "UN",
+        "newUnit": "KG",
+        "quantity": 100
+      }
+    },
+    {
+      "name": "Habilitar apertura reinterpreta cajas sin movimiento",
+      "status": "confirmed",
+      "evidence": {
+        "looseBefore": 0,
+        "looseAfter": 24,
+        "newMovements": 0
+      }
+    },
+    {
+      "name": "Pago mixto 15 digital y 20 efectivo para total30",
+      "status": "confirmed",
+      "evidence": {
+        "total": 30,
+        "change": 5,
+        "paid": 35
+      }
+    },
+    {
+      "name": "Servidor rechaza media unidad contable",
+      "status": "confirmed",
+      "evidence": {
+        "status": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "name": "Cotización no reserva stock y venta no la procesa",
+      "status": "confirmed",
+      "evidence": {
+        "before": 99,
+        "after": 98,
+        "quotationState": "pendiente"
+      }
+    },
+    {
+      "name": "Permiso temporal de trabajador se revoca en servidor",
+      "status": "confirmed",
+      "evidence": {
+        "granted": "accepted",
+        "sameRequest": "idempotent",
+        "revoked": "denied"
+      }
+    },
+    {
+      "name": "Estadísticas de hoy reconocen total y pagos mixtos",
+      "status": "confirmed",
+      "evidence": {
+        "revenue": 60,
+        "tickets": 2,
+        "payments": {
+          "plin": 30,
+          "efectivo": 30
+        },
+        "documentsRead": 4
+      }
+    },
+    {
+      "name": "Listener limit1 no detecta actualización de otro stock empatado",
+      "status": "confirmed",
+      "evidence": {
+        "watched": "B",
+        "modified": "A",
+        "notificationCount": 0
+      }
+    }
+  ],
+  "cloudErrors": {
+    "entries": [
+      {
+        "time": "2026-10-04T01:46:31.343215Z",
+        "service": "getsalesstatistics",
+        "category": "index/precondition"
+      },
+      {
+        "time": "2026-10-04T01:46:31.132267Z",
+        "service": "getsalesstatistics",
+        "category": "other"
+      },
+      {
+        "time": "2026-10-04T01:44:36.85302Z",
+        "service": "getsalesstatistics",
+        "category": "index/precondition"
+      },
+      {
+        "time": "2026-10-04T01:44:35.545559Z",
+        "service": "getsalesstatistics",
+        "category": "other"
+      },
+      {
+        "time": "2026-10-01T02:34:03.507224Z",
+        "service": "getcashsessionsummary",
+        "category": "index/precondition"
+      },
+      {
+        "time": "2026-10-01T02:34:02.479644Z",
+        "service": "getcashsessionsummary",
+        "category": "other"
+      },
+      {
+        "time": "2026-10-01T02:09:10.166372Z",
+        "service": "getcashsessionsummary",
+        "category": "index/precondition"
+      },
+      {
+        "time": "2026-10-01T02:09:09.307242Z",
+        "service": "getcashsessionsummary",
+        "category": "other"
+      },
+      {
+        "time": "2026-10-01T01:53:13.890312Z",
+        "service": "getcashsessionsummary",
+        "category": "index/precondition"
+      },
+      {
+        "time": "2026-10-01T01:53:12.956538Z",
+        "service": "getcashsessionsummary",
+        "category": "other"
+      }
+    ],
+    "more": false
+  },
+  "dependencyAudit": {
+    "functions": {
+      "info": 0,
+      "low": 0,
+      "moderate": 10,
+      "high": 3,
+      "critical": 1,
+      "total": 14
+    },
+    "web": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 4,
+      "critical": 0,
+      "total": 4
+    },
+    "composer": "6 entradas; no equivalen a 6 fallos distintos explotables"
+  }
+}

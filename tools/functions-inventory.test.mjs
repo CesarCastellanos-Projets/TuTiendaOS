@@ -1,4 +1,4 @@
-import test, { before } from 'node:test';
+import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
@@ -10,6 +10,7 @@ if (!['127.0.0.1:8080', 'localhost:8080'].includes(process.env.FIRESTORE_EMULATO
 const app = initializeApp({ projectId }, `inventory-${Date.now()}`);
 const db = getFirestore(app);
 const auth = getAuth(app);
+after(async () => { await db.terminate(); });
 
 before(async () => {
   const authReset = await fetch(`http://127.0.0.1:9099/emulator/v1/projects/${projectId}/accounts`, { method: 'DELETE' });
@@ -44,6 +45,7 @@ async function signInIdentity(email) {
 }
 
 async function callFunction(name, data, token) {
+  if (['createInventoryTransfer', 'adjustInventory', 'recordStockIngress', 'createQuotationRecord', 'createReplenishmentRecord', 'saveLocation', 'saveCatalogProduct'].includes(name) && !data.requestId) data = { ...data, requestId: crypto.randomUUID() };
   const response = await fetch(
     `http://127.0.0.1:5001/${projectId}/us-central1/${name}`,
     {
@@ -195,10 +197,10 @@ test('POS multi-tienda selecciona local, vende fracciones y el servidor controla
   const selected = await callFunction('selectPosStore', { storeId: 'S1' }, refreshedMultiStorePos.idToken);
   assert.equal(selected.ok, true);
   assert.equal(selected.body.result.storeId, 'S1');
-  assert.equal((await db.doc(`users/${multiStorePos.localId}`).get()).data().storeId, 'S1');
+  assert.equal((await db.doc(`users/${multiStorePos.localId}`).get()).data().storeId, null);
 
   const regularCash = await callFunction('openCashSession', { openingAmount: 50 }, regularPos.idToken);
-  const multiCash = await callFunction('openCashSession', { openingAmount: 20 }, refreshedMultiStorePos.idToken);
+  const multiCash = await callFunction('openCashSession', { openingAmount: 20, storeId: 'S1' }, refreshedMultiStorePos.idToken);
   assert.equal(regularCash.ok, true); assert.equal(multiCash.ok, true);
   const salePayload = {
     requestId: crypto.randomUUID(), cashSessionId: regularCash.body.result.id,
@@ -213,7 +215,9 @@ test('POS multi-tienda selecciona local, vende fracciones y el servidor controla
     type: 'boleta'
   };
 
-  const regularSale = await callFunction('createSaleRecord', salePayload, regularPos.idToken);
+  const stalePrice = await callFunction('createSaleRecord', salePayload, regularPos.idToken);
+  assert.equal(stalePrice.ok, false);
+  const regularSale = await callFunction('createSaleRecord', { ...salePayload, requestId: crypto.randomUUID(), items: [{ ...salePayload.items[0], unitPrice: 10 }] }, regularPos.idToken);
   assert.equal(regularSale.ok, true);
   assert.equal(regularSale.body.result.sale.items[0].unitPrice, 10);
   assert.equal(regularSale.body.result.sale.items[0].total, 5);
@@ -471,7 +475,7 @@ test('stock común: hojas, precios por presentación, cotizaciones, reposición 
   assert.equal(await balance(), 950);
   assert.equal((await sale([{ productId: 'P1', presentationId: 'millar', qty: 1 }], 100)).ok, false);
   assert.equal(await balance(), 950);
-  const half = await sale([{ productId: 'P1', presentationId: 'millar', qty: 0.5, unitPrice: 1 }], 50);
+  const half = await sale([{ productId: 'P1', presentationId: 'millar', qty: 0.5, unitPrice: 100 }], 50);
   assert.equal(half.ok, true, JSON.stringify(half.body));
   assert.equal(half.body.result.sale.total, 50);
   assert.equal(half.body.result.sale.items[0].baseUnitsSold, 500);

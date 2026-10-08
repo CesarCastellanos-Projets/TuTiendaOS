@@ -1,67 +1,46 @@
-import { useEffect, useState } from 'react';
-import { query, updateDoc, where, limit } from 'firebase/firestore';
-import { onSnapshot } from '../../lib/firestore-listener';
+import { useEffect, useMemo, useState } from 'react';
+import { query, orderBy, where } from 'firebase/firestore';
+import { durableCommand } from '../../lib/durable-command';
+import { usePagedQuery } from '../../hooks/usePagedQuery';
+import { Pagination } from '../../components/ui/Pagination';
 import { Printer, X, Calendar, CreditCard, ChevronRight } from 'lucide-react';
-import { tenantCollection, tenantDoc } from '../../lib/tenant-firestore';
+import { tenantCollection } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import { useCompany } from '../../hooks/useCompany';
 import type { Sale, SunatStatus } from '../../types';
 import { fmtDateTime, money } from '../../lib/utils';
 import { printTicket, ticketHtml } from '../../lib/print';
 import { PAYMENT_LABELS, salePayments } from '../../lib/payments';
+import { Modal } from '../../components/ui/Modal';
 import { EmptyState, FlashBar, useFlash } from '../../components/ui/Feedback';
 
 export function MySales() {
   const user = useAuth((s) => s.user);
   const profile = useAuth((s) => s.profile);
   const company = useCompany();
-  const [sales, setSales] = useState<(Sale & { id: string })[]>([]);
+  const source = useMemo(() => user && profile?.storeId ? query(tenantCollection('sales'),
+    where('userId', '==', user.uid), where('storeId', '==', profile.storeId), orderBy('createdAt', 'desc')) : null, [user, profile?.storeId]);
+  const pagination = usePagedQuery<Sale & { id: string }>(source);
+  const sales = pagination.rows;
   const [requesting, setRequesting] = useState<(Sale & { id: string }) | null>(null);
   const [viewingSale, setViewingSale] = useState<(Sale & { id: string }) | null>(null);
   const { msg, flash } = useFlash();
 
-  useEffect(() => {
-    if (!user || !profile?.storeId) return;
-    return onSnapshot(
-      query(
-        tenantCollection('sales'),
-        where('userId', '==', user.uid),
-        where('storeId', '==', profile.storeId),
-        limit(50)
-      ),
-      (snap) => {
-        const list = snap.docs.map((d) => ({ ...(d.data() as Sale), id: d.id }));
-        list.sort((a, b) => b.createdAt - a.createdAt);
-        setSales(list.slice(0, 30));
-      },
-      (err) => {
-        console.error('Error al escuchar ventas de caja:', err);
-      }
-    );
-  }, [profile?.storeId, user]);
-
   const requestAnulation = async (reason: string) => {
     if (!user || !profile || !requesting || !reason.trim()) return;
     try {
-      await updateDoc(tenantDoc('sales', requesting.id), {
-        anulationRequest: {
-          reason: reason.trim(),
-          byUserId: user.uid,
-          byUserName: profile.displayName,
-          requestedAt: Date.now()
-        },
-        anulationStatus: 'solicitada'
-      });
+      await durableCommand('requestSaleAnulation', { saleId: requesting.id, storeId: profile.storeId, reason: reason.trim() });
       flash(`Anulación de ${requesting.code} enviada al administrador`);
       setRequesting(null);
-    } catch {
-      flash('Error al solicitar la anulación');
+    } catch (cause) {
+      flash(cause instanceof Error ? cause.message : 'Error al solicitar la anulación');
     }
   };
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-4 p-4">
       <h1 className="font-display text-2xl uppercase tracking-wide">Mis ventas</h1>
+      {pagination.error && <p role="alert">{pagination.error}</p>}
 
       {sales.length === 0 ? (
         <EmptyState title="Aún no vendes nada" hint="Tus comprobantes aparecerán aquí." />
@@ -70,8 +49,10 @@ export function MySales() {
           {sales.map((s) => (
             <div
               key={s.id}
+              role="button" tabIndex={0} aria-label={`Ver venta ${s.code}`}
+              onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); setViewingSale(s); } }}
               onClick={() => setViewingSale(s)}
-              className={`card flex flex-wrap items-center gap-3 p-3.5 hover:border-primary/40 hover:bg-indigo-50/20 transition-all cursor-pointer group shadow-xs ${s.status === 'anulada' ? 'opacity-50' : ''}`}
+              className={`card flex flex-wrap items-center gap-3 p-3.5 hover:border-primary/40 hover:bg-brand-50/20 transition-colors cursor-pointer group shadow-xs ${s.status === 'anulada' ? 'opacity-50' : ''}`}
             >
               <div className="min-w-0 flex-1">
                 <p className="font-mono text-sm font-semibold group-hover:text-primary transition-colors">
@@ -94,7 +75,7 @@ export function MySales() {
                   <Printer size={13} className="mr-1 inline" />
                   Reimprimir
                 </button>
-                {s.status === 'activa' && !s.anulationRequest && s.total >= (company?.umbralConsolidacion ?? 5) && (
+                {s.status === 'activa' && !s.anulationRequest && s.type !== 'nota' && (
                   <button
                     className="btn-danger !min-h-8 !px-2.5 !py-1 text-xs"
                     onClick={() => setRequesting(s)}
@@ -102,13 +83,14 @@ export function MySales() {
                     Anular
                   </button>
                 )}
-                <ChevronRight size={16} className="text-slate-300 group-hover:text-primary group-hover:translate-x-0.5 transition-all ml-1" />
+                <ChevronRight size={16} className="text-slate-300 group-hover:text-primary group-hover:translate-x-0.5 transition-colors ml-1" />
               </div>
             </div>
           ))}
         </div>
       )}
 
+      <Pagination {...pagination} />
       {sales.some((s) => s.anulationRequest) && (
         <p className="text-center text-xs text-slate-500">
           Hay solicitudes de anulación esperando autorización del administrador.
@@ -155,9 +137,8 @@ function ModalReason({
   }, [open]);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 grid place-items-end bg-slate-900/50 sm:place-items-center">
-      <div className="card w-full rounded-b-none p-4 sm:max-w-sm sm:rounded-xl">
-        <p className="font-semibold">Solicitar anulación de {code}</p>
+    <Modal open={open} title={`Solicitar anulación de ${code}`} onClose={onCancel}>
+      <div>
         <textarea
           rows={3}
           value={reason}
@@ -172,7 +153,7 @@ function ModalReason({
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -211,30 +192,22 @@ function SaleDetailModal({
       : 'Boleta de Venta';
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-4 animate-in fade-in"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <article className="w-full max-w-lg overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl animate-in zoom-in-95 flex flex-col max-h-[90vh]">
-        {/* Barra superior decorativa */}
-        <div className={`h-1.5 w-full ${isAnulada ? 'bg-red-500' : 'bg-linear-to-r from-primary to-indigo-500'}`} />
-
+    <Modal open title="Detalle de venta" onClose={onClose} wide>
+      <article>
         {/* Cabecera */}
-        <div className="p-5 border-b border-slate-100 flex items-start justify-between gap-3 bg-slate-50/60">
+        <div className="pb-4 border-b border-slate-100 flex items-start justify-between gap-3 bg-slate-50/60">
           <div>
             <div className="flex items-center gap-2">
-              <span className="badge bg-indigo-50 text-primary font-extrabold text-[11px]">
+              <span className="badge bg-brand-50 text-primary font-extrabold text-xs">
                 {typeLabel}
               </span>
               {isAnulada && (
-                <span className="badge bg-red-100 text-red-700 font-extrabold text-[11px]">
+                <span className="badge bg-red-100 text-red-700 font-extrabold text-xs">
                   ANULADA
                 </span>
               )}
               {sale.consolidated && (
-                <span className="badge bg-slate-100 text-slate-600 text-[10px]">
+                <span className="badge bg-slate-100 text-slate-600 text-xs">
                   Consolidada
                 </span>
               )}
@@ -261,7 +234,7 @@ function SaleDetailModal({
           {/* Tarjeta de Datos de Emisión */}
           <div className="grid grid-cols-2 gap-2 text-xs rounded-2xl border border-slate-200/80 bg-slate-50/70 p-3.5">
             <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
                 Cajero / Turno
               </span>
               <span className="font-semibold text-slate-800 block mt-0.5">
@@ -269,7 +242,7 @@ function SaleDetailModal({
               </span>
             </div>
             <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
                 Tienda
               </span>
               <span className="font-semibold text-slate-800 block mt-0.5">
@@ -277,7 +250,7 @@ function SaleDetailModal({
               </span>
             </div>
             <div className="col-span-2 pt-2 border-t border-slate-200/60 mt-1">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
                 Cliente
               </span>
               <span className="font-semibold text-slate-800 block mt-0.5">
@@ -298,7 +271,7 @@ function SaleDetailModal({
           {/* Método de Pago y SUNAT */}
           <div className="grid grid-cols-2 gap-2">
             <div className="rounded-2xl border border-slate-200/80 bg-white p-3 shadow-xs">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
                 Método de Pago
               </span>
               <p className="font-bold text-sm text-slate-800 uppercase mt-0.5 flex items-center gap-1.5">
@@ -307,12 +280,12 @@ function SaleDetailModal({
               </p>
               {salePayments(sale).map((part) => <p key={part.method} className="mt-1 text-xs text-slate-600">{PAYMENT_LABELS[part.method]}: {money(part.amount)}{part.operationNumber ? ` · Op. ${part.operationNumber}` : ''}</p>)}
               {sale.bankName && (
-                <span className="text-[11px] text-slate-500 block mt-0.5">
+                <span className="text-xs text-slate-500 block mt-0.5">
                   Banco: {sale.bankName}
                 </span>
               )}
               {sale.paidAmount > 0 && (
-                <div className="text-[11px] text-slate-500 mt-1 pt-1 border-t border-slate-100 flex justify-between">
+                <div className="text-xs text-slate-500 mt-1 pt-1 border-t border-slate-100 flex justify-between">
                   <span>Pagó: {money(sale.paidAmount)}</span>
                   {sale.changeAmount > 0 && <span>Vuelto: {money(sale.changeAmount)}</span>}
                 </div>
@@ -321,7 +294,7 @@ function SaleDetailModal({
 
             <div className="rounded-2xl border border-slate-200/80 bg-white p-3 shadow-xs flex flex-col justify-between">
               <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
                   Estado SUNAT
                 </span>
                 <div className="mt-1">
@@ -329,7 +302,7 @@ function SaleDetailModal({
                 </div>
               </div>
               {sale.sunatMessage && (
-                <p className="text-[10px] text-slate-500 truncate mt-1" title={sale.sunatMessage}>
+                <p className="text-xs text-slate-500 truncate mt-1" title={sale.sunatMessage}>
                   {sale.sunatMessage}
                 </p>
               )}
@@ -345,7 +318,7 @@ function SaleDetailModal({
             </div>
             <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-xs">
               <table className="w-full text-xs">
-                <thead className="bg-slate-50 border-b border-slate-100 text-slate-400 text-[10px] font-bold uppercase">
+                <thead className="bg-slate-50 border-b border-slate-100 text-slate-400 text-xs font-bold uppercase">
                   <tr>
                     <th className="py-2.5 px-3 text-left">Ítem</th>
                     <th className="py-2.5 px-2 text-center">Cant.</th>
@@ -359,7 +332,7 @@ function SaleDetailModal({
                       <td className="py-2.5 px-3">
                         <span className="font-bold text-slate-800 block">{it.name}</span>
                         {it.presentationUnit && (
-                          <span className="text-[10px] text-slate-400 block">
+                          <span className="text-xs text-slate-400 block">
                             Presentación: {it.presentationUnit}
                           </span>
                         )}
@@ -410,7 +383,7 @@ function SaleDetailModal({
                       ? 'La nota de crédito requiere revisión'
                       : 'Solicitud de anulación pendiente'}
               </span>
-              <p className="text-[11px] mt-0.5 text-amber-800">
+              <p className="text-xs mt-0.5 text-amber-800">
                 Motivo: “{sale.anulationRequest.reason}”
               </p>
             </div>
@@ -427,7 +400,7 @@ function SaleDetailModal({
           </button>
 
           <div className="flex items-center gap-2">
-            {!isAnulada && !sale.anulationRequest && sale.total >= (company?.umbralConsolidacion ?? 5) && (
+            {!isAnulada && !sale.anulationRequest && sale.type !== 'nota' && (
               <button
                 className="btn-danger !py-2.5 !px-3 text-xs font-bold"
                 onClick={() => {
@@ -447,6 +420,6 @@ function SaleDetailModal({
           </div>
         </div>
       </article>
-    </div>
+    </Modal>
   );
 }

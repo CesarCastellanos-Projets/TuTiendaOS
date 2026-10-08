@@ -1,3 +1,4 @@
+import { appCheckOptions } from './app-check';
 import { createHash, randomUUID } from 'node:crypto';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
@@ -52,7 +53,7 @@ async function invalidateNotifications(tenantId: string, eventId: string, versio
   }
 }
 
-export const setCalendarPermission = onCall(async (request) => {
+export const setCalendarPermission = onCall(appCheckOptions, async (request) => {
   const profile = await requireAdmin(request);
   const uid = identifier(request.data?.uid);
   if (typeof request.data?.enabled !== 'boolean')
@@ -67,7 +68,7 @@ export const setCalendarPermission = onCall(async (request) => {
   return { enabled: request.data.enabled };
 });
 
-export const saveCalendarEvent = onCall(async (request) => {
+export const saveCalendarEvent = onCall(appCheckOptions, async (request) => {
   const profile = await requireCalendar(request);
   const id = identifier(request.data?.id);
   const version = request.data?.version;
@@ -116,7 +117,7 @@ export const saveCalendarEvent = onCall(async (request) => {
   return { id, version: result };
 });
 
-export const completeCalendarEvent = onCall(async (request) => {
+export const completeCalendarEvent = onCall(appCheckOptions, async (request) => {
   const profile = await requireCalendar(request);
   if (!Number.isInteger(request.data?.version) || request.data.version < 1)
     throw new HttpsError('invalid-argument', 'Versión inválida.');
@@ -164,7 +165,7 @@ export const completeCalendarEvent = onCall(async (request) => {
   return { ok: true };
 });
 
-export const markCalendarNotification = onCall(async (request) => {
+export const markCalendarNotification = onCall(appCheckOptions, async (request) => {
   const profile = await requireCalendar(request);
   const ref = db.doc(
     `tenants/${profile.tenantId}/calendar_inboxes/${profile.uid}/notifications/${identifier(request.data?.id)}`
@@ -179,7 +180,7 @@ export const markCalendarNotification = onCall(async (request) => {
   return { ok: true };
 });
 
-export const registerCalendarDevice = onCall(async (request) => {
+export const registerCalendarDevice = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request, false);
   const replenishment = profile.role === 'admin' || (profile.role === 'pos' && profile.storeAccess === 'all');
   if (!profile.canManageCalendar && !replenishment) throw new HttpsError('permission-denied', 'Tu cuenta no puede recibir estas notificaciones.');
@@ -220,7 +221,7 @@ export const registerCalendarDevice = onCall(async (request) => {
   return { ok: true };
 });
 
-export const unregisterCalendarDevice = onCall(async (request) => {
+export const unregisterCalendarDevice = onCall(appCheckOptions, async (request) => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'Debes iniciar sesión.');
   const token = request.data?.token;
   if (typeof token !== 'string' || token.length > 4096)

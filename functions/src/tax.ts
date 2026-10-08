@@ -1,7 +1,8 @@
+import { appCheckOptions } from './app-check';
 import { defineSecret, defineString } from 'firebase-functions/params';
 import { createHash } from 'node:crypto';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
-import { onDocumentCreated } from 'firebase-functions/v2/firestore';
+import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { FieldValue } from 'firebase-admin/firestore';
 import { admin, db } from './firebase';
@@ -9,6 +10,7 @@ import { requireActiveProfile, requireAdmin } from './authz';
 import { applySaleStatusPatch } from './sale-status';
 import { buildFiscalInvoicePayload, FiscalPayloadError } from './fiscal';
 import { assertTenantId, tenantCollection, tenantDoc } from './tenant';
+import { roundRobin, workBudget } from './work-budget';
 
 const API_FACT_TOKEN = defineSecret('API_FACT_TOKEN');
 const API_FACT_URL = defineString('API_FACT_URL', {
@@ -33,6 +35,9 @@ async function taxRequest(
     throw new HttpsError('failed-precondition', 'El token del motor tributario no está configurado.');
   }
   const url = API_FACT_URL.value().replace(/\/$/, '');
+  if (process.env.FUNCTIONS_EMULATOR === 'true' && !/^http:\/\/(127\.0\.0\.1|localhost)(:|\/)/.test(url)) {
+    throw new HttpsError('unavailable', 'Las pruebas locales no envían documentos al motor tributario remoto.');
+  }
   let resolvedTenantId: string;
   try {
     resolvedTenantId = assertTenantId(tenantId);
@@ -56,6 +61,7 @@ async function taxRequest(
     throw new HttpsError('unavailable', 'El motor tributario no está disponible.');
   }
   const body = await response.json().catch(() => ({})) as TaxResponse;
+  if (!response.ok && response.status !== 401 && ['pendiente', 'procesando', 'rechazado', 'requiere_revision', 'error'].includes(String(body.status))) return body;
   if (!response.ok) {
     throw new HttpsError(
       response.status === 401 ? 'failed-precondition' : 'unavailable',
@@ -65,7 +71,7 @@ async function taxRequest(
   return body;
 }
 
-export const sendSaleToSunat = onCall({ secrets: [API_FACT_TOKEN] }, async (request) => {
+export const sendSaleToSunat = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN] }, async (request) => {
   const profile = await requireActiveProfile(request);
   const saleId = typeof request.data?.saleId === 'string' ? request.data.saleId : '';
   if (!saleId) throw new HttpsError('invalid-argument', 'Venta inválida.');
@@ -79,12 +85,20 @@ export const sendSaleToSunat = onCall({ secrets: [API_FACT_TOKEN] }, async (requ
 });
 
 export const sendNewSaleToSunat = onDocumentCreated(
-  { document: 'tenants/{tenantId}/sales/{saleId}', secrets: [API_FACT_TOKEN] },
+  { document: 'tenants/{tenantId}/sales/{saleId}', secrets: [API_FACT_TOKEN], retry: true },
   async (event) => {
     const saleId = event.params.saleId;
     const tenantId = event.params.tenantId;
     const sale = event.data?.data();
-    if (!saleId || sale?.type === 'nota' || sale?.consolidated === true) return;
+    if (!saleId || sale?.type === 'nota') return;
+    if (sale?.consolidated === true) {
+      const ref = tenantDoc(tenantId, 'sunat_summary_days', limaDate(Number(sale.createdAt)));
+      await db.runTransaction(async (tx) => {
+        await tx.get(ref);
+        tx.set(ref, { tenantId, day: ref.id, pending: true, lastSaleId: saleId });
+      });
+      return;
+    }
     try {
       await processSaleToSunat(tenantId, saleId);
     } catch (error) {
@@ -101,16 +115,19 @@ export const retryPendingSunatSales = onSchedule(
     schedule: 'every 10 minutes',
     timeZone: 'America/Lima',
     timeoutSeconds: 300,
+    maxInstances: 1,
     secrets: [API_FACT_TOKEN]
   },
   async () => {
+    const budget = workBudget(240000);
     const pending = await db.collectionGroup('sales')
       .where('consolidated', '==', false)
       .where('sunatStatus', 'in', ['no_enviado', 'pendiente'])
-      .limit(50)
+      .where('sunatNextRetryAt', '<=', Date.now()).orderBy('sunatNextRetryAt').limit(50)
       .get();
 
     for (let index = 0; index < pending.docs.length; index += 5) {
+      if (!budget.canStart()) break;
       const batch = pending.docs.slice(index, index + 5);
       const results = await Promise.allSettled(batch.map((sale) =>
         processSaleToSunat(String(sale.data().tenantId ?? ''), sale.id)
@@ -125,12 +142,14 @@ export const retryPendingSunatSales = onSchedule(
       });
     }
 
+    if (!budget.canStart()) return;
     const pendingCreditNotes = await db.collectionGroup('sales')
       .where('creditNoteStatus', '==', 'pendiente')
-      .orderBy('createdAt', 'asc')
+      .where('creditNoteNextRetryAt', '<=', Date.now()).orderBy('creditNoteNextRetryAt')
       .limit(20)
       .get();
     for (let index = 0; index < pendingCreditNotes.docs.length; index += 5) {
+      if (!budget.canStart()) break;
       const batch = pendingCreditNotes.docs.slice(index, index + 5);
       const results = await Promise.allSettled(batch.map((sale) =>
         processCreditNoteToSunat(String(sale.data().tenantId ?? ''), sale.id)
@@ -145,11 +164,44 @@ export const retryPendingSunatSales = onSchedule(
       });
     }
 
+    if (!budget.canStart()) return;
+    const summaryJobs = await db.collectionGroup('sunat_summary_jobs').where('state', '==', 'pendiente')
+      .where('nextAttemptAt', '<=', Date.now()).orderBy('nextAttemptAt').limit(10).get();
+    for (const job of summaryJobs.docs) {
+      if (!budget.canStart()) break;
+      await processDailySummary(String(job.data().tenantId), String(job.data().day)).catch((cause: unknown) => console.warn('Resumen pendiente de reintento', cause instanceof Error ? cause.message : 'error'));
+    }
+    if (!budget.canStart()) return;
+    const processingJobs = await db.collectionGroup('sunat_summary_jobs').where('state', '==', 'procesando')
+      .where('nextAttemptAt', '<=', Date.now()).orderBy('nextAttemptAt').limit(10).get();
+    for (const job of processingJobs.docs) {
+      if (!budget.canStart()) break;
+      const tenantId = String(job.data().tenantId);
+      try {
+        const result = await taxRequest(`/api/documents/${encodeURIComponent(job.id)}`, { method: 'GET' }, 15000, tenantId);
+        await applyMaintenanceResults(tenantId, [{ type: 'resumen', ref: job.id, status: result.status, message: result.message,
+          saleRefs: (job.data().payload?.boletas ?? []).map((receipt: { ref: string }) => receipt.ref) }]);
+      } catch (cause) { console.warn('Resultado de resumen pendiente de sincronizar', { ref: job.id, error: cause instanceof Error ? cause.message : 'error' }); }
+      await db.runTransaction(async (tx) => {
+        if ((await tx.get(job.ref)).data()?.state === 'procesando') tx.update(job.ref, { nextAttemptAt: Date.now() + 600000 });
+      });
+    }
+    if (!budget.canStart()) return;
+    const summaryDays = await db.collectionGroup('sunat_summary_days').where('pending', '==', true)
+      .where('day', '<', limaDate(Date.now())).orderBy('day').limit(10).get();
+    for (const day of summaryDays.docs) {
+      if (!budget.canStart()) break;
+      await processDailySummary(String(day.data().tenantId), day.id).catch((cause: unknown) => console.warn('Día tributario pendiente', cause instanceof Error ? cause.message : 'error'));
+    }
+    if (!budget.canStart()) return;
     const maintenanceConfig = await db.doc('system/sunatMaintenance').get();
     const tenantIds = Array.isArray(maintenanceConfig.data()?.tenantIds)
       ? maintenanceConfig.data()!.tenantIds.slice(0, 100)
       : [];
-    for (const rawTenantId of tenantIds) {
+    const turn = roundRobin(tenantIds, Number(maintenanceConfig.data()?.cursor ?? 0));
+    let processed = 0;
+    for (const rawTenantId of turn.values) {
+      if (!budget.canStart()) break;
       try {
         const tenantId = assertTenantId(rawTenantId);
         const maintenance = await taxRequest('/api/maintenance/retry-pending', {
@@ -163,7 +215,9 @@ export const retryPendingSunatSales = onSchedule(
           error: error instanceof Error ? error.message : 'error desconocido'
         });
       }
+      processed++;
     }
+    if (processed) await maintenanceConfig.ref.set({ cursor: (turn.start + processed) % tenantIds.length }, { merge: true });
   }
 );
 
@@ -178,14 +232,21 @@ async function processSaleToSunat(tenantId: string, saleId: string): Promise<Tax
     if (current.consolidated === true) {
       throw new HttpsError('failed-precondition', 'La venta se envía mediante el resumen diario.');
     }
-    if (current.sunatStatus === 'aceptado') return { alreadyAccepted: true };
+    if (['aceptado', 'observado'].includes(String(current.sunatStatus))) return { alreadyAccepted: true };
+    if (['rechazado', 'error'].includes(String(current.sunatStatus))) throw new HttpsError('failed-precondition', 'El comprobante requiere revisión manual.');
+    if (Number(current.sunatNextRetryAt ?? 0) > now) return { busy: true };
+    if (Number(current.sunatAttempts ?? 0) >= 6) {
+      tx.update(saleRef, { sunatStatus: 'error', sunatMessage: 'Reintentos agotados; requiere revisión manual.', sunatNextRetryAt: FieldValue.delete() });
+      return { busy: true };
+    }
     if (Number(current.sunatLeaseUntil ?? 0) > now) return { busy: true };
     tx.update(saleRef, {
       sunatStatus: 'pendiente',
       sunatMessage: null,
       sunatLeaseUntil: now + 60_000,
       sunatAttempts: Number(current.sunatAttempts ?? 0) + 1,
-      sunatLastAttemptAt: now
+      sunatLastAttemptAt: now,
+      sunatNextRetryAt: now + 60000
     });
     return current;
   });
@@ -211,11 +272,11 @@ async function processSaleToSunat(tenantId: string, saleId: string): Promise<Tax
       method: 'POST',
       body: JSON.stringify(payload)
     }, 15_000, tenantId);
-    const status = result.ok && ['aceptado', 'observado'].includes(String(result.status))
-      ? result.status
-      : 'rechazado';
+    const status = ['aceptado', 'observado', 'rechazado'].includes(String(result.status)) ? result.status
+      : ['error', 'requiere_revision'].includes(String(result.status)) ? 'error' : 'pendiente';
     await saleRef.update({
       sunatStatus: status,
+      sunatNextRetryAt: status === 'pendiente' ? Date.now() + creditNoteRetryDelayMs(Number(sale.sunatAttempts ?? 0) + 1) : FieldValue.delete(),
       sunatMessage: String(result.message ?? 'Respuesta recibida de SUNAT'),
       sunatLeaseUntil: FieldValue.delete()
     });
@@ -223,14 +284,15 @@ async function processSaleToSunat(tenantId: string, saleId: string): Promise<Tax
   } catch (error) {
     await saleRef.update({
       sunatStatus: 'pendiente',
-      sunatMessage: 'Motor tributario no disponible; reintenta desde Administración',
+      sunatMessage: 'Motor tributario no disponible; se reintentará con espera progresiva.',
+      sunatNextRetryAt: Date.now() + creditNoteRetryDelayMs(Number(sale.sunatAttempts ?? 0) + 1),
       sunatLeaseUntil: FieldValue.delete()
     });
     throw error;
   }
 }
 
-export const sendCreditNoteToSunat = onCall({ secrets: [API_FACT_TOKEN] }, async (request) => {
+export const sendCreditNoteToSunat = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN] }, async (request) => {
   const profile = await requireAdmin(request);
   const saleId = typeof request.data?.saleId === 'string' ? request.data.saleId : '';
   if (!saleId) throw new HttpsError('invalid-argument', 'Venta inválida.');
@@ -251,6 +313,8 @@ async function processCreditNoteToSunat(tenantId: string, saleId: string): Promi
       reason: string;
       originalStatus: string;
       attempt: number;
+      original?: ReturnType<typeof buildFiscalInvoicePayload>;
+      originalSummaryRef?: string;
     };
   const claim = await db.runTransaction<CreditNoteClaim>(async (tx) => {
     const snapshot = await tx.get(saleRef);
@@ -288,7 +352,8 @@ async function processCreditNoteToSunat(tenantId: string, saleId: string): Promi
       creditNoteMessage: 'Nota de crédito en proceso',
       creditNoteLeaseUntil: now + 60_000,
       creditNoteAttempts: attempt,
-      creditNoteLastAttemptAt: now
+      creditNoteLastAttemptAt: now,
+      creditNoteNextRetryAt: now + 60000
     });
     return {
       kind: 'claimed',
@@ -296,7 +361,8 @@ async function processCreditNoteToSunat(tenantId: string, saleId: string): Promi
       correlativo: current.correlativo,
       reason: requestReason,
       originalStatus: typeof current.status === 'string' ? current.status : 'activa',
-      attempt
+      attempt,
+      ...(current.consolidated === true ? { original: buildFiscalInvoicePayload(saleId, current), originalSummaryRef: current.sunatSummaryRef } : {})
     };
   });
   if (claim.kind === 'accepted') return { ok: true, status: 'aceptado', message: 'La venta ya está anulada' };
@@ -312,7 +378,8 @@ async function processCreditNoteToSunat(tenantId: string, saleId: string): Promi
         ref: `nc-${saleId}`,
         serie: claim.serie,
         correlativo: claim.correlativo,
-        motivo: claim.reason
+        motivo: claim.reason,
+        ...(claim.original ? { original: claim.original, original_summary_ref: claim.originalSummaryRef } : {})
       })
     }, 15_000, tenantId);
     const accepted = result.ok === true && ['aceptado', 'observado'].includes(String(result.status));
@@ -328,7 +395,7 @@ async function processCreditNoteToSunat(tenantId: string, saleId: string): Promi
       creditNoteSerie: typeof document?.serie === 'string' ? document.serie : null,
       creditNoteCorrelativo: typeof document?.correlativo === 'number' ? document.correlativo : null,
       creditNoteLeaseUntil: FieldValue.delete(),
-      creditNoteNextRetryAt: FieldValue.delete()
+      creditNoteNextRetryAt: accepted || terminalError ? FieldValue.delete() : Date.now() + creditNoteRetryDelayMs(claim.attempt)
     });
     return { ok: accepted, status: result.status, message: result.message, document };
   } catch (error) {
@@ -348,67 +415,71 @@ function creditNoteRetryDelayMs(attempt: number): number {
   return minutes[Math.min(Math.max(attempt - 1, 0), minutes.length - 1)] * 60_000;
 }
 
-export const sendDailySummaryToSunat = onCall({ secrets: [API_FACT_TOKEN] }, async (request) => {
+export const sendDailySummaryToSunat = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN] }, async (request) => {
   const profile = await requireAdmin(request);
   const fecha = typeof request.data?.fecha === 'string' ? request.data.fecha : '';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
     throw new HttpsError('invalid-argument', 'El resumen diario es inválido.');
   }
-  const start = Date.parse(`${fecha}T00:00:00-05:00`);
-  if (!Number.isFinite(start)) throw new HttpsError('invalid-argument', 'La fecha del resumen no es válida.');
-  const end = start + 86_400_000;
-  const snapshot = await tenantCollection(profile.tenantId, 'sales')
-    .where('type', '==', 'boleta')
-    .where('consolidated', '==', true)
-    .where('status', '==', 'activa')
-    .where('createdAt', '>=', start)
-    .where('createdAt', '<', end)
-    .limit(201)
-    .get();
-  const receipts = snapshot.docs.filter((document) => !document.data().sunatSummaryRef);
-  if (receipts.length === 0 || receipts.length > 200) {
-    throw new HttpsError(
-      receipts.length > 200 ? 'resource-exhausted' : 'failed-precondition',
-      receipts.length > 200 ? 'Hay más de 200 boletas; divide el resumen.' : 'No hay boletas consolidadas para esa fecha.'
-    );
-  }
-  let boletas;
-  try {
-    boletas = receipts.map((document) => {
-      const fiscal = buildFiscalInvoicePayload(document.id, document.data());
-      return {
-        ref: document.id,
-        serie: fiscal.serie,
-        correlativo: fiscal.correlativo,
-        igv_rate: fiscal.igv_rate,
-        cliente: fiscal.cliente,
-        totals: fiscal.totals
-      };
-    });
-  } catch (error) {
-    throw new HttpsError(
-      'failed-precondition',
-      error instanceof FiscalPayloadError ? error.message : 'Una boleta contiene datos fiscales inválidos.'
-    );
-  }
-  const summaryRef = `resumen:${fecha}:${stableIdHash(receipts.map((receipt) => receipt.id))}`;
-  const result = await taxRequest('/api/summaries', {
-    method: 'POST',
-    body: JSON.stringify({ ref: summaryRef, fecha, boletas })
-  }, 15_000, profile.tenantId);
-  await registerSunatMaintenanceTenant(profile.tenantId);
-  const document = result.document as Record<string, unknown> | undefined;
-  const batch = db.batch();
-  receipts.forEach((receipt) => batch.update(receipt.ref, {
-    sunatStatus: 'pendiente',
-    sunatMessage: String(result.message ?? 'Resumen diario enviado'),
-    sunatSummaryRef: typeof document?.ref === 'string' ? document.ref : summaryRef
-  }));
-  await batch.commit();
-  return result;
+  return processDailySummary(profile.tenantId, fecha);
 });
 
-export const sendVoidedToSunat = onCall({ secrets: [API_FACT_TOKEN] }, async (request) => {
+export const sendCashCloseSummary = onDocumentUpdated({ document: 'tenants/{tenantId}/cash_sessions/{sessionId}', secrets: [API_FACT_TOKEN] }, async (event) => {
+  const before = event.data?.before.data(); const after = event.data?.after.data();
+  if (!after || before?.status === after.status || after.status !== 'cerrada') return;
+  await processDailySummary(event.params.tenantId, limaDate(Number(after.closedAt))).catch((cause: unknown) => console.warn('Resumen de cierre pendiente', cause instanceof Error ? cause.message : 'error'));
+});
+
+export async function processDailySummary(tenantId: string, fecha: string, send: typeof taxRequest = taxRequest): Promise<TaxResponse> {
+  const start = Date.parse(`${fecha}T00:00:00-05:00`);
+  if (!Number.isFinite(start) || limaDate(start) !== fecha || start > Date.now()) throw new HttpsError('invalid-argument', 'Fecha inválida.');
+  const claim = await db.runTransaction(async (tx) => {
+    await tx.get(tenantDoc(tenantId, 'sunat_summary_days', fecha));
+    const pending = await tx.get(tenantCollection(tenantId, 'sunat_summary_jobs').where('day', '==', fecha).where('state', '==', 'pendiente').orderBy('nextAttemptAt').limit(1));
+    if (!pending.empty) {
+      const job = pending.docs[0]; const data = job.data();
+      if (Number(data.leaseUntil ?? 0) > Date.now() || Number(data.nextAttemptAt) > Date.now()) return null;
+      tx.update(job.ref, { leaseUntil: Date.now() + 60000, attempts: Number(data.attempts ?? 0) + 1 });
+      return { ref: job.ref, payload: data.payload as Record<string, unknown>, attempts: Number(data.attempts ?? 0) + 1 };
+    }
+    const receipts = await tx.get(tenantCollection(tenantId, 'sales').where('type', '==', 'boleta')
+      .where('consolidated', '==', true).where('status', '==', 'activa').where('sunatSummaryRef', '==', null)
+      .where('createdAt', '>=', start).where('createdAt', '<', start + 86400000).orderBy('createdAt').limit(200));
+    if (receipts.empty) {
+      tx.set(tenantDoc(tenantId, 'sunat_summary_days', fecha), { tenantId, day: fecha, pending: false });
+      return null;
+    }
+    const boletas = receipts.docs.map((receipt) => {
+      const fiscal = buildFiscalInvoicePayload(receipt.id, receipt.data());
+      return { ref: receipt.id, serie: fiscal.serie, correlativo: fiscal.correlativo, igv_rate: fiscal.igv_rate, cliente: fiscal.cliente, totals: fiscal.totals };
+    });
+    const reference = `resumen:${fecha}:${stableIdHash(receipts.docs.map((receipt) => receipt.id))}`;
+    const ref = tenantDoc(tenantId, 'sunat_summary_jobs', reference);
+    const payload = { ref: reference, fecha, boletas };
+    tx.create(ref, { tenantId, day: fecha, state: 'pendiente', payload, nextAttemptAt: 0, leaseUntil: Date.now() + 60000, attempts: 1, createdAt: Date.now() });
+    receipts.docs.forEach((receipt) => tx.update(receipt.ref, { sunatSummaryRef: reference, sunatStatus: 'pendiente' }));
+    tx.set(tenantDoc(tenantId, 'sunat_summary_days', fecha), { tenantId, day: fecha, pending: true });
+    return { ref, payload, attempts: 1 };
+  });
+  if (!claim) return { ok: true, status: 'pendiente', message: 'No hay otro lote disponible o ya está en proceso.' };
+  try {
+    const result = await send('/api/summaries', { method: 'POST', body: JSON.stringify(claim.payload) }, 15000, tenantId);
+    await registerSunatMaintenanceTenant(tenantId);
+    const state = ['aceptado', 'observado', 'procesando'].includes(String(result.status)) ? result.status : ['rechazado', 'error', 'requiere_revision'].includes(String(result.status)) ? 'error' : 'pendiente';
+    if (['aceptado', 'observado', 'rechazado', 'requiere_revision'].includes(String(result.status))) {
+      const boletas = claim.payload.boletas as Array<{ ref: string }>;
+      await applyMaintenanceResults(tenantId, [{ type: 'resumen', ref: claim.payload.ref, status: result.status,
+        message: result.message, saleRefs: boletas.map((receipt) => receipt.ref) }]);
+    }
+    await claim.ref.update({ state, leaseUntil: 0, nextAttemptAt: state === 'pendiente' ? Date.now() + creditNoteRetryDelayMs(claim.attempts) : state === 'procesando' ? Date.now() + 600000 : 0, message: String(result.message ?? '') });
+    return result;
+  } catch (cause) {
+    await claim.ref.update({ state: claim.attempts >= 6 ? 'error' : 'pendiente', leaseUntil: 0, nextAttemptAt: Date.now() + creditNoteRetryDelayMs(claim.attempts), message: 'Motor tributario no disponible.' });
+    throw cause;
+  }
+}
+
+export const sendVoidedToSunat = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN] }, async (request) => {
   const profile = await requireAdmin(request);
   const requestedSaleIds: unknown[] = Array.isArray(request.data?.saleIds) ? request.data.saleIds : [];
   const saleIds = [...new Set(requestedSaleIds.filter(
@@ -514,6 +585,13 @@ async function applyMaintenanceResults(tenantId: string, value: unknown): Promis
     });
     await batch.commit();
   }
+  for (const raw of value) {
+    if (raw?.type !== 'resumen' || typeof raw.ref !== 'string' || !['aceptado', 'observado', 'rechazado', 'requiere_revision'].includes(raw.status)) continue;
+    const job = tenantDoc(tenantId, 'sunat_summary_jobs', raw.ref);
+    await db.runTransaction(async (tx) => {
+      if ((await tx.get(job)).exists) tx.update(job, { state: ['aceptado', 'observado'].includes(raw.status) ? raw.status : 'error', leaseUntil: 0, message: String(raw.message ?? '') });
+    });
+  }
 }
 
 function stableIdHash(ids: string[]): string {
@@ -525,18 +603,18 @@ function limaDate(timestamp: number): string {
   return new Date(timestamp - 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-export const taxHealthCheck = onCall({ secrets: [API_FACT_TOKEN], timeoutSeconds: 75 }, async (request) => {
+export const taxHealthCheck = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN], timeoutSeconds: 75 }, async (request) => {
   const profile = await requireAdmin(request);
   return taxRequest('/api/health-check', { method: 'POST' }, 60_000, profile.tenantId);
 });
 
-export const activateSunatDemoMode = onCall({ secrets: [API_FACT_TOKEN], timeoutSeconds: 75 }, async (request) => {
+export const activateSunatDemoMode = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN], timeoutSeconds: 75 }, async (request) => {
   const profile = await requireAdmin(request);
   await registerSunatMaintenanceTenant(profile.tenantId);
   return taxRequest('/api/config/demo-mode', { method: 'POST' }, 60_000, profile.tenantId);
 });
 
-export const saveSunatCredentials = onCall({ secrets: [API_FACT_TOKEN] }, async (request) => {
+export const saveSunatCredentials = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN] }, async (request) => {
   const profile = await requireAdmin(request);
   const data = request.data as Record<string, unknown>;
   const ruc = typeof data.ruc === 'string' ? data.ruc.trim() : '';
@@ -560,7 +638,7 @@ export const saveSunatCredentials = onCall({ secrets: [API_FACT_TOKEN] }, async 
   }, 15_000, profile.tenantId);
 });
 
-export const uploadSunatCertificate = onCall({ secrets: [API_FACT_TOKEN], timeoutSeconds: 60 }, async (request) => {
+export const uploadSunatCertificate = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN], timeoutSeconds: 60 }, async (request) => {
   const profile = await requireAdmin(request);
   const data = request.data as Record<string, unknown>;
   const base64 = typeof data.base64 === 'string' ? data.base64 : '';
