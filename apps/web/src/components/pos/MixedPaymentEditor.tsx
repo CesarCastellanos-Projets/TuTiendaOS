@@ -29,7 +29,7 @@ export function MixedPaymentEditor({ total, value, onChange, disabled }: {
       {part.method !== 'efectivo' && <label className="block"><span className="label">Número de operación (opcional)</span><input className="field !min-h-11" maxLength={80} value={part.operationNumber} disabled={disabled} onChange={(event) => update(index, { operationNumber: event.target.value })} /></label>}
     </div>)}
     {value.length < methods.length && <button type="button" className="btn-ghost text-xs" disabled={disabled} onClick={() => onChange([...value, newPaymentDraft(methods.find((method) => !value.some((part) => part.method === method))!)])}><Plus size={15} /> Agregar método</button>}
-    {summary.error ? <p role="alert" className="text-sm text-critical">{summary.error}</p> : <div aria-live="polite" className="flex flex-wrap justify-between gap-2 text-sm"><strong className={summary.remaining === 0 ? 'text-success' : 'text-amber-800'}>{summary.remaining === 0 ? 'Pago completo' : `Falta: ${money(summary.remaining)}`}</strong><strong>Vuelto: {money(summary.change)}</strong></div>}
+    {summary.error ? <p role="alert" className="text-sm text-critical">{summary.error}</p> : <div aria-live="polite" className="flex flex-wrap justify-between gap-2 text-sm"><strong className={summary.remaining === 0 ? 'text-success' : 'text-amber-800'}>{summary.remaining === 0 ? 'Pago completo' : `Falta: ${money(summary.remaining)}`}</strong><strong className="text-critical">Vuelto: {money(summary.change)}</strong></div>}
     <p className="text-xs text-slate-500">Ingresa el efectivo que entrega el cliente. Su excedente se calcula como vuelto. Verifica los pagos digitales antes de cobrar.</p>
   </section>;
 }

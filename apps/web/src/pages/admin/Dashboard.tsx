@@ -34,7 +34,9 @@ export function AdminDashboard() {
     const unSummary = onSnapshot(query(tenantCollection('sales_statistics'), where('month', '==', today.slice(0, 7)), limit(100)), (snapshot) => {
       setDays(snapshot.docs.map((doc) => ({ name: String(doc.data().storeName ?? doc.data().storeId), ...(doc.data().days?.[today] ?? { revenue: 0, tickets: 0, payments: {} }) })));
       setError(snapshot.size === 100 ? 'Resumen limitado a 100 tiendas. Consulta Estadísticas para filtrar.' : null);
-    }, () => setError('No se pudo actualizar el resumen de ventas.'));
+    }, (cause) => setError(cause.code === 'permission-denied'
+      ? 'Falta publicar las reglas que permiten al administrador consultar el resumen de ventas.'
+      : 'No se pudo actualizar el resumen de ventas. Revisa tu conexión.'));
     const unStock = onSnapshot(query(tenantCollection('product_stocks'), where('locationType', '==', 'store'), where('isLowStock', '==', true), limit(13)), (snapshot) => setCriticalStock(snapshot.docs.map((doc) => doc.data() as ProductStock)));
 
     const qT = query(

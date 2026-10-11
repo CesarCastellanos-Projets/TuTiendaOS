@@ -323,6 +323,11 @@ service cloud.firestore {
         allow write: if false;
       }
       match /counters/{counterId} { allow read, write: if false; }
+      match /sales_statistics/{summaryId} {
+        allow get: if belongsToTenant(tenantId) && isAdmin();
+        allow list: if belongsToTenant(tenantId) && isAdmin() && boundedList() && request.query.limit <= 100;
+        allow write: if false;
+      }
       match /{document=**} { allow read, write: if false; }
     }
     match /{document=**} { allow read, write: if false; }

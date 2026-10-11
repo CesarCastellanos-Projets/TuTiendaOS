@@ -15,15 +15,20 @@ export function ReplenishmentWorkspace() {
   const [more, setMore] = useState(true);
   const requests = useMemo(() => [...new Map([...older, ...items].map((item) => [item.id, item])).values()].sort((a, b) => b.createdAt - a.createdAt || b.id.localeCompare(a.id)), [items, older]);
   const [centralWhId, setCentralWhId] = useState('');
+  const [centralState, setCentralState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [busyId, setBusyId] = useState<string | null>(null);
   const { msg, flash } = useFlash();
 
   useEffect(() => {
     if (!allowed) return;
     let active = true;
+    setCentralWhId('');
+    setCentralState('loading');
     getDocs(query(tenantCollection('warehouses'), where('isCentral', '==', true), limit(1))).then((s) => {
-      if (active && !s.empty) setCentralWhId(s.docs[0].id);
-    }).catch(() => flash('No se pudo cargar el almacén central.'));
+      if (!active) return;
+      setCentralWhId(s.docs[0]?.id ?? '');
+      setCentralState(s.empty && s.metadata.fromCache ? 'error' : 'ready');
+    }).catch(() => { if (active) setCentralState('error'); });
     return () => { active = false; };
   }, [allowed, flash]);
 
@@ -75,13 +80,14 @@ export function ReplenishmentWorkspace() {
 
       {error && <p role="alert" className="text-sm text-critical">{error}</p>}
       {loading && <p className="text-sm text-slate-500">Cargando solicitudes…</p>}
-      {!centralWhId && (
+      {centralState === 'error' && <p role="alert" className="text-sm text-critical">No se pudo cargar el almacén central. Revisa tu conexión y vuelve a abrir Reposiciones.</p>}
+      {centralState === 'ready' && !centralWhId && (
         <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-800">
           Marca un almacén como "central" para poder atender solicitudes.
         </p>
       )}
 
-      {requests.length === 0 ? (
+      {requests.length === 0 && !loading ? (
         <EmptyState title="Sin solicitudes pendientes" hint="Cuando el POS pida reposición aparecerá aquí." />
       ) : (
         <div className="space-y-3">
@@ -95,7 +101,7 @@ export function ReplenishmentWorkspace() {
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <button className="btn-primary !min-h-9 !px-3 !py-1.5 text-sm" disabled={busyId !== null} onClick={() => void attend(r)}>
+                  <button className="btn-primary !min-h-9 !px-3 !py-1.5 text-sm" disabled={busyId !== null || centralState !== 'ready' || !centralWhId} onClick={() => void attend(r)}>
                     <CheckCircle2 size={15} /> Crear transferencia
                   </button>
                   <button className="btn-danger !min-h-9 !px-3 !py-1.5 text-sm" disabled={busyId !== null} onClick={() => void reject(r)}>

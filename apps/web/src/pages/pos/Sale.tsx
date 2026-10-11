@@ -128,21 +128,11 @@ export function PosSale() {
   const [dniValue, setDniValue] = useState('');
   const [lookupBusy, setLookupBusy] = useState(false);
   const [receiptDone, setReceiptDone] = useState<{ id: string; code: string; total: number; change: number; html: string } | null>(null);
-  const printedSales = useRef(new Set<string>());
   const [printingReceipt, setPrintingReceipt] = useState(false);
   const [printNotice, setPrintNotice] = useState<string | null>(null);
-  useEffect(() => {
-    if (!receiptDone || printedSales.current.has(receiptDone.id)) return;
-    printedSales.current.add(receiptDone.id);
-    setPrintingReceipt(true);
-    setPrintNotice(null);
-    void printTicket(receiptDone.html)
-      .then(({ missingImages }) => { if (missingImages) setPrintNotice('El logo no pudo cargarse. Revisa el enlace y vuelve a imprimir.'); })
-      .catch(() => setPrintNotice('La venta está registrada. No se pudo abrir la impresión; puedes intentarlo de nuevo.'))
-      .finally(() => setPrintingReceipt(false));
-  }, [receiptDone]);
   const [error, setError] = useState<string | null>(null);
   const [sessionOpen, setSessionOpen] = useState<(CashSession & { id: string }) | null>(null);
+  const [sessionState, setSessionState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [busy, setBusy] = useState(false);
   const [storeName, setStoreName] = useState('Tienda');
   const [selectedCategory, setSelectedCategory] = useState<string>('todos');
@@ -236,6 +226,7 @@ export function PosSale() {
   }, [cartStorageKey, profile.tenantId, storeId, user]);
 
   const finishCheckout = (sale: Sale & { id: string }) => {
+    setPrintNotice(null);
     setReceiptDone({ id: sale.id, code: sale.code, total: sale.total, change: sale.changeAmount, html: ticketHtml(sale, company ?? undefined) });
     setMobileView('catalog');
     setCart([]);
@@ -261,6 +252,8 @@ export function PosSale() {
   };
 
   useEffect(() => {
+    setSessionOpen(null);
+    setSessionState('loading');
     return onSnapshot(
       query(
         tenantCollection('cash_sessions'),
@@ -269,7 +262,12 @@ export function PosSale() {
         where('status', '==', 'abierta'),
         limit(1)
       ),
-      (s) => setSessionOpen(s.empty ? null : ({ ...(s.docs[0].data() as CashSession), id: s.docs[0].id }))
+      (s) => {
+        setSessionOpen(s.empty ? null : ({ ...(s.docs[0].data() as CashSession), id: s.docs[0].id }));
+        setSessionState(s.empty && s.metadata.fromCache ? 'loading' : 'ready');
+      },
+      () => { setSessionOpen(null); setSessionState('error'); },
+      { includeMetadataChanges: true }
     );
   }, [storeId, user?.uid]);
 
@@ -536,6 +534,8 @@ export function PosSale() {
   async function checkout(): Promise<void> {
     if (busyRef.current || !user || cart.length === 0) return;
     if (pendingCheckout) { setError('Resuelve primero el cobro pendiente.'); return; }
+    if (sessionState === 'loading') { setError('Espera mientras se confirma el estado de tu caja.'); return; }
+    if (sessionState === 'error') { setError('No se pudo verificar tu caja. Revisa tu conexión y vuelve a abrir Vender.'); return; }
     if (!sessionOpen) { setError('Abre tu caja antes de cobrar.'); return; }
     const minSinDni = company?.minBoletaSinDni ?? 700;
     const umbralConsol = company?.umbralConsolidacion ?? 5;
@@ -656,7 +656,8 @@ export function PosSale() {
         {catalogError && <p role="alert" className="m-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{catalogError} El cobro vuelve a comprobar el stock en el servidor.</p>}
         <p className="catalog-location">{storeName}</p>
         {/* Banner de Estado de Caja */}
-        {!sessionOpen && (
+        {sessionState === 'error' && <p role="alert" className="bg-red-50 px-4 py-2 text-sm text-critical">No se pudo verificar el estado de tu caja. Revisa tu conexión y vuelve a abrir Vender.</p>}
+        {sessionState === 'ready' && !sessionOpen && (
           <div className="flex items-center justify-between gap-3 bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-xs font-semibold text-amber-900">
             <div className="flex items-center gap-2">
               <Vault size={16} className="text-amber-700 shrink-0" />
@@ -1042,7 +1043,7 @@ export function PosSale() {
                 className="cart-line"
               >
                 <div className="min-w-0 flex-1">
-                  <p className="cart-product-name">
+                  <p className="cart-product-name" title={l.name}>
                     {l.name}
                   </p>
                   {canOverridePrices ? (
@@ -1081,7 +1082,7 @@ export function PosSale() {
                     ) : (
                       <button
                         type="button"
-                        className="mt-1 min-h-8 rounded-lg bg-brand-50 px-2 font-mono text-xs font-bold text-primary hover:bg-brand-100"
+                        className="mt-1 min-h-8 max-w-full truncate rounded-lg bg-brand-50 px-2 font-mono text-xs font-bold text-primary hover:bg-brand-100"
                         onClick={() => {
                           setEditingPriceLineId(l.lineId);
                           setPriceDraft(l.unitPrice.toFixed(2));
@@ -1092,12 +1093,12 @@ export function PosSale() {
                       </button>
                     )
                   ) : (
-                    <span className="text-xs font-mono text-slate-500">{cartLineDescription(l)}</span>
+                    <span className="block truncate text-xs font-mono text-slate-500" title={cartLineDescription(l)}>{cartLineDescription(l)}</span>
                   )}
                 </div>
 
                 {/* Stepper +/- */}
-                <div className="flex items-center gap-1.5">
+                <div className="cart-quantity flex items-center gap-1.5">
                   <button
                     aria-label={`Restar ${l.name}`}
                     className="flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 active:scale-95"
@@ -1151,7 +1152,7 @@ export function PosSale() {
           {mixedMode && mixedSummary ? <div className="space-y-2 rounded-xl border border-brand-200 bg-brand-50/40 p-3 text-sm">
             {mixedSummary.error ? <p className="text-critical" role="alert">{mixedSummary.error}</p> : <>
               <div className="flex max-h-24 flex-wrap gap-x-4 gap-y-1 overflow-y-auto">{mixedSummary.payments.map((part) => <span key={part.method}>{PAYMENT_LABELS[part.method]}: <strong>{money(part.amount)}</strong></span>)}</div>
-              <div className="flex flex-wrap justify-between gap-2"><span className={mixedSummary.remaining > 0 ? 'text-amber-800' : 'text-success'}>{mixedSummary.remaining > 0 ? `Falta: ${money(mixedSummary.remaining)}` : 'Pago completo'}</span><strong>Vuelto: {money(mixedSummary.change)}</strong></div>
+              <div className="flex flex-wrap justify-between gap-2"><span className={mixedSummary.remaining > 0 ? 'text-amber-800' : 'text-success'}>{mixedSummary.remaining > 0 ? `Falta: ${money(mixedSummary.remaining)}` : 'Pago completo'}</span><strong className="text-critical">Vuelto: {money(mixedSummary.change)}</strong></div>
             </>}
             <button type="button" className="min-h-11 text-xs font-semibold text-primary" disabled={busy || pendingCheckout} onClick={() => { setMixedMode(false); setError(null); }}>Usar un solo método de pago</button>
           </div> : <>
@@ -1185,13 +1186,14 @@ export function PosSale() {
               <label className="text-xs font-bold uppercase tracking-wider text-blue-900 block">
                 Selecciona la Entidad Bancaria
               </label>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+              <div className="grid grid-cols-2 gap-1.5">
                 {BANKS.map((b) => (
                   <button
                     key={b}
                     type="button"
                     onClick={() => setBankName(b)}
-                    className={`h-9 flex items-center justify-center rounded-xl px-2 text-xs font-bold transition-colors truncate text-center ${
+                    aria-pressed={bankName === b}
+                    className={`min-h-11 flex items-center justify-center rounded-xl px-2 py-1 text-xs font-bold transition-colors text-center ${
                       bankName === b
                         ? 'bg-blue-600 text-white shadow-xs font-extrabold ring-2 ring-blue-400/30'
                         : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
@@ -1226,7 +1228,7 @@ export function PosSale() {
                 <span className="text-xs font-bold uppercase tracking-wider text-slate-500 block mb-1">
                   Vuelto
                 </span>
-                <div className="flex h-10 items-center justify-between rounded-xl bg-emerald-50 border border-emerald-200 px-3 font-mono font-extrabold text-emerald-800 text-sm">
+                <div className="flex h-10 items-center justify-between rounded-xl bg-red-50 border border-red-200 px-3 font-mono font-extrabold text-critical text-sm">
                   <span>S/</span>
                   <span>{change.toFixed(2)}</span>
                 </div>
@@ -1304,6 +1306,7 @@ export function PosSale() {
           )}
 
           </>}
+        </div>
           {/* Total Grande */}
           <div className="hidden items-center justify-between rounded-2xl bg-slate-950 p-4 text-white shadow-md lg:flex">
             <div>
@@ -1318,10 +1321,9 @@ export function PosSale() {
           </div>
 
 
-        </div>
           {/* Botón Principal de Cobro */}
           <button
-            disabled={cart.length === 0 || busy}
+            disabled={cart.length === 0 || busy || sessionState !== 'ready'}
             onClick={() => void checkout()}
             className="btn-primary checkout-button hidden lg:flex"
           >
@@ -1337,7 +1339,7 @@ export function PosSale() {
         </div>
         <button
           type="button"
-          disabled={cart.length === 0 || busy}
+          disabled={cart.length === 0 || busy || sessionState !== 'ready'}
           onClick={() => { if (mobileView === 'catalog') setMobileView('cart'); else void checkout(); }}
           className="flex min-h-12 min-w-40 items-center justify-center gap-2 rounded-2xl bg-primary px-5 font-display text-sm font-extrabold text-white shadow-lg disabled:opacity-50"
         >
@@ -1425,7 +1427,7 @@ export function PosSale() {
             </div>
 
             {receiptDone.change > 0 && (
-              <div className="mx-auto inline-flex items-center gap-2 rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-2 text-sm font-bold text-emerald-800">
+              <div className="mx-auto inline-flex items-center gap-2 rounded-xl bg-red-50 border border-red-200 px-4 py-2 text-sm font-bold text-critical">
                 <span>Vuelto a entregar:</span>
                 <span className="font-mono text-base font-extrabold">S/ {receiptDone.change.toFixed(2)}</span>
               </div>
@@ -1444,7 +1446,7 @@ export function PosSale() {
                     .finally(() => setPrintingReceipt(false));
                 }}
               >
-                <Printer size={16} /> {printingReceipt ? 'Preparando impresión…' : 'Imprimir de nuevo'}
+                <Printer size={16} /> {printingReceipt ? 'Preparando impresión…' : 'Imprimir'}
               </button>
               <button
                 className="btn-primary !py-3 text-xs font-bold"

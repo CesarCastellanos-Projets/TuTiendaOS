@@ -46,7 +46,7 @@ export async function getStatistics(filter: StatisticsFilter, refresh = false): 
     const cached = await localDb.statisticsQueries.get(key).catch(() => undefined);
     if (cached && ((!refresh && cached.expiresAt > Date.now()) || !navigator.onLine)) return cached.result;
     if (!navigator.onLine) throw new Error('Conéctate para consultar este periodo por primera vez.');
-    const response = await httpsCallable<StatisticsFilter & { storeId?: string }, SalesStatistics>(functions, 'getSalesStatistics')({ ...filter, storeIds, ...(profile.role === 'pos' ? { storeId: storeIds[0] } : {}) });
+    const response = await httpsCallable<StatisticsFilter & { storeId?: string; refresh?: boolean }, SalesStatistics>(functions, 'getSalesStatistics')({ ...filter, storeIds, refresh, ...(profile.role === 'pos' ? { storeId: storeIds[0] } : {}) });
     const expiresAt = Date.now() + (filter.end < peruToday() ? 60000 : 15000);
     await localDb.statisticsQueries.put({ key, result: response.data, expiresAt }).catch(() => undefined);
     const keys = await localDb.statisticsQueries.orderBy('expiresAt').primaryKeys().catch(() => []);

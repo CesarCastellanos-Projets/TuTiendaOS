@@ -38,9 +38,11 @@ export const getSalesStatistics = onCall(appCheckOptions, async (request) => {
     throw new HttpsError('permission-denied', 'Selecciona la tienda activa para consultar sus estadísticas.');
   }
   const cacheKey = JSON.stringify([profile.tenantId, [...storeIds].sort(), start, end]);
+  const refresh = request.data?.refresh === true;
+  const queryKey = refresh ? `${cacheKey}:refresh` : cacheKey;
   const cached = resultCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.result;
-  const running = pendingQueries.get(cacheKey);
+  if (!refresh && cached && cached.expiresAt > Date.now()) return cached.result;
+  const running = pendingQueries.get(queryKey);
   if (running) return running;
   if (Date.parse(end) - Date.parse(start) > 31 * 86400000 || storeIds.length > 3) {
     const quota = tenantDoc(profile.tenantId, 'query_limits', `statistics_${profile.uid}`);
@@ -123,13 +125,13 @@ export const getSalesStatistics = onCall(appCheckOptions, async (request) => {
     if (['4', '14'].includes(code)) throw new HttpsError('unavailable', 'Firebase no respondió a tiempo. Vuelve a pulsar Actualizar.');
     throw new HttpsError('internal', 'No se pudieron cargar las estadísticas. Intenta actualizar nuevamente.');
   });
-  pendingQueries.set(cacheKey, promise);
+  pendingQueries.set(queryKey, promise);
   try {
     const result = await promise;
     if (resultCache.size >= 60) resultCache.delete(resultCache.keys().next().value!);
     resultCache.set(cacheKey, { result, expiresAt: Date.now() + (end === limaDay(Date.now()) ? 15000 : 60000) });
     return result;
-  } finally { pendingQueries.delete(cacheKey); }
+  } finally { pendingQueries.delete(queryKey); }
 });
 
 export const backfillSalesStatistics = onCall({ ...appCheckOptions, timeoutSeconds: 120 }, async (request) => {
