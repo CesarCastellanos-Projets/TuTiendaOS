@@ -1,3 +1,7 @@
+import { useQuotations } from '../../hooks/useQuotations';
+import { QuotationSearch } from '../../components/QuotationSearch';
+import { httpsCallable } from 'firebase/functions';
+import { functions } from '../../lib/firebase';
 import { durableCommand } from '../../lib/durable-command';
 import { EditableNumberInput } from '../../components/ui/EditableNumberInput';
 import { createQuotationPdf } from '../../lib/quotation-pdf';
@@ -8,11 +12,9 @@ import { useState, useMemo, useEffect } from 'react';
 import {
   getDocs,
   limit,
-  orderBy,
   query,
   where
 } from 'firebase/firestore';
-import { usePagedQuery } from '../../hooks/usePagedQuery';
 import { Pagination } from '../../components/ui/Pagination';
 import {
   Calculator,
@@ -91,6 +93,7 @@ export function WorkerQuotations() {
       return { ...item, factor, availableQty, isAvailable, unitPrice, total: round2(item.qty * unitPrice) };
     });
   }, [draftItems, catalog, products]);
+  const [editingQuote, setEditingQuote] = useState<Quotation | null>(null);
   const [clientName, setClientName] = useState('');
   const [clientPhone, setClientPhone] = useState('');
   const [note, setNote] = useState('');
@@ -124,8 +127,7 @@ export function WorkerQuotations() {
   }, [whatsappModal, company, items, clientName, catalog, note]);
 
   // Historial de cotizaciones
-  const quoteSource = useMemo(() => tab === 'historial' ? query(tenantCollection('quotations'), where('storeId', '==', storeId), orderBy('createdAt', 'desc')) : null, [storeId, tab]);
-  const quotePagination = usePagedQuery<Quotation>(quoteSource);
+  const quotePagination = useQuotations(storeId, tab === 'historial');
   const savedQuotes = quotePagination.rows;
   const loadingQuotes = quotePagination.loading;
 
@@ -278,10 +280,12 @@ export function WorkerQuotations() {
     setBusy(true);
     try {
       const saved = await durableCommand<Quotation>('createQuotationRecord', {
+        ...(editingQuote ? { quotationId: editingQuote.id, version: editingQuote.version ?? 1 } : {}),
         storeId, items: items.map((i) => ({ productId: i.productId, presentationId: i.presentationId ?? null, qty: i.qty })),
         clientName: clientName.trim(), clientPhone: clientPhone.trim(), note: note.trim()
       });
       setItems(saved.items);
+      setEditingQuote(saved);
       const quoteCode = saved.code;
       flash(`Cotización ${quoteCode} guardada exitosamente`);
       return quoteCode;
@@ -406,6 +410,7 @@ export function WorkerQuotations() {
 
   // Cargar cotización existente para editar
   const loadSavedQuote = (q: Quotation) => {
+    setEditingQuote(q.createdBy === user?.uid ? q : null);
     setItems(q.items);
     setClientName(q.clientName || '');
     setClientPhone(q.clientPhone || '');
@@ -419,6 +424,7 @@ export function WorkerQuotations() {
         {catalogError && <p role="alert" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{catalogError}</p>}
       <h1 className="font-display text-2xl font-semibold">Cotizaciones</h1>
       <FlashBar msg={msg} />
+      {editingQuote && <div className="flex flex-wrap items-center gap-3"><p>Editando {editingQuote.code}. Vence: {fmtDateTime(editingQuote.expiresAt ?? editingQuote.createdAt + 30 * 86400000)}</p><button className="btn-ghost" onClick={() => { setEditingQuote(null); setItems([]); setClientName(''); setClientPhone(''); setNote(''); setTab('crear'); }}>Crear otra cotización</button></div>}
 
       {/* ─── PESTAÑAS: CREAR VS HISTORIAL ──────────────────────────────────── */}
       <div className="flex rounded-2xl bg-slate-200/80 p-1">
@@ -454,6 +460,7 @@ export function WorkerQuotations() {
       {tab === 'historial' ? (
         /* ─── VISTA: HISTORIAL DE COTIZACIONES ──────────────────────────────── */
         <div className="space-y-3">
+          <QuotationSearch {...quotePagination} />
           <Pagination {...quotePagination} />
           {quotePagination.error && <p role="alert">{quotePagination.error}</p>}
           {loadingQuotes ? (
@@ -461,7 +468,7 @@ export function WorkerQuotations() {
           ) : savedQuotes.length === 0 ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-slate-400">
               <Calculator size={36} className="mx-auto text-slate-300 mb-2" />
-              <p className="font-bold text-slate-600 text-sm">No hay cotizaciones registradas</p>
+              <p className="font-bold text-slate-600 text-sm">{quotePagination.searching && quotePagination.hasNext ? 'Sin coincidencias en este lote. Usa Siguiente para continuar.' : quotePagination.searching ? 'Sin coincidencias.' : 'No hay cotizaciones pendientes'}</p>
               <p className="text-xs mt-1">Crea tu primera cotización de lista escolar o pedido.</p>
             </div>
           ) : (
@@ -487,12 +494,18 @@ export function WorkerQuotations() {
                   <span className="text-xs text-slate-400">Por {q.createdByName}</span>
                 </div>
 
+                <p className="text-xs text-slate-500">Vence: {fmtDateTime(q.expiresAt ?? q.createdAt + 30 * 86400000)}</p>
+                {(q.createdBy === user?.uid || profile.role === 'admin') && <button className="btn-ghost text-critical" onClick={async () => {
+                  if (!window.confirm(`Eliminar la cotización ${q.code}?`)) return;
+                  try { await httpsCallable(functions, 'discardQuotation')({ quotationId: q.id, storeId }); flash('Cotización eliminada'); }
+                  catch (error) { flash(error instanceof Error ? error.message : 'No se pudo eliminar.'); }
+                }}>Eliminar cotización</button>}
                 <div className="flex gap-2 pt-1 border-t border-slate-100">
                   <button
                     onClick={() => loadSavedQuote(q)}
                     className="btn-ghost flex-1 !min-h-9 !py-1.5 text-xs font-bold"
                   >
-                    Ver / Editar
+                    {q.createdBy === user?.uid ? 'Ver / Editar' : 'Ver'}
                   </button>
                   <button
                     onClick={() => {

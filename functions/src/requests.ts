@@ -1,8 +1,10 @@
+import { quotationExpires, QUOTATION_LIFETIME } from './quotation-lifecycle';
+import { removeQuotation } from './transient-maintenance';
 import { appCheckOptions } from './app-check';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { db } from './firebase';
 import type { Transaction } from 'firebase-admin/firestore';
-import { completeOperation, readOperation, operationId } from './operation-receipts';
+import { completeOperation, readOperation, operationId, documentId } from './operation-receipts';
 import { assertCurrentProfile, requireActiveProfile, type ActiveProfile } from './authz';
 import { tenantCollection, tenantDoc } from './tenant';
 import { assertSaleStep, consumeSaleStock, parsePresentations, positiveQuantity, presentationLabel, readStockState, changeSelectedStock, selectedAvailable, resolvePresentation, round2, stockEquivalent } from './stock-model';
@@ -83,21 +85,35 @@ export const createQuotationRecord = onCall(appCheckOptions, async (request) => 
   const requestId = operationId(request.data?.requestId);
   return db.runTransaction(async (tx) => {
   const operation = await readOperation(tx, profile, 'quotation', requestId, request.data);
-  if (operation.result) return operation.result;
+  if (operation.result) {
+    const existing = await tx.get(tenantDoc(profile.tenantId, 'quotations', String(operation.result.id)));
+    if (!existing.exists || existing.data()?.status !== 'pendiente' || quotationExpires(existing.data()!) <= Date.now()) throw new HttpsError('failed-precondition', 'La cotizacion ya no esta disponible.');
+    return { ...existing.data(), id: existing.id };
+  }
   const { input, items, storeName } = await prepare(request, true, tx, profile);
-  const ref = tenantCollection(profile.tenantId, 'quotations').doc();
+  const ref = input.quotationId ? tenantDoc(profile.tenantId, 'quotations', documentId(input.quotationId)) : tenantCollection(profile.tenantId, 'quotations').doc();
+  const previous = input.quotationId ? (await tx.get(ref)).data() : null;
+  if (input.quotationId && (!previous || previous.createdBy !== profile.uid || previous.storeId !== profile.storeId || previous.status !== 'pendiente' || quotationExpires(previous) <= Date.now()))
+    throw new HttpsError('permission-denied', 'Esta cotización no está disponible para editar.');
+  if (previous && input.version !== (previous.version ?? 1)) throw new HttpsError('failed-precondition', 'La cotización cambió. Ábrela nuevamente antes de guardar.');
+  const legacyReceipts = previous && !previous.receiptId
+    ? await tx.get(tenantCollection(profile.tenantId, 'operation_receipts').where('kind', '==', 'quotation').where('result.id', '==', ref.id).limit(10)) : null;
   const totalAll = round2(items.reduce((sum, item) => sum + ('total' in item ? item.total ?? 0 : 0), 0));
   if (totalAll > 100_000_000) throw new HttpsError('invalid-argument', 'Cotización demasiado grande.');
+  const createdAt = previous ? Number(previous.createdAt) : Date.now();
   const quotation = {
-    tenantId: profile.tenantId, id: ref.id, code: `COT-${ref.id.toUpperCase()}`,
+    tenantId: profile.tenantId, id: ref.id, code: previous?.code ?? `COT-${ref.id.toUpperCase()}`,
     storeId: profile.storeId, storeName, items, totalAll,
     totalAvailable: round2(items.reduce((sum, item) => sum + ('isAvailable' in item && item.isAvailable ? item.total ?? 0 : 0), 0)),
     clientName: text(input.clientName, 180), clientPhone: text(input.clientPhone, 30),
     note: text(input.note, 500), createdBy: profile.uid, createdByName: profile.displayName,
-    status: 'pendiente', createdAt: Date.now()
+    status: 'pendiente', createdAt, expiresAt: previous ? quotationExpires(previous) : createdAt + QUOTATION_LIFETIME,
+    version: previous ? Number(previous.version ?? 1) + 1 : 1, updatedAt: Date.now(),
+    receiptId: previous?.receiptId ?? legacyReceipts?.docs[0]?.id ?? operation.ref.id
   };
-  tx.create(ref, quotation);
-  completeOperation(tx, profile, 'quotation', operation, quotation);
+  if (previous) tx.set(ref, quotation); else tx.create(ref, quotation);
+  for (const receipt of legacyReceipts?.docs ?? []) tx.update(receipt.ref, { result: { id: ref.id } });
+  completeOperation(tx, profile, 'quotation', operation, { id: ref.id });
   return quotation;
   });
 });
@@ -135,7 +151,7 @@ export const discardQuotation = onCall(appCheckOptions, async (request) => {
       throw new HttpsError('permission-denied', 'No puedes descartar esta cotización.');
     }
     if (quote.status !== 'pendiente') throw new HttpsError('failed-precondition', 'La cotización ya fue procesada.');
-    tx.update(ref, { status: 'descartada' });
+    await removeQuotation(tx, ref, quote);
   });
   return { ok: true };
 });

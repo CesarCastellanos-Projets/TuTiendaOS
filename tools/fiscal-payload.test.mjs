@@ -56,3 +56,32 @@ test('medio millar conserva cantidad, precio por millar e identificación fiscal
   assert.equal(payload.items[0].descripcion, 'Hojas bond · Millar');
   assert.equal(payload.totals.total, 50);
 });
+
+function receipt(total, minimumDni = 700, clientDoc = { tipo: '-', numero: '', nombre: '' }) {
+  const subtotal = Math.round((total / 1.18 + Number.EPSILON) * 100) / 100;
+  return sale({
+    type: 'boleta', serie: 'B001', minBoletaSinDni: minimumDni, clientDoc,
+    items: [{ productId: 'P1', name: 'Producto', qty: 1, unitPrice: total, total }],
+    total, subtotal, igv: Math.round((total - subtotal + Number.EPSILON) * 100) / 100
+  });
+}
+
+test('boleta exige DNI desde el umbral inclusive y mantiene 700 por defecto', () => {
+  assert.equal(buildFiscalInvoicePayload('below', receipt(699.99)).totals.total, 699.99);
+  assert.throws(() => buildFiscalInvoicePayload('at', receipt(700)), FiscalPayloadError);
+  const legacy = receipt(700);
+  delete legacy.minBoletaSinDni;
+  assert.throws(() => buildFiscalInvoicePayload('legacy', legacy), FiscalPayloadError);
+  assert.equal(buildFiscalInvoicePayload('identified', receipt(700, 700, {
+    tipo: 'DNI', numero: '12345678', nombre: 'Persona'
+  })).cliente.numero, '12345678');
+});
+
+test('contrato actual valida el umbral de la venta pero no lo transmite a Laravel (F19)', () => {
+  const payload = buildFiscalInvoicePayload('threshold-1000', receipt(800, 1000));
+  assert.equal(payload.totals.total, 800);
+  assert.equal(payload.cliente.tipo, '-');
+  assert.equal('minBoletaSinDni' in payload, false);
+  assert.equal('min_boleta_dni' in payload, false);
+  assert.throws(() => buildFiscalInvoicePayload('at-configured', receipt(1000, 1000)), FiscalPayloadError);
+});

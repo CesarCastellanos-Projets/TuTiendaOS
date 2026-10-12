@@ -1,0 +1,3 @@
+export function QuotationSearch({ term, setTerm, searching, hasNext }: { term: string; setTerm: (value: string) => void; searching: boolean; hasNext: boolean }) {
+  return <div className="space-y-2"><label className="label">Buscar cotización<input className="field" type="search" maxLength={180} value={term} onChange={(event) => setTerm(event.target.value)} placeholder="Nombre, teléfono o número de cotización" /></label><p className="text-xs text-slate-500">Disponibles durante 30 días desde su creación.{searching && hasNext ? ' Hay más registros por revisar: usa Siguiente para continuar la búsqueda.' : ''}</p></div>;
+}

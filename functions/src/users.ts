@@ -23,16 +23,21 @@ export const createUser = onCall(appCheckOptions, async (request) => {
     const store = await tenantDoc(actor.tenantId, 'stores', storeId).get();
     if (!store.exists || store.data()?.active === false) throw new HttpsError('failed-precondition', 'Selecciona una tienda activa.');
   }
-  if (data.canManageCalendar !== undefined && typeof data.canManageCalendar !== 'boolean') throw new HttpsError('invalid-argument', 'Permiso inválido.');
+  for (const key of ['canManageCalendar', 'canOverridePrices', 'canViewPurchaseCosts'])
+    if (data[key] !== undefined && typeof data[key] !== 'boolean') throw new HttpsError('invalid-argument', 'Permiso inválido.');
   const uid = createHash('sha256').update(`${actor.tenantId}:${email}`).digest('hex').slice(0, 28);
   const ref = db.doc(`users/${uid}`);
   const access = { tenantId: actor.tenantId, displayName, email, role, storeId, storeAccess: multi ? 'all' : 'assigned',
+    canOverridePrices: multi && data.canOverridePrices !== false,
+    canViewPurchaseCosts: role === 'pos' && data.canViewPurchaseCosts === true,
     canManageCalendar: role === 'admin' || (role === 'pos' && (data.canManageCalendar ?? multi)) };
   const fingerprint = createHash('sha256').update(JSON.stringify(access)).digest('hex');
   const receipt = tenantDoc(actor.tenantId, 'user_provisioning', uid);
   await db.runTransaction(async (tx) => {
     await assertCurrentProfile(tx, actor);
     const saved = await tx.get(receipt);
+    const existingUser = await tx.get(ref);
+    if (existingUser.data()?.deletedAt) throw new HttpsError('failed-precondition', 'Ese correo corresponde a una cuenta eliminada. Usa otro correo para una identidad nueva.');
     if (saved.exists && (saved.data()?.fingerprint !== fingerprint || saved.data()?.actor !== actor.uid)) {
       throw new HttpsError('already-exists', 'Ese correo ya tiene una operación de creación diferente.');
     }
@@ -59,6 +64,7 @@ export const createUser = onCall(appCheckOptions, async (request) => {
       const store = await tx.get(tenantDoc(actor.tenantId, 'stores', storeId));
       if (!store.exists || store.data()?.active === false) throw new HttpsError('failed-precondition', 'La tienda dejó de estar activa.');
     }
+    if (existing.data()?.deletedAt) throw new HttpsError('failed-precondition', 'Cuenta eliminada.');
     if (!existing.exists) tx.create(ref, { ...access, active: true, createdAt: Date.now() });
     tx.set(receipt, { complete: true, completedAt: Date.now() }, { merge: true });
   });
@@ -77,7 +83,7 @@ export const setUserActive = onCall(appCheckOptions, async (request) => {
   await db.runTransaction(async (tx) => {
     await assertCurrentProfile(tx, actor);
     const user = await tx.get(ref);
-    if (user.data()?.tenantId !== actor.tenantId) throw new HttpsError('permission-denied', 'El usuario no pertenece a tu empresa.');
+    if (user.data()?.tenantId !== actor.tenantId || user.data()?.deletedAt) throw new HttpsError('permission-denied', 'El usuario no está disponible.');
     if (active && user.data()?.storeId) {
       const store = await tx.get(tenantDoc(actor.tenantId, 'stores', String(user.data()?.storeId)));
       if (!store.exists || store.data()?.active === false) throw new HttpsError('failed-precondition', 'La tienda del usuario ya no está activa.');
@@ -86,7 +92,7 @@ export const setUserActive = onCall(appCheckOptions, async (request) => {
       const admins = await tx.get(db.collection('users').where('tenantId', '==', actor.tenantId).where('role', '==', 'admin').where('active', '==', true).limit(2));
       if (!admins.docs.some((adminUser) => adminUser.id !== uid)) throw new HttpsError('failed-precondition', 'Debe quedar un administrador activo.');
     }
-    tx.update(ref, { active });
+    tx.update(ref, { active, ...(!active ? { authValidAfter: Math.floor(Date.now() / 1000) + 1 } : {}) });
   });
   if (!active) await admin.auth().revokeRefreshTokens(uid);
   return { ok: true };

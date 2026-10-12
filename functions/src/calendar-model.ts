@@ -94,22 +94,31 @@ export function validateCalendar(value: unknown): CalendarInput {
 }
 
 export function firstReminder(
-  event: Pick<CalendarInput, 'dueAt' | 'reminderDays' | 'status'>,
+  event: Pick<CalendarInput, 'dueDate' | 'dueAt' | 'reminderDays' | 'status'>,
   now: number
 ): number | null {
-  if (event.status !== 'pendiente') return null;
+  if (event.status !== 'pendiente' || calendarDeadline(event.dueDate) <= now) return null;
   const times = event.reminderDays.map((day) => event.dueAt - day * DAY).sort((a, b) => a - b);
   if (times.some((time) => time <= now)) return now;
   return times[0];
 }
 
-export function nextReminder(event: Pick<CalendarInput, 'dueAt' | 'reminderDays'>, now: number): number {
+export function calendarDeadline(dueDate: string): number {
+  return peruDateAt(dueDate, '00:00') + DAY;
+}
+
+export function nextReminder(
+  event: Pick<CalendarInput, 'dueDate' | 'dueAt' | 'reminderDays'>,
+  now: number
+): number | null {
+  const deadline = calendarDeadline(event.dueDate);
+  if (now >= deadline) return null;
   const next = event.reminderDays
     .map((day) => event.dueAt - day * DAY)
     .filter((time) => time > now)
     .sort((a, b) => a - b)[0];
   if (next !== undefined) return next;
-  return event.dueAt + Math.max(1, Math.floor((now - event.dueAt) / DAY) + 1) * DAY;
+  return deadline;
 }
 
 export function nextOccurrence(

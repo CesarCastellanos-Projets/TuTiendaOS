@@ -1,7 +1,10 @@
+import { useQuotations } from '../../hooks/useQuotations';
+import { QuotationSearch } from '../../components/QuotationSearch';
+import { StockLocations } from '../../components/products/StockLocations';
+import { PurchaseDetails } from '../../components/products/PurchaseDetails';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getDoc, limit, orderBy, query, where } from 'firebase/firestore';
+import { getDoc, limit, query, where } from 'firebase/firestore';
 import { onSnapshot } from '../../lib/firestore-listener';
-import { usePagedQuery } from '../../hooks/usePagedQuery';
 import { Pagination } from '../../components/ui/Pagination';
 import {
   Camera,
@@ -101,6 +104,8 @@ export function PosSale() {
     return crypto.randomUUID();
   });
   const [term, setTerm] = useState('');
+  const [stockProductId, setStockProductId] = useState<string | null>(null);
+  const [manualName, setManualName] = useState('');
   const [presentationProductId, setPresentationProductId] = useState<string | null>(null);
   const [highlightedResult, setHighlightedResult] = useState(0);
   const scanQueue = useRef(Promise.resolve());
@@ -152,9 +157,7 @@ export function PosSale() {
     } catch { /* El carrito recuperado se valida nuevamente antes del cobro. */ }
     return undefined;
   });
-  const quoteSource = useMemo(() => quoteModal ? query(tenantCollection('quotations'), where('storeId', '==', storeId),
-    where('status', '==', 'pendiente'), orderBy('createdAt', 'desc')) : null, [quoteModal, storeId]);
-  const quotePagination = usePagedQuery<Quotation>(quoteSource, 20);
+  const quotePagination = useQuotations(storeId, quoteModal);
   const quotesList = quotePagination.rows;
   const loadingQuotes = quotePagination.loading;
   const openQuoteModal = () => setQuoteModal(true);
@@ -454,6 +457,7 @@ export function PosSale() {
     if (!stock) return;
     const choices = salePresentations(stock, productsById.get(productId));
     setTerm('');
+    if (!choices.some((choice) => choice.quantity > 0)) { setStockProductId(productId); return; }
     if (choices.length === 1) { addToCart(choices[0]); searchInputRef.current?.focus(); }
     else setPresentationProductId(productId);
   };
@@ -497,10 +501,8 @@ export function PosSale() {
       setDocType('factura');
       setDniModal(false);
     } catch {
-      setClientDoc({ tipo: 'RUC', numero: rucValue, nombre: `CLIENTE RUC ${rucValue}` });
       setDocType('factura');
-      setDniModal(false);
-      setError('No se pudo autocompletar la razón social desde la API. Se asignó el RUC para la factura.');
+      setError('No se pudo consultar la razón social. Escríbela y aplica los datos manualmente.');
     } finally {
       setLookupBusy(false);
     }
@@ -509,7 +511,7 @@ export function PosSale() {
   async function doDniSave(): Promise<void> {
     if (!dniValue.trim()) {
       setDniModal(false);
-      setClientDoc({ tipo: '-', numero: '', nombre: '' });
+      setClientDoc({ tipo: '-', numero: '', nombre: manualName.trim() });
       return;
     }
     if (!DNI_RE.test(dniValue)) {
@@ -522,7 +524,7 @@ export function PosSale() {
       setClientDoc({
         tipo: 'DNI',
         numero: dniValue,
-        nombre: c?.nombre ?? `CLIENTE DNI ${dniValue}`
+        nombre: manualName.trim() || c?.nombre || `CLIENTE DNI ${dniValue}`
       });
       if (docType === 'factura') setDocType('boleta');
       setDniModal(false);
@@ -818,17 +820,15 @@ export function PosSale() {
               const prodDef = productsById.get(p.productId);
               const choices = salePresentations(p, prodDef);
               const baseAvailable = availableBase(p, prodDef?.presentations);
-              const isOutOfStock = p.quantity <= 0;
+              const isOutOfStock = !choices.some((choice) => choice.quantity > 0);
               const isLowStock = baseAvailable > 0 && baseAvailable <= 5;
 
               return (
-                <button
+                <div key={p.productId} className="space-y-1"><button
                   type="button"
-                  key={p.productId}
                   onClick={() => chooseProduct(p.productId)}
-                  disabled={isOutOfStock}
                   aria-label={`Seleccionar ${p.productName}`}
-                  className={`product-tile ${
+                  className={`product-tile w-full ${
                     isOutOfStock ? 'opacity-50 !border-dashed' : 'hover:border-primary/50 shadow-xs'
                   }`}
                 >
@@ -863,9 +863,9 @@ export function PosSale() {
                       </span>
                     </div>
 
-                    <span className="mt-2 block text-xs font-semibold text-primary">{choices.length > 1 ? `Ver ${choices.length} presentaciones` : '+ Agregar'}</span>
+                    <span className="mt-2 block text-xs font-semibold text-primary">{isOutOfStock ? 'Consultar stock en otras ubicaciones' : choices.length > 1 ? `Ver ${choices.length} presentaciones` : '+ Agregar'}</span>
                   </div>
-                </button>
+                </button><PurchaseDetails productId={p.productId} /></div>
               );
             })}
           </div>
@@ -969,7 +969,7 @@ export function PosSale() {
                 <div className="flex items-center gap-2 min-w-0">
                   <FileText size={15} className="text-amber-600 shrink-0" />
                   <span className="font-semibold text-amber-900 truncate">
-                    {clientDoc.tipo !== '-' ? `${clientDoc.nombre} (${clientDoc.numero})` : 'Nota de Venta (Comprobante Interno)'}
+                    {clientDoc.nombre ? `${clientDoc.nombre}${clientDoc.numero ? ` (${clientDoc.numero})` : ''}` : 'Nota de Venta (Comprobante Interno)'}
                   </span>
                 </div>
                 <button
@@ -984,7 +984,7 @@ export function PosSale() {
               <div className="flex items-center justify-between text-xs">
                 <div className="flex items-center gap-2 text-slate-600">
                   <User size={15} className="text-slate-400" />
-                  <span className="font-medium">Consumidor Final (Sin DNI)</span>
+                  <span className="font-medium">{clientDoc.nombre || 'Consumidor Final (Sin DNI)'}</span>
                 </div>
                 <button
                   type="button"
@@ -1353,6 +1353,16 @@ export function PosSale() {
       {/* ─── MODAL CONSULTA DNI / RUC ────────────────────────────────────────── */}
       <Modal open={dniModal} title="Identificación del Cliente" onClose={() => setDniModal(false)}>
         <div className="space-y-5">
+          <div className="space-y-2">{error && <p role="alert" className="text-critical">{error}</p>}<label className="label">Nombre o razón social<input className="field" value={manualName} maxLength={180} onChange={(e) => setManualName(e.target.value)} placeholder="A nombre de..." /></label><button className="btn-ghost" onClick={() => {
+            if (docType === 'factura') {
+              if (!RUC_RE.test(rucValue) || !manualName.trim()) { setError('La factura requiere RUC de 11 dígitos y razón social.'); return; }
+              setClientDoc({ tipo: 'RUC', numero: rucValue, nombre: manualName.trim() });
+            } else if (dniValue.trim()) {
+              if (!DNI_RE.test(dniValue)) { setError('DNI inválido.'); return; }
+              setClientDoc({ tipo: 'DNI', numero: dniValue, nombre: manualName.trim() || `CLIENTE DNI ${dniValue}` });
+            } else setClientDoc({ tipo: '-', numero: '', nombre: manualName.trim() });
+            setDniModal(false); setError(null);
+          }}>Aplicar datos manualmente</button><p className="text-xs text-slate-500">La factura requiere RUC. El nombre es opcional para boleta o nota sin documento; se mantiene el DNI obligatorio según el monto.</p></div>
           {/* Factura con RUC */}
           <div className="rounded-2xl border border-brand-100 bg-brand-50/40 p-4 space-y-3">
             <label className="text-xs font-bold uppercase tracking-wider text-brand-900 flex items-center gap-1.5">
@@ -1459,6 +1469,9 @@ export function PosSale() {
         )}
       </Modal>
 
+      <Modal open={Boolean(stockProductId)} title="Stock en tiendas y almacenes" onClose={() => setStockProductId(null)}>
+        {stockProductId && productsById.get(stockProductId) && <StockLocations key={stockProductId} product={{ ...productsById.get(stockProductId)!, id: stockProductId }} />}
+      </Modal>
       <Modal open={Boolean(presentationProductId)} title={selectedStock?.productName ?? 'Elegir presentación'} onClose={closePresentations}>
         <PresentationSelector
           choices={presentationChoices}
@@ -1477,13 +1490,14 @@ export function PosSale() {
             Selecciona una cotización generada por los trabajadores para importar los productos al carrito:
           </p>
 
+          <QuotationSearch {...quotePagination} />
           {quotePagination.error && <p role="alert">{quotePagination.error}</p>}
           {loadingQuotes ? (
             <div className="p-8 text-center text-sm text-slate-500">Cargando cotizaciones…</div>
           ) : quotesList.length === 0 ? (
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-8 text-center text-slate-400">
               <Calculator size={32} className="mx-auto text-slate-300 mb-2" />
-              <p className="text-sm font-bold text-slate-600">No hay cotizaciones registradas</p>
+              <p className="text-sm font-bold text-slate-600">{quotePagination.searching && quotePagination.hasNext ? 'Sin coincidencias en este lote. Usa Siguiente para continuar.' : quotePagination.searching ? 'Sin coincidencias.' : 'No hay cotizaciones pendientes'}</p>
               <p className="text-xs text-slate-400 mt-0.5">Los trabajadores pueden crearlas desde su panel.</p>
             </div>
           ) : (

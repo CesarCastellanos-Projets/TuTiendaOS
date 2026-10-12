@@ -4,8 +4,23 @@ service firebase.storage {
   match /b/{bucket}/o {
     function signedIn() { return request.auth != null; }
     function profile() { return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)); }
+    function scheduleWindow(s) {
+      let local = request.time.toMillis() - 18000000;
+      let day = (int(local / 86400000) + 4) % 7;
+      let minute = int(local / 60000) % 1440;
+      return s is map && s.days is list && s.days.size() > 0 && s.days.size() <= 7
+        && s.days.hasOnly([0,1,2,3,4,5,6]) && s.start is int && s.end is int
+        && s.start >= 0 && s.start <= 1439 && s.end >= 0 && s.end <= 1439
+        && (s.start <= s.end ? (day in s.days && minute >= s.start && minute <= s.end)
+          : ((day in s.days && minute >= s.start) || ((day + 6) % 7 in s.days && minute <= s.end)));
+    }
+    function authorizedTime() {
+      return request.auth.token.get('auth_time', 0) >= profile().data.get('authValidAfter', 0)
+        && (profile().data.role == 'admin' || profile().data.get('accessSchedule', null) == null
+          || scheduleWindow(profile().data.accessSchedule));
+    }
     function activeUser() {
-      return signedIn() && profile().data.active == true && profile().data.tenantId is string;
+      return signedIn() && profile().data.active == true && profile().data.tenantId is string && authorizedTime();
     }
     function belongsToTenant(tenantId) {
       return activeUser() && profile().data.tenantId == tenantId;

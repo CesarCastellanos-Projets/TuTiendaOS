@@ -1,3 +1,4 @@
+import { assertUserAccess } from './access-schedule';
 import { appCheckOptions } from './app-check';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
 import { FieldPath, type Transaction } from 'firebase-admin/firestore';
@@ -15,6 +16,7 @@ function identifier(value: unknown): string {
 }
 
 function assertManager(profile: ActiveProfile, data: Record<string, unknown>): void {
+  assertUserAccess(data, profile.authTime);
   if (data.active !== true || data.tenantId !== profile.tenantId || data.role !== profile.role
     || !(data.role === 'admin' || (data.role === 'pos' && data.storeAccess === 'all' && profile.storeAccess === 'all'))) {
     throw new HttpsError('permission-denied', 'Solo el administrador o un POS multitiendas puede administrar estos permisos.');
@@ -32,6 +34,7 @@ export async function assertInventoryTask(tx: Transaction, profile: ActiveProfil
   if (maintenance.data()?.active === true) throw new HttpsError('unavailable', 'Inventario en mantenimiento. Intenta nuevamente al terminar la migración.');
   const snapshot = await tx.get(db.doc(`users/${profile.uid}`));
   const data = snapshot.data();
+  assertUserAccess(data ?? {}, profile.authTime);
   if (data?.active !== true || data.tenantId !== profile.tenantId || data.role !== profile.role) {
     throw new HttpsError('permission-denied', 'Tu acceso cambió. Vuelve a iniciar sesión.');
   }

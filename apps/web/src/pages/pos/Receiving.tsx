@@ -1,9 +1,10 @@
 import { EditableNumberInput } from '../../components/ui/EditableNumberInput';
-import { useEffect, useState } from 'react';
-import { query, where, limit } from 'firebase/firestore';
-import { onSnapshot } from '../../lib/firestore-listener';
+import { useMemo, useState } from 'react';
+import { documentId, orderBy, query, where } from 'firebase/firestore';
+import { usePagedQuery } from '../../hooks/usePagedQuery';
+import { Pagination } from '../../components/ui/Pagination';
 import { ArrowDownToLine, CheckCircle2, Truck } from 'lucide-react';
-import { tenantCollection } from '../../lib/tenant-firestore';
+import { tenantCollectionFor } from '../../lib/tenant-firestore';
 import { useAuth } from '../../lib/auth';
 import { receiveTransferItems } from '../../lib/inventory';
 import { useProductsCatalog } from '../../hooks/useProductsCatalog';
@@ -23,22 +24,14 @@ export function ReceivingPage() {
     const presentation = product?.presentations?.find((p, index) => (p.id || `legacy-${index + 1}`) === item.presentationId);
     return item.presentationId ? (presentation?.autoUnpackEnabled ? 1 / (item.factor ?? 1) : 1) : baseQuantityStep(product?.unit);
   };
-  const [transfers, setTransfers] = useState<(Transfer & { id: string })[]>([]);
+  const source = useMemo(() => query(tenantCollectionFor(profile.tenantId, 'transfers'), where('toLocationId', '==', storeId),
+    where('status', 'in', ['pendiente', 'en_transito']), orderBy(documentId())), [profile.tenantId, storeId]);
+  const pagination = usePagedQuery<Transfer & { id: string }>(source, 100);
+  const transfers = pagination.rows;
   const [receivingTransfer, setReceivingTransfer] = useState<(Transfer & { id: string }) | null>(null);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [busy, setBusy] = useState(false);
   const { msg, flash } = useFlash();
-
-  useEffect(() => {
-    return onSnapshot(
-      query(
-        tenantCollection('transfers'),
-        where('toLocationId', '==', storeId),
-        where('status', 'in', ['pendiente', 'en_transito']), limit(100)
-      ),
-      (s) => setTransfers(s.docs.map((d) => ({ ...(d.data() as Transfer), id: d.id })))
-    );
-  }, [storeId]);
 
   const openReceiveModal = (t: Transfer & { id: string }) => {
     setReceivingTransfer(t);
@@ -89,12 +82,13 @@ export function ReceivingPage() {
         </div>
         {transfers.length > 0 && (
           <span className="badge bg-amber-100 font-bold text-amber-800">
-            {transfers.length} {transfers.length === 1 ? 'pendiente' : 'pendientes'}
+            {transfers.length} {transfers.length === 1 ? 'pendiente en esta página' : 'pendientes en esta página'}
           </span>
         )}
       </div>
 
-      {transfers.length === 0 ? (
+      {pagination.error && <p className="text-sm text-critical">No se pudieron cargar las transferencias. {pagination.error}</p>}
+      {pagination.loading ? <p className="text-sm text-slate-500">Cargando transferencias…</p> : transfers.length === 0 ? (
         <EmptyState
           title="Sin transferencias por recibir"
           hint="Cuando el Administrador envíe mercadería a tu tienda aparecerá aquí para que la cuentes y recibas."
@@ -148,6 +142,8 @@ export function ReceivingPage() {
           ))}
         </div>
       )}
+
+      <Pagination {...pagination} />
 
       {/* Modal de Conteo y Confirmación */}
       <Modal

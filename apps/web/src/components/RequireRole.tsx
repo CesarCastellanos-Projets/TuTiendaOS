@@ -1,3 +1,4 @@
+import { AccessGate } from './AccessGate';
 import type { ReactElement } from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth, homeFor } from '../lib/auth';
@@ -20,7 +21,7 @@ export function RequireRole({ roles }: { roles: Role[] }): ReactElement {
       />
     );
   }
-  return <Outlet />;
+  return <AccessGate><Outlet /></AccessGate>;
 }
 
 export function FullPageLoader(): ReactElement {

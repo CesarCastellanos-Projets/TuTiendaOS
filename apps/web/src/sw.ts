@@ -46,6 +46,7 @@ if ('PushManager' in self && 'Notification' in self && 'indexedDB' in self) {
   onBackgroundMessage(messaging, async (payload) => {
     const replenishment = payload.data?.kind === 'replenishment';
     if (payload.data?.kind !== 'calendar' && !replenishment) return;
+    if (!replenishment && Number(payload.data?.deadlineAt) <= Date.now()) return;
     await self.registration.showNotification(replenishment ? "D'ENZOZ · Reposiciones" : "D'ENZOZ · Calendario", {
       body: replenishment ? 'Hay una solicitud de reposición pendiente de aprobación.' : 'Tienes un recordatorio pendiente. Abre el calendario para revisarlo.',
       icon: '/icon.svg',

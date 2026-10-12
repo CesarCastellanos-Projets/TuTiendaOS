@@ -47,13 +47,25 @@ export function useStoreCatalog(storeId: string | undefined): {
     });
   }, [storeId, tenantId]);
 
-  const currentItems = useMemo(() => {
+  const combine = useMemo(() => {
     const byId = new Map(products.map((product) => [product.id, product]));
-    return items.filter((stock) => byId.get(stock.productId)?.active === true).map((stock) => {
-      const product = byId.get(stock.productId)!;
-      return { ...stock, productName: product.name, salePrice: product.salePrice, barcode: product.barcode, unit: product.unit };
-    });
-  }, [items, products]);
+    let previous = new Map<string, { stock: ProductStock; row: ProductStock }>();
+    return (stocks: ProductStock[]) => {
+      const next = new Map<string, { stock: ProductStock; row: ProductStock }>();
+      const result: ProductStock[] = [];
+      for (const stock of stocks) {
+        const product = byId.get(stock.productId);
+        if (product?.active !== true) continue;
+        const cached = previous.get(stock.productId);
+        const row = cached?.stock === stock ? cached.row : { ...stock, productName: product.name,
+          salePrice: product.salePrice, barcode: product.barcode, unit: product.unit };
+        next.set(stock.productId, { stock, row }); result.push(row);
+      }
+      previous = next;
+      return result;
+    };
+  }, [products]);
+  const currentItems = useMemo(() => combine(items), [combine, items]);
   return { items: currentItems, products, offline, error: error ?? productError };
 }
 
@@ -178,8 +190,6 @@ export function useCatalogSearch(items: ProductStock[]) {
     const list: SearchableCatalogItem[] = [];
 
     for (const p of productsList.filter((product) => product.active)) {
-      const stock = stockMap.get(p.id);
-      const baseStockQty = availableBase(stock, p.presentations);
 
       // Presentación base
       list.push({
@@ -187,9 +197,9 @@ export function useCatalogSearch(items: ProductStock[]) {
         productName: `${p.name} (${p.unit || 'UN'})`,
         salePrice: p.salePrice,
         barcode: p.barcode,
-        quantity: baseStockQty,
-        locationId: stock?.locationId ?? '',
-        locationName: stock?.locationName ?? '',
+        quantity: 0,
+        locationId: '',
+        locationName: '',
         locationType: 'store',
         presentationUnit: p.unit ?? 'UN',
         presentationLabel: `Unidad base (${p.unit ?? 'UN'})`,
@@ -207,8 +217,8 @@ export function useCatalogSearch(items: ProductStock[]) {
           productName: `${p.name} (${label})`,
           salePrice: pres.salePrice,
           barcode: pres.barcode,
-          locationId: stock?.locationId ?? '',
-          locationName: stock?.locationName ?? '',
+          locationId: '',
+          locationName: '',
           locationType: 'store',
           presentationUnit: pres.unit,
           presentationId,
@@ -217,7 +227,7 @@ export function useCatalogSearch(items: ProductStock[]) {
           autoUnpackEnabled: pres.autoUnpackEnabled === true,
           allowFractionalSale: pres.allowFractionalSale === true,
           fractionStep: pres.fractionStep ?? 0.5,
-          quantity: availablePresentation(stock, p.presentations, pres),
+          quantity: 0,
           searchKey: `${p.id}_${presentationId}`,
           searchText: `${p.name} ${p.brand ?? ''} ${p.category} ${pres.description ?? ''} ${label}`,
           internalCode: p.internalCode
@@ -226,14 +236,29 @@ export function useCatalogSearch(items: ProductStock[]) {
     }
 
     return list;
-  }, [stockMap, productsList]);
+  }, [productsList]);
 
-  return useMemo(() => {
+  const search = useMemo(() => {
     const index = allSearchable.map((item) => ({ item, name: normalizeSearch(item.searchText ?? item.productName), codes: [item.barcode ?? '', item.internalCode ?? '', item.productId].filter(Boolean) }));
-    return (term: string): SearchableCatalogItem[] => index
-      .map((entry) => ({ ...entry, score: searchScore(term, entry.name, entry.codes) }))
-      .filter((entry) => entry.score > 0)
-      .sort((a, b) => b.score - a.score || a.item.productName.localeCompare(b.item.productName, 'es'))
-      .slice(0, 40).map((entry) => entry.item);
+    let lastTerm: string | undefined;
+    let lastResult: SearchableCatalogItem[] = [];
+    return (term: string) => {
+      if (term === lastTerm) return lastResult;
+      lastTerm = term;
+      lastResult = index.map((entry) => ({ ...entry, score: searchScore(term, entry.name, entry.codes) }))
+        .filter((entry) => entry.score > 0)
+        .sort((a, b) => b.score - a.score || a.item.productName.localeCompare(b.item.productName, 'es'))
+        .slice(0, 40).map((entry) => entry.item);
+      return lastResult;
+    };
   }, [allSearchable]);
+  const productsById = useMemo(() => new Map(productsList.map((product) => [product.id, product])), [productsList]);
+  return useMemo(() => (term: string): SearchableCatalogItem[] => search(term).map((item) => {
+    const stock = stockMap.get(item.productId);
+    const product = productsById.get(item.productId);
+    const presentation = item.presentationId ? product?.presentations?.find((value, index) =>
+      (value.id || `legacy-${index + 1}`) === item.presentationId) : undefined;
+    return { ...item, locationId: stock?.locationId ?? '', locationName: stock?.locationName ?? '',
+      quantity: presentation ? availablePresentation(stock, product?.presentations, presentation) : availableBase(stock, product?.presentations) };
+  }), [search, stockMap, productsById]);
 }

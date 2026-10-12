@@ -12,6 +12,7 @@ interface RepositoryOptions<T> {
   save: (rows: T[], replace: boolean) => Promise<void>;
   id: (row: T) => string;
   decode: (id: string, data: DocumentData) => T;
+  onIdle?: () => void;
 }
 export interface CollectionState<T> { rows: T[]; offline: boolean; error: string | null }
 
@@ -24,20 +25,22 @@ export function liveCollection<T extends Committed>(options: RepositoryOptions<T
   const rows = new Map<string, T>();
   const liveDuringSync = new Map<string, T>();
   let state: CollectionState<T> = { rows: [], offline: false, error: null };
-  let cursor: CommitCursor | undefined;
   let complete = false;
   let coverageCursor: CommitCursor | undefined;
   let caughtUp = false;
   let loading: Promise<void> | null = null;
   let syncing: Promise<void> | null = null;
-  let refreshAgain = false;
+  let overflowCursor: CommitCursor | undefined;
+  let cacheNeedsReplacement = false;
   let unsubscribe: (() => void) | null = null;
   let stopTimer: ReturnType<typeof setTimeout> | undefined;
   let writes = Promise.resolve();
+  let rowsChanged = false;
+  let onlineAttached = false;
   const filters = options.filters ?? [];
   const metaKey = `sync-v2:${options.key}`;
   const publish = () => {
-    state = { ...state, rows: [...rows.values()] };
+    if (rowsChanged) { state = { ...state, rows: [...rows.values()] }; rowsChanged = false; }
     listeners.forEach((listener) => listener(state));
   };
   const fail = (cause: unknown) => {
@@ -52,81 +55,120 @@ export function liveCollection<T extends Committed>(options: RepositoryOptions<T
       const id = options.id(row);
       if (compare(row.committedAt, rows.get(id)?.committedAt) < 0) continue;
       rows.set(id, row);
-      if (compare(row.committedAt, cursor) > 0) cursor = row.committedAt;
+      rowsChanged = true;
     }
   };
   const persist = (updates: T[], replace: boolean) => {
     const checkpoint = coverageCursor;
     writes = writes.then(async () => {
-      await options.save(updates, replace);
+      await options.save(cacheNeedsReplacement ? [...rows.values()] : updates, replace || cacheNeedsReplacement);
       await localDb.catalogMeta.put({ key: metaKey, value: 1, cursor: checkpoint });
-    }).catch(fail);
+      cacheNeedsReplacement = false;
+    }).catch((cause: unknown) => { cacheNeedsReplacement = true; fail(cause); });
     return writes;
   };
   const load = () => loading ??= (async () => {
     const [cached, meta] = await Promise.all([options.load(), localDb.catalogMeta.get(metaKey)]);
-    apply(cached); cursor = meta?.cursor; coverageCursor = cursor; complete = meta?.value === 1;
+    apply(cached); coverageCursor = meta?.cursor; complete = meta?.value === 1;
     publish();
   })().catch((cause: unknown) => { loading = null; throw cause; });
-  const watch = () => {
+  const watch = (sinceCursor = coverageCursor) => {
     if (unsubscribe || !listeners.size) return;
-    const since = cursor ? new Timestamp(cursor.seconds, cursor.nanoseconds) : new Timestamp(0, 0);
+    const since = sinceCursor ? new Timestamp(sinceCursor.seconds, sinceCursor.nanoseconds) : new Timestamp(0, 0);
+    let serverReady = false;
     unsubscribe = onSnapshot(query(options.collection, ...filters, where('committedAt', '>=', since), orderBy('committedAt', 'desc'), limit(300)), { includeMetadataChanges: true }, (snapshot) => {
-      if (snapshot.metadata.fromCache) { state = { ...state, offline: !navigator.onLine }; publish(); return; }
-      const updates = snapshot.docChanges().filter((change) => change.type !== 'removed')
-        .map(({ doc }) => options.decode(doc.id, doc.data()));
+      if (snapshot.metadata.fromCache || snapshot.metadata.hasPendingWrites) {
+        serverReady = false; state = { ...state, offline: !navigator.onLine }; publish(); return;
+      }
+      const changed = serverReady ? snapshot.docChanges({ includeMetadataChanges: true })
+        .filter((change) => change.type !== 'removed').map(({ doc }) => doc) : snapshot.docs;
+      serverReady = true;
+      const updates = changed.map((doc) => options.decode(doc.id, doc.data()));
       if (syncing || !caughtUp) updates.forEach((row) => liveDuringSync.set(options.id(row), row));
       apply(updates);
       state = { ...state, offline: false, error: null }; publish();
-      const tail = snapshot.docs.at(-1)?.data();
-      if (snapshot.size === 300 && compare(tail ? commitCursor(tail) : undefined, coverageCursor) >= 0) {
-        if (syncing) refreshAgain = true;
-        caughtUp = false; void refresh();
+      const head = snapshot.docs[0] ? commitCursor(snapshot.docs[0].data()) : undefined;
+      const tail = snapshot.docs.at(-1);
+      if (snapshot.size === 300 && compare(tail ? commitCursor(tail.data()) : undefined, coverageCursor) > 0) {
+        if (compare(head, overflowCursor) > 0) overflowCursor = head;
+        caughtUp = false;
+        if (!syncing) void refresh().catch(fail);
       } else if (complete && caughtUp && !syncing && updates.length) {
-        coverageCursor = cursor; void persist(updates, false);
+        if (compare(head, coverageCursor) > 0) coverageCursor = head;
+        const changedIds = new Set([...liveDuringSync.keys(), ...updates.map(options.id)]);
+        liveDuringSync.clear();
+        void persist([...changedIds].map((id) => rows.get(id)!), false);
       }
-    }, (error) => { unsubscribe?.(); unsubscribe = null; fail(error); });
+    }, (error) => { unsubscribe?.(); unsubscribe = null; caughtUp = false; fail(error); });
   };
   const refresh = async () => {
     await load();
     if (syncing) return syncing;
     syncing = (async () => {
       do {
-      refreshAgain = false;
-      const initial = !complete;
-      const since = coverageCursor ? new Timestamp(coverageCursor.seconds, coverageCursor.nanoseconds) : new Timestamp(0, 0);
-      const updates: T[] = [];
-      let pageCursor: QueryDocumentSnapshot<DocumentData> | undefined;
-      do {
-        const constraints = initial ? [orderBy(documentId())]
-          : [where('committedAt', '>=', since), orderBy('committedAt'), orderBy(documentId())];
-        const page = await getDocsFromServer(query(options.collection, ...filters, ...constraints,
-          ...(pageCursor ? [startAfter(pageCursor)] : []), limit(300)));
-        updates.push(...page.docs.map((doc) => options.decode(doc.id, doc.data())));
-        pageCursor = page.size === 300 ? page.docs.at(-1) : undefined;
-      } while (pageCursor);
-      if (initial) rows.clear();
-      apply(updates); apply([...liveDuringSync.values()]); liveDuringSync.clear();
-      complete = true;
-      if (refreshAgain) continue;
-      caughtUp = true; coverageCursor = cursor; state = { ...state, offline: false, error: null }; publish();
-      await persist([...rows.values()], true);
-      } while (refreshAgain);
-    })().catch(fail).finally(() => { syncing = null; });
-    watch();
+        const initial = !complete;
+        const head = await getDocsFromServer(query(options.collection, ...filters, orderBy('committedAt', 'desc'), limit(1)));
+        const fence = head.docs[0] ? commitCursor(head.docs[0].data()) : coverageCursor;
+        const until = fence ? new Timestamp(fence.seconds, fence.nanoseconds) : new Timestamp(0, 0);
+        // La cobertura termina en un commit observado antes de paginar, nunca en el máximo recibido en vivo.
+        watch(initial ? fence : coverageCursor);
+        const since = coverageCursor ? new Timestamp(coverageCursor.seconds, coverageCursor.nanoseconds) : new Timestamp(0, 0);
+        const updates: T[] = [];
+        let pageCursor: QueryDocumentSnapshot<DocumentData> | undefined;
+        do {
+          const constraints = initial ? [orderBy(documentId())]
+            : [where('committedAt', '>=', since), where('committedAt', '<=', until), orderBy('committedAt'), orderBy(documentId())];
+          const page = await getDocsFromServer(query(options.collection, ...filters, ...constraints,
+            ...(pageCursor ? [startAfter(pageCursor)] : []), limit(300)));
+          updates.push(...page.docs.map((doc) => options.decode(doc.id, doc.data())));
+          pageCursor = page.size === 300 ? page.docs.at(-1) : undefined;
+        } while (pageCursor);
+        if (initial) { rows.clear(); rowsChanged = true; }
+        const changedIds = new Set([...updates.map(options.id), ...liveDuringSync.keys()]);
+        apply(updates); apply([...liveDuringSync.values()]); liveDuringSync.clear();
+        complete = true;
+        if (compare(fence, coverageCursor) > 0) coverageCursor = fence;
+        caughtUp = compare(overflowCursor, coverageCursor) <= 0;
+        state = { ...state, offline: false, error: null }; publish();
+        await persist(initial ? [...rows.values()] : [...changedIds].map((id) => rows.get(id)!), initial);
+      } while (compare(overflowCursor, coverageCursor) > 0);
+      while (liveDuringSync.size) {
+        const pending = [...liveDuringSync.keys()].map((id) => rows.get(id)!);
+        liveDuringSync.clear();
+        await persist(pending, false);
+      }
+    })().catch(fail).finally(() => { syncing = null; if (!listeners.size) scheduleStop(); });
     return syncing;
   };
-  const online = () => { if (listeners.size) { watch(); void refresh(); } };
-  window.addEventListener('online', online, { passive: true });
+  const online = () => { if (listeners.size) void refresh().catch(fail); };
+  const scheduleStop = () => {
+    clearTimeout(stopTimer);
+    stopTimer = setTimeout(() => {
+      if (listeners.size) return;
+      if (syncing) { scheduleStop(); return; }
+      unsubscribe?.(); unsubscribe = null; caughtUp = false;
+      if (onlineAttached) window.removeEventListener('online', online);
+      onlineAttached = false;
+      void writes.then(() => {
+        if (listeners.size || syncing) return;
+        rows.clear(); liveDuringSync.clear(); loading = null; complete = false;
+        coverageCursor = undefined; overflowCursor = undefined;
+        state = { rows: [], offline: false, error: null }; rowsChanged = false;
+        options.onIdle?.();
+      });
+    }, 30000);
+  };
+  scheduleStop();
   return {
     get: () => state,
     refresh,
     subscribe(listener: (value: CollectionState<T>) => void) {
       clearTimeout(stopTimer); listeners.add(listener); listener(state);
-      if (!unsubscribe || !caughtUp) void load().then(() => { watch(); return refresh(); }).catch(fail);
+      if (!onlineAttached) { window.addEventListener('online', online, { passive: true }); onlineAttached = true; }
+      if (!unsubscribe || !caughtUp) void refresh().catch(fail);
       return () => {
         listeners.delete(listener);
-        if (!listeners.size) stopTimer = setTimeout(() => { unsubscribe?.(); unsubscribe = null; caughtUp = false; }, 30000);
+        if (!listeners.size) scheduleStop();
       };
     }
   };

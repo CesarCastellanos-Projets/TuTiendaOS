@@ -1,3 +1,4 @@
+import { PriceBell } from '../PriceBell';
 import { Suspense } from 'react';
 import { Outlet } from 'react-router-dom';
 import { ScanBarcode, TriangleAlert, Calculator, ArrowDownToLine } from 'lucide-react';
@@ -19,7 +20,7 @@ export function WorkerLayout() {
   ];
   return <div className="worker-shell">
     <a href="#main-content" className="skip-link">Ir al contenido</a>
-    <header className="app-topbar"><Brand subtitle="En tienda" /><div className="worker-desktop-nav"><Navigation items={nav} /></div><AccountMenu name={profile.displayName} role="Trabajador" onLogout={() => void logout()} /></header>
+    <header className="app-topbar"><Brand subtitle="En tienda" /><div className="worker-desktop-nav"><Navigation items={nav} /></div><PriceBell /><AccountMenu name={profile.displayName} role="Trabajador" onLogout={() => void logout()} /></header>
     <main id="main-content" className="worker-content page-content"><Suspense fallback={<RouteLoading />}><Outlet /></Suspense></main>
     <div className="mobile-navigation worker-mobile-nav"><Navigation items={nav} /></div>
   </div>;

@@ -1,3 +1,4 @@
+import { UserSettings } from '../../components/users/UserSettings';
 import { useEffect, useMemo, useState } from 'react';
 import { collection, documentId, limit, orderBy, query, where } from 'firebase/firestore';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
@@ -22,18 +23,21 @@ const ROLE_LABEL: Record<Role, string> = {
 };
 
 export function UsersPage() {
+  const [selected, setSelected] = useState<(UserProfile & { id: string }) | null>(null);
+  const [purchaseAccess, setPurchaseAccess] = useState(false);
   const [stores, setStores] = useState<Store[]>([]);
   const [creating, setCreating] = useState(false);
   const [busy, setBusy] = useState(false);
   const [newRole, setNewRole] = useState<Role | ''>('');
   const [posStoreAccess, setPosStoreAccess] = useState<PosStoreAccess>('assigned');
+  const [overrideAccess, setOverrideAccess] = useState(true);
   const [calendarAccess, setCalendarAccess] = useState(false);
   const { msg, flash } = useFlash();
   const tenantId = useAuth((state) => state.profile?.tenantId);
 
   const userQuery = useMemo(() => tenantId ? query(collection(db, 'users'), where('tenantId', '==', tenantId), orderBy(documentId())) : null, [tenantId]);
   const userPage = usePagedQuery<UserProfile & { id: string }>(userQuery);
-  const users = userPage.rows;
+  const users = userPage.rows.filter((user) => !user.deletedAt);
 
   useEffect(() => {
     return onSnapshot(query(tenantCollection('stores'), limit(50)), (s) =>
@@ -53,6 +57,8 @@ export function UsersPage() {
       role,
       storeId: role === 'admin' || storeAccess === 'all' ? null : clean(fd.get('storeId')) || null,
       storeAccess,
+      canOverridePrices: role === 'pos' && storeAccess === 'all' && overrideAccess,
+      canViewPurchaseCosts: role === 'pos' && purchaseAccess,
       canManageCalendar: role === 'admin' || (role === 'pos' && calendarAccess)
     };
     if (payload.password.length < 6) {
@@ -68,6 +74,8 @@ export function UsersPage() {
       await createSystemUser(payload);
       setCreating(false);
       setNewRole('');
+      setPurchaseAccess(false);
+      setOverrideAccess(true);
       setPosStoreAccess('assigned');
       setCalendarAccess(false);
       flash('Usuario creado');
@@ -107,7 +115,7 @@ export function UsersPage() {
               <th className="th">Rol</th>
               <th className="th">Tienda</th>
               <th className="th">Calendario</th>
-              <th className="th text-right">Estado</th>
+              <th className="th text-right">Estado</th><th className="th">Administrar</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-linea">
@@ -127,6 +135,7 @@ export function UsersPage() {
                     {u.active ? 'activo' : 'inactivo'}
                   </button>
                 </td>
+                <td data-label="Administrar" className="td"><button className="btn-ghost" onClick={() => setSelected(u)}>Permisos y cuenta</button></td>
               </tr>
             ))}
           </tbody>
@@ -139,7 +148,9 @@ export function UsersPage() {
         onClose={() => {
           setCreating(false);
           setNewRole('');
-          setPosStoreAccess('assigned');
+          setPurchaseAccess(false);
+      setOverrideAccess(true);
+      setPosStoreAccess('assigned');
       setCalendarAccess(false);
         }}
       >
@@ -154,7 +165,7 @@ export function UsersPage() {
           </div>
           <div>
             <label className="label">Clave inicial * (mín. 6)</label>
-            <input name="password" type="text" required minLength={6} className="field font-mono" />
+            <input name="password" type="password" autoComplete="new-password" required minLength={6} className="field font-mono" />
           </div>
           <div>
             <label className="label">Rol *</label>
@@ -164,8 +175,10 @@ export function UsersPage() {
               value={newRole}
               onChange={(event) => {
                 setNewRole(event.target.value as Role | '');
+                setPurchaseAccess(false);
+                setOverrideAccess(true);
                 setPosStoreAccess('assigned');
-      setCalendarAccess(false);
+                setCalendarAccess(false);
               }}
               className="field"
             >
@@ -189,6 +202,8 @@ export function UsersPage() {
             </div>
           )}
           {newRole === 'pos' && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={calendarAccess} onChange={(event) => setCalendarAccess(event.target.checked)} />Administrar calendario y recibir recordatorios de la empresa</label>}
+          {newRole === 'pos' && posStoreAccess === 'all' && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={overrideAccess} onChange={(event) => setOverrideAccess(event.target.checked)} />Ajustar el precio de la venta actual</label>}
+          {newRole === 'pos' && <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={purchaseAccess} onChange={(event) => setPurchaseAccess(event.target.checked)} />Consultar costo de compra y proveedor</label>}
           {(newRole === 'trabajador' || (newRole === 'pos' && posStoreAccess === 'assigned')) && (
             <div>
               <label className="label">Tienda asignada *</label>
@@ -214,6 +229,7 @@ export function UsersPage() {
         </form>
       </Modal>
 
+      {selected && <UserSettings key={selected.id} user={selected} close={() => setSelected(null)} saved={flash} />}
       <FlashBar msg={msg} />
     </div>
   );

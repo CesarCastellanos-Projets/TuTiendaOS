@@ -16,10 +16,11 @@ export { aggregateSaleStatistics, recoverSalesStatistics } from './statistics-pr
 export { saveCustomUnits } from './company';
 export { saveCalendarEvent, completeCalendarEvent, setCalendarPermission, markCalendarNotification, registerCalendarDevice, unregisterCalendarDevice, sendCalendarReminders } from './calendar';
 export { saveCatalogProduct } from './catalog';
+export { getAccessState, setUserSettings, changeUserPassword, deleteSystemUser, getProductPurchase } from './user-management';
 export { listWorkerInventoryAccess, setWorkerInventoryAccess } from './worker-permissions';
 export { openCashSession, closeCashSession, getCashSessionSummary } from './cash';
 export { getSalesStatistics, backfillSalesStatistics } from './statistics';
-export { notifyReplenishmentRequest, retryReplenishmentPush } from './replenishment-notifications';
+export { notifyReplenishmentRequest } from './replenishment-notifications';
 export { createQuotationRecord, createReplenishmentRecord, discardQuotation } from './requests';
 export { resolveTransferShortage } from './shortages';
 export {
@@ -147,3 +148,6 @@ export const migrateCatalogAndStocks = onCall(appCheckOptions, async (request) =
   await requireAdmin(request);
   throw new HttpsError('failed-precondition', 'Esta migración fue retirada. Usa tools/migrate-presentation-stock.mjs con credenciales administrativas y revisión del dry-run.');
 });
+
+export { searchQuotations } from './quotation-search';
+export { previewQuotationCleanup, purgeExpiredQuotations } from './quotation-cleanup';

@@ -31,11 +31,12 @@ function readProfile(user: User): Promise<UserProfile | null> {
   ])
     .then(([snapshot, token]) => {
       if (!snapshot.exists()) return null;
+      if (Number(token.claims.auth_time ?? 0) < Number(snapshot.data().authValidAfter ?? 0)) return null;
       const profile = snapshot.data() as UserProfile;
       const resolved = {
         ...profile,
         storeAccess: profile.storeAccess === 'all' && token.claims.posStoreAccess === 'all' ? 'all' : 'assigned',
-        canOverridePrices: profile.storeAccess === 'all' && token.claims.posStoreAccess === 'all' && token.claims.canOverridePrices === true,
+        canOverridePrices: profile.canOverridePrices !== false && profile.storeAccess === 'all' && token.claims.posStoreAccess === 'all' && token.claims.canOverridePrices === true,
         canManageCalendar: profile.role === 'admin' || (profile.role === 'pos' && (profile.canManageCalendar === true || (profile.canManageCalendar === undefined && profile.storeAccess === 'all')))
       } satisfies UserProfile;
       return { ...resolved, storeId: sessionStore(resolved, user.uid) };
@@ -91,13 +92,14 @@ export const useAuth = create<AuthState>((set) => {
             return;
           }
           set({ user, profile, loading: false, error: null });
+          const sessionToken = await user.getIdTokenResult();
           stopProfile = onSnapshot(doc(db, 'users', user.uid), (snapshot) => {
             if (!active || currentRevision !== revision) return;
             const current = snapshot.data() as UserProfile | undefined;
-            if (!current?.active || current.tenantId !== profile.tenantId || current.role !== profile.role) { void signOut(auth); return; }
-            set({ profile: { ...profile, ...current, storeId: sessionStore({ ...current, storeAccess: profile.storeAccess === 'all' && current.storeAccess === 'all' ? 'all' : 'assigned' }, user.uid), storeAccess: profile.storeAccess === 'all' && current.storeAccess === 'all' ? 'all' : 'assigned', canOverridePrices: profile.canOverridePrices && current.storeAccess === 'all',
+            if (!current?.active || Number(sessionToken.claims.auth_time ?? 0) < Number(current.authValidAfter ?? 0) || current.tenantId !== profile.tenantId || current.role !== profile.role) { void signOut(auth); return; }
+            set({ profile: { ...profile, ...current, storeId: sessionStore({ ...current, storeAccess: profile.storeAccess === 'all' && current.storeAccess === 'all' ? 'all' : 'assigned' }, user.uid), storeAccess: profile.storeAccess === 'all' && current.storeAccess === 'all' ? 'all' : 'assigned', canOverridePrices: current.canOverridePrices !== false && sessionToken.claims.canOverridePrices === true && sessionToken.claims.posStoreAccess === 'all' && current.storeAccess === 'all',
               canManageCalendar: current.role === 'admin' || (current.role === 'pos' && (current.canManageCalendar === true || (current.canManageCalendar === undefined && current.storeAccess === 'all'))) } });
-          }, () => set((state) => ({ profile: state.profile ? { ...state.profile, canManageCalendar: false, inventoryAccess: undefined } : null })));
+          }, () => set((state) => ({ profile: state.profile ? { ...state.profile, canManageCalendar: false, canViewPurchaseCosts: false, inventoryAccess: undefined } : null })));
 
         } catch {
           if (active && currentRevision === revision) {

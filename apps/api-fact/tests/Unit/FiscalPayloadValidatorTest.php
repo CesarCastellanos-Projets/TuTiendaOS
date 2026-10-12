@@ -51,6 +51,43 @@ final class FiscalPayloadValidatorTest extends TestCase
         app(FiscalPayloadValidator::class)->canonicalizeInvoice($payload);
     }
 
+    public function test_receipt_dni_boundary_is_inclusive(): void
+    {
+        config()->set('sunat.min_boleta_dni', 700);
+        $payload = $this->receiptPayload(699.99);
+        self::assertSame(699.99, app(FiscalPayloadValidator::class)->canonicalizeInvoice($payload)['totals']['total']);
+
+        $this->expectException(ValidationException::class);
+        app(FiscalPayloadValidator::class)->canonicalizeInvoice($this->receiptPayload(700));
+    }
+
+    public function test_current_contract_uses_the_api_threshold_for_an_anonymous_800_receipt(): void
+    {
+        $payload = $this->receiptPayload(800);
+        config()->set('sunat.min_boleta_dni', 1000);
+        self::assertSame(800.0, app(FiscalPayloadValidator::class)->canonicalizeInvoice($payload)['totals']['total']);
+
+        config()->set('sunat.min_boleta_dni', 700);
+        $this->expectException(ValidationException::class);
+        app(FiscalPayloadValidator::class)->canonicalizeInvoice($payload);
+    }
+
+    /** @return array<string, mixed> */
+    private function receiptPayload(float $total): array
+    {
+        $payload = $this->invoicePayload();
+        $payload['tipo'] = 'boleta';
+        $payload['serie'] = 'B001';
+        $payload['cliente'] = ['tipo' => '-', 'numero' => '', 'nombre' => ''];
+        $payload['igv_rate'] = 18;
+        $payload['items'][0]['cantidad'] = 1;
+        $payload['items'][0]['precio'] = $total;
+        $subtotal = round($total / 1.18, 2);
+        $payload['totals'] = ['subtotal' => $subtotal, 'igv' => round($total - $subtotal, 2), 'total' => $total];
+
+        return $payload;
+    }
+
     /** @return array<string, mixed> */
     private function invoicePayload(): array
     {

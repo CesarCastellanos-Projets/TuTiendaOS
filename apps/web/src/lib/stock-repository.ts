@@ -8,6 +8,7 @@ const repositories = new Map<string, ReturnType<typeof createRepository>>();
 function createRepository(tenantId: string, storeId: string) {
   return liveCollection<ProductStock>({
     key: `stocks:${tenantId}:${storeId}`, collection: tenantCollectionFor(tenantId, 'product_stocks'),
+    onIdle: () => repositories.delete(`${tenantId}:${storeId}`),
     filters: [where('locationId', '==', storeId)], id: (row) => row.productId,
     decode: (_id, data) => ({ ...data, committedAt: commitCursor(data) }) as ProductStock,
     load: async () => (await localDb.products.where('[tenantId+locationId]').equals([tenantId, storeId]).toArray())

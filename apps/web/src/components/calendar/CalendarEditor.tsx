@@ -169,8 +169,8 @@ export function CalendarEditor({
         </div>
       </fieldset>
       <p className="text-xs text-slate-500">
-        Los pendientes vencidos recuerdan una vez al día. Completar un evento repetido programa su próxima
-        fecha.
+        Los avisos terminan al acabar la fecha indicada, en horario de Perú. Los vencidos se conservan en
+        «Mostrar finalizados». Completar una fecha repetida programa la siguiente; «Finalizar repetición» detiene el evento.
       </p>
       {error && (
         <p role="alert" className="text-sm text-critical">

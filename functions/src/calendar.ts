@@ -1,13 +1,20 @@
+import { assertUserAccess } from './access-schedule';
+import { assertCurrentProfile } from './authz';
+import { runTransientCleanup } from './transient-maintenance';
 import { appCheckOptions } from './app-check';
 import { createHash, randomUUID } from 'node:crypto';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { runReplenishmentPushRetries } from './replenishment-notifications';
+import { runNotificationMaintenance } from './notification-maintenance';
+import { workBudget } from './work-budget';
 import type { DocumentReference, DocumentSnapshot } from 'firebase-admin/firestore';
 import { FieldPath, Timestamp } from 'firebase-admin/firestore';
 import { admin, db } from './firebase';
 import { requireActiveProfile, requireAdmin } from './authz';
 import {
   calendarAllowed,
+  calendarDeadline,
   DAY,
   firstReminder,
   nextOccurrence,
@@ -60,6 +67,7 @@ export const setCalendarPermission = onCall(appCheckOptions, async (request) => 
     throw new HttpsError('invalid-argument', 'Permiso inválido.');
   const target = db.doc(`users/${uid}`);
   await db.runTransaction(async (tx) => {
+    await assertCurrentProfile(tx, profile);
     const user = (await tx.get(target)).data();
     if (!user || user.tenantId !== profile.tenantId || user.role !== 'pos')
       throw new HttpsError('permission-denied', 'Selecciona un POS de tu empresa.');
@@ -80,6 +88,7 @@ export const saveCalendarEvent = onCall(appCheckOptions, async (request) => {
   const now = Date.now();
   const result = await db.runTransaction(async (tx) => {
     const [snapshot, user] = await Promise.all([tx.get(ref), tx.get(db.doc(`users/${profile.uid}`))]);
+    assertUserAccess(user.data() ?? {}, profile.authTime);
     if (!calendarAllowed(user.data() ?? {}) || user.data()?.tenantId !== profile.tenantId)
       throw new HttpsError('permission-denied', 'Tu permiso del calendario cambió.');
     const current = snapshot.data();
@@ -119,18 +128,23 @@ export const saveCalendarEvent = onCall(appCheckOptions, async (request) => {
 
 export const completeCalendarEvent = onCall(appCheckOptions, async (request) => {
   const profile = await requireCalendar(request);
+  const finishSeries = request.data?.finishSeries ?? false;
+  if (typeof finishSeries !== 'boolean')
+    throw new HttpsError('invalid-argument', 'Acción inválida.');
+  const lastAction = finishSeries ? 'finish' : 'complete';
   if (!Number.isInteger(request.data?.version) || request.data.version < 1)
     throw new HttpsError('invalid-argument', 'Versión inválida.');
   const ref = db.doc(`tenants/${profile.tenantId}/calendar_events/${identifier(request.data?.id)}`);
   await db.runTransaction(async (tx) => {
     const [snapshot, user] = await Promise.all([tx.get(ref), tx.get(db.doc(`users/${profile.uid}`))]);
     const event = snapshot.data();
+    assertUserAccess(user.data() ?? {}, profile.authTime);
     if (!calendarAllowed(user.data() ?? {}) || user.data()?.tenantId !== profile.tenantId)
       throw new HttpsError('permission-denied', 'Tu permiso del calendario cambió.');
     if (
       event &&
       event.version === request.data.version + 1 &&
-      event.lastAction === 'complete' &&
+      event.lastAction === lastAction &&
       event.lastCompletedBy === profile.uid
     )
       return;
@@ -138,20 +152,20 @@ export const completeCalendarEvent = onCall(appCheckOptions, async (request) => 
       throw new HttpsError('aborted', 'El evento cambió. Actualiza el calendario.');
     let dueDate = event.dueDate as string;
     const now = Date.now();
-    if (event.recurrence !== 'none') {
+    if (event.recurrence !== 'none' && !finishSeries) {
       do {
         dueDate = nextOccurrence(dueDate, event.recurrence, event.anchorDay);
       } while (peruDateAt(dueDate, event.dueTime || '09:00') <= now && dueDate < '2100-12-31');
     }
     const dueAt = peruDateAt(dueDate, event.dueTime || '09:00');
-    const status = event.recurrence === 'none' ? 'completado' : 'pendiente';
+    const status = event.recurrence === 'none' || finishSeries ? 'completado' : 'pendiente';
     tx.update(ref, {
       status,
       dueDate,
       dueAt,
       version: event.version + 1,
-      lastAction: 'complete',
-      nextReminderAt: firstReminder({ dueAt, status, reminderDays: event.reminderDays }, now),
+      lastAction,
+      nextReminderAt: firstReminder({ dueDate, dueAt, status, reminderDays: event.reminderDays }, now),
       dispatchLeaseUntil: 0,
       dispatchLease: null,
       lastCompletedAt: now,
@@ -172,11 +186,35 @@ export const markCalendarNotification = onCall(appCheckOptions, async (request) 
   );
   const action = request.data?.action;
   if (!['read', 'snooze'].includes(action)) throw new HttpsError('invalid-argument', 'Acción inválida.');
-  await ref.update(
-    action === 'read'
-      ? { readAt: Date.now(), snoozedUntil: null, pushState: 'cancelled', nextPushAt: null }
-      : { snoozedUntil: Date.now() + 3600000, pushState: 'pending', nextPushAt: Date.now() + 3600000 }
-  );
+  await db.runTransaction(async (tx) => {
+    const item = (await tx.get(ref)).data();
+    if (!item) throw new HttpsError('not-found', 'El recordatorio ya no existe.');
+    const [event, user] = await Promise.all([
+      tx.get(db.doc(`tenants/${profile.tenantId}/calendar_events/${identifier(item.eventId)}`)),
+      tx.get(db.doc(`users/${profile.uid}`))
+    ]);
+    assertUserAccess(user.data() ?? {}, profile.authTime);
+    if (!calendarAllowed(user.data() ?? {}) || user.data()?.tenantId !== profile.tenantId)
+      throw new HttpsError('permission-denied', 'Tu permiso del calendario cambió.');
+    const now = Date.now();
+    const deadline = calendarDeadline(item.dueDate);
+    if (
+      !item.active ||
+      event.data()?.status !== 'pendiente' ||
+      event.data()?.version !== item.eventVersion ||
+      deadline <= now
+    ) {
+      tx.update(ref, { active: false, pushState: 'cancelled', nextPushAt: null, snoozedUntil: null });
+      return;
+    }
+    const snoozedUntil = Math.min(now + 3600000, deadline);
+    tx.update(
+      ref,
+      action === 'read'
+        ? { readAt: now, snoozedUntil: null, pushState: 'cancelled', nextPushAt: null }
+        : { snoozedUntil, pushState: 'pending', nextPushAt: snoozedUntil }
+    );
+  });
   return { ok: true };
 });
 
@@ -197,6 +235,7 @@ export const registerCalendarDevice = onCall(appCheckOptions, async (request) =>
   await db.runTransaction(async (tx) => {
     const user = await tx.get(db.doc(`users/${profile.uid}`));
     const current = user.data() ?? {};
+    assertUserAccess(current, profile.authTime);
     const currentApprover = current.role === 'admin' || (current.role === 'pos' && current.storeAccess === 'all' && profile.storeAccess === 'all');
     if (current.active !== true || (!calendarAllowed(current) && !currentApprover) || current.tenantId !== profile.tenantId)
       throw new HttpsError('permission-denied', 'Tus permisos de notificaciones cambiaron.');
@@ -237,7 +276,7 @@ export async function dispatchCalendarEvent(ref: DocumentReference, now = Date.n
   const parts = ref.path.split('/');
   if (parts.length !== 4 || parts[0] !== 'tenants' || parts[2] !== 'calendar_events') return;
   const lease = randomUUID();
-  const event = await db.runTransaction(async (tx) => {
+  const claim = await db.runTransaction(async (tx) => {
     const value = (await tx.get(ref)).data();
     if (
       !value ||
@@ -249,10 +288,20 @@ export async function dispatchCalendarEvent(ref: DocumentReference, now = Date.n
     )
       return null;
     tx.update(ref, { dispatchLease: lease, dispatchLeaseUntil: now + 10 * 60000 });
-    return value;
+    return { value, expired: calendarDeadline(value.dueDate) <= now };
   });
-  if (!event) return;
+  if (!claim) return;
+  const event = claim.value;
   const tenantId = ref.parent.parent!.id;
+  if (claim.expired) {
+    await invalidateNotifications(tenantId, ref.id, event.version + 1);
+    await db.runTransaction(async (tx) => {
+      const latest = (await tx.get(ref)).data();
+      if (latest && latest.version === event.version && latest.dispatchLease === lease)
+        tx.update(ref, { nextReminderAt: null, dispatchLease: null, dispatchLeaseUntil: 0 });
+    });
+    return;
+  }
   const notificationId = hash(`${ref.id}:${event.version}:${event.nextReminderAt}`);
   let cursor: DocumentSnapshot | undefined;
   while (true) {
@@ -279,7 +328,8 @@ export async function dispatchCalendarEvent(ref: DocumentReference, now = Date.n
           !calendarAllowed(freshUser.data() ?? {}) ||
           freshUser.data()?.tenantId !== tenantId ||
           freshEvent.data()?.version !== event.version ||
-          freshEvent.data()?.status !== 'pendiente'
+          freshEvent.data()?.status !== 'pendiente' ||
+          calendarDeadline(event.dueDate) <= Math.max(now, Date.now())
         )
           return;
         tx.create(notification, {
@@ -342,13 +392,15 @@ export async function deliverCalendarNotification(ref: DocumentReference, now = 
       tx.get(db.doc(`tenants/${tenantId}/calendar_events/${notification.eventId}`))
     ]);
     if (
+      notification.active !== true ||
+      calendarDeadline(notification.dueDate) <= now ||
       !calendarAllowed(user.data() ?? {}) ||
       user.data()?.tenantId !== tenantId ||
       notification.readAt ||
       event.data()?.status !== 'pendiente' ||
       event.data()?.version !== notification.eventVersion
     ) {
-      tx.update(ref, { pushState: 'cancelled', nextPushAt: null });
+      tx.update(ref, { active: false, pushState: 'cancelled', nextPushAt: null, snoozedUntil: null });
       return null;
     }
     tx.update(ref, { pushLease: lease, pushLeaseUntil: now + 5 * 60000 });
@@ -361,12 +413,14 @@ export async function deliverCalendarNotification(ref: DocumentReference, now = 
   );
   let transientFailure = false;
   for (const device of valid) {
+    const remaining = calendarDeadline(item.dueDate) - Math.max(now, Date.now());
+    if (remaining <= 0) break;
     try {
       if (!process.env.FIRESTORE_EMULATOR_HOST)
         await admin.messaging().send({
           token: device.data().token,
-          data: { kind: 'calendar', notificationId: ref.id },
-          webpush: { headers: { TTL: '3600', Urgency: 'normal' } }
+          data: { kind: 'calendar', notificationId: ref.id, deadlineAt: String(calendarDeadline(item.dueDate)) },
+          webpush: { headers: { TTL: String(Math.min(3600, Math.ceil(remaining / 1000))), Urgency: 'normal' } }
         });
     } catch (error) {
       const code = (error as { code?: string }).code;
@@ -393,7 +447,8 @@ export async function deliverCalendarNotification(ref: DocumentReference, now = 
   });
 }
 
-export async function runCalendarReminders(now = Date.now()): Promise<void> {
+export async function runCalendarReminders(now = Date.now(), canStart: () => boolean = () => true): Promise<void> {
+  if (!canStart()) return;
   const due = await db
     .collectionGroup('calendar_events')
     .where('status', '==', 'pendiente')
@@ -402,12 +457,14 @@ export async function runCalendarReminders(now = Date.now()): Promise<void> {
     .limit(100)
     .get();
   for (const event of due.docs) {
+    if (!canStart()) break;
     try {
       await dispatchCalendarEvent(event.ref, now);
     } catch (error) {
       console.error('calendar-dispatch', event.id, error);
     }
   }
+  if (!canStart()) return;
   const pending = await db
     .collectionGroup('notifications')
     .where('pushState', '==', 'pending')
@@ -416,6 +473,7 @@ export async function runCalendarReminders(now = Date.now()): Promise<void> {
     .limit(100)
     .get();
   for (const notification of pending.docs) {
+    if (!canStart()) break;
     try {
       await deliverCalendarNotification(notification.ref, now);
     } catch (error) {
@@ -425,8 +483,12 @@ export async function runCalendarReminders(now = Date.now()): Promise<void> {
 }
 
 export const sendCalendarReminders = onSchedule(
-  { schedule: 'every 5 minutes', timeZone: 'America/Lima', timeoutSeconds: 540, maxInstances: 1 },
+  { schedule: 'every 5 minutes', timeZone: 'America/Lima', timeoutSeconds: 240, maxInstances: 1, concurrency: 1 },
   async () => {
-    await runCalendarReminders();
+    await runNotificationMaintenance(
+      () => runCalendarReminders(Date.now(), workBudget(240000).canStart),
+      () => runReplenishmentPushRetries(workBudget(240000).canStart),
+      () => runTransientCleanup(workBudget(240000).canStart)
+    );
   }
 );

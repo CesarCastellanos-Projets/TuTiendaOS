@@ -10,7 +10,7 @@ use App\Http\Controllers\Api\SunatMaintenanceController;
 use App\Http\Controllers\Api\VoidedController;
 use Illuminate\Support\Facades\Route;
 
-Route::middleware(['api.token', 'tenant', 'throttle:60,1'])->group(function () {
+Route::middleware(['api.token', 'tenant', 'throttle:tributary-api'])->group(function () {
     Route::post('/health-check', [HealthCheckController::class, 'check']);
     Route::post('/config/certificate', [SunatConfigController::class, 'uploadCertificate']);
     Route::post('/config/demo-mode', [SunatConfigController::class, 'useDemoMode']);

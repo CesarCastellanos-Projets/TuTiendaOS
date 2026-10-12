@@ -5,10 +5,25 @@ service cloud.firestore {
     
     function signedIn() { return request.auth != null; }
     function profile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function scheduleWindow(s) {
+      let local = request.time.toMillis() - 18000000;
+      let day = (int(local / 86400000) + 4) % 7;
+      let minute = int(local / 60000) % 1440;
+      return s is map && s.days is list && s.days.size() > 0 && s.days.size() <= 7
+        && s.days.hasOnly([0,1,2,3,4,5,6]) && s.start is int && s.end is int
+        && s.start >= 0 && s.start <= 1439 && s.end >= 0 && s.end <= 1439
+        && (s.start <= s.end ? (day in s.days && minute >= s.start && minute <= s.end)
+          : ((day in s.days && minute >= s.start) || ((day + 6) % 7 in s.days && minute <= s.end)));
+    }
+    function authorizedTime() {
+      return request.auth.token.get('auth_time', 0) >= profile().data.get('authValidAfter', 0)
+        && (profile().data.role == 'admin' || profile().data.get('accessSchedule', null) == null
+          || scheduleWindow(profile().data.accessSchedule));
+    }
     function activeUser() {
       return signedIn() && profile().data.active == true
         && profile().data.role in ['admin', 'pos', 'trabajador']
-        && profile().data.tenantId is string;
+        && profile().data.tenantId is string && authorizedTime();
     }
     function isAdmin() { return activeUser() && profile().data.role == 'admin'; }
     function isPos() { return activeUser() && profile().data.role == 'pos'; }
@@ -93,7 +108,7 @@ service cloud.firestore {
 
     function validUser(data) {
       return data.keys().hasAll(['displayName', 'email', 'role', 'active', 'tenantId'])
-        && data.keys().hasOnly(['displayName', 'email', 'role', 'active', 'tenantId', 'storeId', 'storeAccess', 'warehouseId', 'createdAt', 'canManageCalendar', 'inventoryAccess'])
+        && data.keys().hasOnly(['displayName', 'email', 'role', 'active', 'tenantId', 'storeId', 'storeAccess', 'warehouseId', 'createdAt', 'canManageCalendar', 'inventoryAccess', 'canViewPurchaseCosts', 'canOverridePrices', 'accessSchedule', 'authValidAfter'])
         && shortString(data.displayName, 120) && shortString(data.email, 160)
         && shortString(data.tenantId, 63) && data.role in ['admin', 'pos', 'trabajador']
         && data.active is bool
@@ -165,7 +180,7 @@ service cloud.firestore {
     }
 
     match /users/{uid} {
-      allow get: if activeUser() && (request.auth.uid == uid || (isAdmin() && resource.data.tenantId == userTenantId()));
+      allow get: if signedIn() && (request.auth.uid == uid || (isAdmin() && resource.data.tenantId == userTenantId()));
       allow list: if boundedList() && (isAdmin() && resource.data.tenantId == userTenantId());
       allow create: if false;
       allow update: if activeUser() && request.auth.uid == uid
@@ -222,6 +237,15 @@ service cloud.firestore {
       match /warehouses/{warehouseId} {
         allow get: if belongsToTenant(tenantId);
         allow list: if boundedList() && (belongsToTenant(tenantId));
+        allow write: if false;
+      }
+      match /product_purchase/{productId} {
+        allow get: if belongsToTenant(tenantId) && (isAdmin() || (isPos() && profile().data.get('canViewPurchaseCosts', false) == true));
+        allow list, write: if false;
+      }
+      match /price_notices/{noticeId} {
+        allow get: if belongsToTenant(tenantId) && (isPos() || isWorker());
+        allow list: if belongsToTenant(tenantId) && (isPos() || isWorker()) && boundedList() && request.query.limit <= 50;
         allow write: if false;
       }
       match /products/{productId} {

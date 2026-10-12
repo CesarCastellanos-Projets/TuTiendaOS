@@ -1,0 +1,29 @@
+{
+  "tenantId": "stage4-fixture",
+  "sessionId": "C1",
+  "session": {
+    "tenantId": "stage4-fixture",
+    "storeId": "S1",
+    "userId": "U1",
+    "status": "abierta",
+    "openingAmount": 50
+  },
+  "sales": [
+    {
+      "id": "venta-mixta",
+      "data": {
+        "tenantId": "stage4-fixture",
+        "storeId": "S1",
+        "userId": "U1",
+        "cashSessionId": "C1",
+        "status": "activa",
+        "createdAt": 1791738000000,
+        "total": 25,
+        "payments": [
+          { "method": "efectivo", "amount": 15 },
+          { "method": "plin", "amount": 10 }
+        ]
+      }
+    }
+  ]
+}

@@ -2,7 +2,7 @@ import { after, before, beforeEach, test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { assertFails, assertSucceeds, initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import { collection, doc, getDoc, getDocs, limit, orderBy, query, setDoc, updateDoc, where } from 'firebase/firestore';
-import { getBytes, ref, uploadString } from 'firebase/storage';
+import { getBytes, getMetadata, ref, uploadString } from 'firebase/storage';
 
 let env;
 const TENANT_A = 'tenant-a';
@@ -171,6 +171,7 @@ test('Storage limita incidencias al tenant y al usuario propietario', async () =
   const ownRef = ref(env.authenticatedContext('pos-a').storage(), `tenants/${TENANT_A}/incidents/A01/pos-a/photo.png`);
   await assertSucceeds(uploadString(ownRef, 'imagen', 'raw', { contentType: 'image/png' }));
   await assertSucceeds(getBytes(ownRef));
+  await assertSucceeds(getMetadata(ownRef));
 
   const otherTenant = ref(env.authenticatedContext('pos-a').storage(), `tenants/${TENANT_B}/incidents/A01/pos-a/attack.png`);
   const otherUser = ref(env.authenticatedContext('pos-a').storage(), `tenants/${TENANT_A}/incidents/A01/worker-a/attack.png`);
@@ -179,6 +180,9 @@ test('Storage limita incidencias al tenant y al usuario propietario', async () =
   await assertFails(uploadString(otherUser, 'imagen', 'raw', { contentType: 'image/png' }));
   await assertFails(uploadString(invalidType, 'binario', 'raw', { contentType: 'application/octet-stream' }));
   await assertFails(getBytes(ref(env.authenticatedContext('pos-b').storage(), ownRef.fullPath)));
+  await assertFails(getMetadata(ref(env.authenticatedContext('pos-b').storage(), ownRef.fullPath)));
+  await env.withSecurityRulesDisabled(async (context) => updateDoc(doc(context.firestore(), 'users', 'pos-a'), { active: false }));
+  await assertFails(getMetadata(ownRef));
 });
 
 

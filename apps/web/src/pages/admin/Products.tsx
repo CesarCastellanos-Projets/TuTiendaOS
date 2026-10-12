@@ -1,3 +1,4 @@
+import { PurchaseFields, type PurchaseData } from '../../components/products/PurchaseFields';
 import { durableCommand } from '../../lib/durable-command';
 import { EditableNumberInput } from '../../components/ui/EditableNumberInput';
 import { availableBase, availablePresentation, needsStockReconciliation, baseQuantityStep } from '../../lib/stock-availability';
@@ -38,6 +39,7 @@ function newPresentationId(): string {
 export function ProductsPage() {
   const company = useCompany();
   const products = useProductsCatalog();
+  const [purchase, setPurchase] = useState<PurchaseData | null | undefined>();
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<(Partial<Product> & { id?: string }) | null>(null);
   const [presentations, setPresentations] = useState<(ProductPresentation & { salePriceInput?: string; factorInput?: string })[]>([]);
@@ -57,6 +59,7 @@ export function ProductsPage() {
   }, [company?.customUnits]);
 
   const openEditModal = (p: Partial<Product> & { id?: string }) => {
+    setPurchase(undefined);
     setEditing(p);
     setBasePriceInput(p.salePrice !== undefined ? String(p.salePrice) : '');
     setBaseUnit(p.unit ?? 'UN');
@@ -248,7 +251,7 @@ export function ProductsPage() {
     }
 
     try {
-      await durableCommand('saveCatalogProduct', { ...(editing?.id ? { productId: editing.id } : {}), product: { ...data, updatedAt: 0 } });
+      await durableCommand('saveCatalogProduct', { ...(purchase !== undefined ? { purchase } : {}), ...(editing?.id ? { productId: editing.id } : {}), product: { ...data, updatedAt: 0 } });
       await refreshProductsCatalog(data.tenantId!);
       setEditing(null);
       flash(editing?.id ? 'Producto actualizado con éxito' : 'Producto creado con éxito');
@@ -672,6 +675,7 @@ export function ProductsPage() {
           </div>
 
           {/* 3. Control de Stock y Ubicación Física */}
+          <PurchaseFields key={editing?.id ?? 'new'} productId={editing?.id} unit={String(baseUnit)} presentations={presentations} changed={setPurchase} />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label className="label">Stock Mínimo (Alerta de Reposición)</label>

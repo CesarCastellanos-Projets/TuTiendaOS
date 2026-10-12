@@ -10,6 +10,8 @@ export interface WorkerInventoryAccess {
   updatedByName: string;
 }
 
+export interface AccessSchedule { days: number[]; start: number; end: number }
+
 export interface UserProfile {
   tenantId: string;
   displayName: string;
@@ -19,12 +21,18 @@ export interface UserProfile {
   storeAccess?: PosStoreAccess;
   canOverridePrices?: boolean;
   canManageCalendar?: boolean;
+  canViewPurchaseCosts?: boolean;
+  accessSchedule?: AccessSchedule | null;
+  authValidAfter?: number;
+  deletedAt?: number;
   inventoryAccess?: WorkerInventoryAccess;
   active: boolean;
   createdAt?: number;
 }
 
 export interface NewUserPayload {
+  canViewPurchaseCosts?: boolean;
+  canOverridePrices?: boolean;
   email: string;
   password: string;
   displayName: string;
@@ -424,6 +432,8 @@ export interface QuotationItem {
 }
 
 export interface Quotation {
+  version?: number;
+  expiresAt?: number;
   tenantId?: string;
   id: string;
   code: string;

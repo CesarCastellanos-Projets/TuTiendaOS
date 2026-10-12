@@ -1,46 +1,31 @@
-import { useEffect, useState } from 'react';
-import { getDocs, limit, orderBy, query } from 'firebase/firestore';
-import { onSnapshot } from '../../lib/firestore-listener';
-import { tenantCollection } from '../../lib/tenant-firestore';
+import { useMemo, useState } from 'react';
+import { orderBy, query, where } from 'firebase/firestore';
+import { usePagedQuery } from '../../hooks/usePagedQuery';
+import { useLocationOptions } from '../../hooks/useLocationOptions';
+import { Pagination } from '../../components/ui/Pagination';
+import { useAuth } from '../../lib/auth';
+import { tenantCollectionFor } from '../../lib/tenant-firestore';
 import { adjustStock } from '../../lib/inventory';
 import { ProductLines, useProductSearch, type PickLine } from '../../components/ui/ProductPicker';
-import type { StockMovement, Store, Warehouse } from '../../types';
+import type { StockMovement } from '../../types';
 import { fmtDateTime, num, clean } from '../../lib/utils';
 import { FlashBar, useFlash } from '../../components/ui/Feedback';
 
 export function AdjustmentsPage() {
-  const [locations, setLocations] = useState<{ id: string; name: string }[]>([]);
+  const tenantId = useAuth((state) => state.profile!.tenantId);
+  const locationOptions = useLocationOptions(tenantId);
+  const locations = locationOptions.rows;
   const [locationId, setLocationId] = useState('');
   const [lines, setLines] = useState<PickLine[]>([]);
   const [type, setType] = useState<'ajuste' | 'merma' | 'reclasificar'>('ajuste');
   const [reason, setReason] = useState('');
-  const [movements, setMovements] = useState<StockMovement[]>([]);
+  const source = useMemo(() => query(tenantCollectionFor(tenantId, 'stock_movements'), where('type', 'in', ['ajuste', 'merma', 'conversion']),
+    orderBy('createdAt', 'desc')), [tenantId]);
+  const pagination = usePagedQuery<StockMovement & { id: string }>(source, 20);
+  const movements = pagination.rows;
   const { search } = useProductSearch();
   const { msg, flash } = useFlash();
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    async function load() {
-      const [st, wh] = await Promise.all([
-        getDocs(query(tenantCollection('stores'), limit(50))),
-        getDocs(query(tenantCollection('warehouses'), limit(50)))
-      ]);
-      const locs: { id: string; name: string }[] = [];
-      st.forEach((d) => locs.push({ id: d.id, name: (d.data() as Store).name }));
-      wh.forEach((d) => locs.push({ id: d.id, name: (d.data() as Warehouse).name }));
-      setLocations(locs);
-    }
-    void load();
-    return onSnapshot(
-      query(tenantCollection('stock_movements'), orderBy('createdAt', 'desc'), limit(100)),
-      (s) => {
-        const list = s.docs
-          .map((d) => d.data() as StockMovement)
-          .filter((m) => m.type === 'ajuste' || m.type === 'merma' || m.type === 'conversion');
-        setMovements(list.slice(0, 20));
-      }
-    );
-  }, []);
 
   const submit = async () => {
     if (!locationId || lines.length !== 1 || !reason.trim()) {
@@ -78,9 +63,12 @@ export function AdjustmentsPage() {
             <select className="field" value={locationId} onChange={(e) => setLocationId(e.target.value)}>
               <option value="">Elegir…</option>
               {locations.map((l) => (
-                <option key={l.id} value={l.id}>{l.name}</option>
+                <option key={`${l.source}:${l.id}`} value={l.id}>{l.name}</option>
               ))}
             </select>
+            {locationOptions.error && <p className="text-xs text-critical">{locationOptions.error}</p>}
+            {(locationOptions.hasNext || locationOptions.error) && <button type="button" className="btn-ghost mt-2 text-xs"
+              disabled={locationOptions.loading} onClick={() => void locationOptions.next()}>Cargar más ubicaciones</button>}
           </div>
           <div>
             <label className="label">Tipo *</label>
@@ -109,12 +97,13 @@ export function AdjustmentsPage() {
 
       <section className="card adjustment-history p-5">
         <h2 className="mb-3 font-semibold">Últimos ajustes y mermas</h2>
-        {movements.length === 0 ? (
+        {pagination.error && <p className="text-sm text-critical">No se pudo cargar el historial. {pagination.error}</p>}
+        {pagination.loading ? <p className="text-sm text-slate-500">Cargando movimientos…</p> : movements.length === 0 ? (
           <p className="text-sm text-slate-500">Sin movimientos aún.</p>
         ) : (
           <ul className="divide-y divide-linea">
-            {movements.map((m, i) => (
-              <li key={i} className="flex items-center justify-between gap-3 py-2">
+            {movements.map((m) => (
+              <li key={m.id} className="flex items-center justify-between gap-3 py-2">
                 <div className="min-w-0">
                   <p className="text-sm font-medium">{m.productName}</p>
                   <p className="text-xs text-slate-500">{m.reason ?? '—'} · {fmtDateTime(m.createdAt)}</p>
@@ -126,6 +115,7 @@ export function AdjustmentsPage() {
             ))}
           </ul>
         )}
+        <Pagination {...pagination} />
       </section>
 
       <FlashBar msg={msg} />

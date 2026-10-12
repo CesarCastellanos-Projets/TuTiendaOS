@@ -17,19 +17,19 @@ export async function saveCalendar(id: string, version: number, event: CalendarD
     )({ id, version, event })
   ).data;
 }
-export async function completeCalendar(id: string, version: number) {
-  await httpsCallable(functions, 'completeCalendarEvent')({ id, version });
+export async function completeCalendar(id: string, version: number, finishSeries = false) {
+  await httpsCallable(functions, 'completeCalendarEvent')({ id, version, finishSeries });
 }
 export async function markCalendar(id: string, action: 'read' | 'snooze') {
   await httpsCallable(functions, 'markCalendarNotification')({ id, action });
 }
-export function peruToday(): string {
+export function peruToday(now = Date.now()): string {
   const parts = new Intl.DateTimeFormat('en', {
     timeZone: 'America/Lima',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit'
-  }).formatToParts(new Date());
+  }).formatToParts(new Date(now));
   return ['year', 'month', 'day'].map((type) => parts.find((part) => part.type === type)?.value).join('-');
 }
 export function calendarDate(date: string): string {

@@ -953,9 +953,57 @@
           "order": "ASCENDING"
         }
       ]
+    },
+    {
+      "collectionGroup": "operation_receipts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "kind",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "result.id",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "cash_sessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "userId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": [
+    {
+      "collectionGroup": "sales",
+      "fieldPath": "items",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "sale_requests",
+      "fieldPath": "input",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "operation_receipts",
+      "fieldPath": "result",
+      "indexes": []
+    },
+    {
+      "collectionGroup": "sunat_summary_jobs",
+      "fieldPath": "payload",
+      "indexes": []
+    },
     {
       "collectionGroup": "sales_statistics",
       "fieldPath": "days",
@@ -980,6 +1028,60 @@
       "collectionGroup": "stock_ingresses",
       "fieldPath": "items",
       "indexes": []
+    },
+    {
+      "collectionGroup": "price_notices",
+      "fieldPath": "expiresAt",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION_GROUP"
+        },
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        },
+        {
+          "order": "DESCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "quotations",
+      "fieldPath": "expiresAt",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION_GROUP"
+        },
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        },
+        {
+          "order": "DESCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "quotations",
+      "fieldPath": "createdAt",
+      "indexes": [
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION_GROUP"
+        },
+        {
+          "order": "ASCENDING",
+          "queryScope": "COLLECTION"
+        },
+        {
+          "order": "DESCENDING",
+          "queryScope": "COLLECTION"
+        }
+      ]
     }
   ]
 }

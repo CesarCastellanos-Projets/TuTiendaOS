@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import { onDocumentCreated } from 'firebase-functions/v2/firestore';
-import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { Timestamp, type DocumentReference, type QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import { admin, db } from './firebase';
 
@@ -11,7 +10,12 @@ export async function deliverReplenishmentPush(ref: DocumentReference, now = Dat
 }): Promise<void> {
   const claim = await db.runTransaction(async (tx) => {
     const snapshot = await tx.get(ref); const job = snapshot.data();
-    if (!job || (job.expiresAt?.toMillis?.() ?? Infinity) <= now || job.state !== 'pending' || Number(job.nextAttemptAt) > now || Number(job.leaseUntil ?? 0) > now) return null;
+    if (!job || job.state !== 'pending' || Number(job.leaseUntil ?? 0) > now) return null;
+    if ((job.expiresAt?.toMillis?.() ?? Infinity) <= now) {
+      tx.update(ref, { state: 'cancelled', leaseUntil: 0 });
+      return null;
+    }
+    if (Number(job.nextAttemptAt) > now) return null;
     const [device, user, request] = await tx.getAll(db.doc(`calendar_push_devices/${job.deviceId}`), db.doc(`users/${job.uid}`),
       db.doc(`tenants/${job.tenantId}/replenishment_requests/${job.requestId}`));
     const profile = user.data(); const target = device.data();
@@ -55,7 +59,11 @@ export const notifyReplenishmentRequest = onDocumentCreated({ document: 'tenants
   } while (cursor);
 });
 
-export const retryReplenishmentPush = onSchedule({ schedule: 'every 5 minutes', maxInstances: 1 }, async () => {
+export async function runReplenishmentPushRetries(canStart: () => boolean = () => true): Promise<void> {
+  if (!canStart()) return;
   const jobs = await db.collection('replenishment_push_jobs').where('state', '==', 'pending').where('nextAttemptAt', '<=', Date.now()).orderBy('nextAttemptAt').limit(50).get();
-  for (const job of jobs.docs) await deliverReplenishmentPush(job.ref).catch((cause: unknown) => console.warn('Aviso pendiente de recuperación', cause instanceof Error ? cause.message : 'error'));
-});
+  for (const job of jobs.docs) {
+    if (!canStart()) break;
+    await deliverReplenishmentPush(job.ref).catch((cause: unknown) => console.warn('Aviso pendiente de recuperación', cause instanceof Error ? cause.message : 'error'));
+  }
+}

@@ -41,7 +41,6 @@ export const saveCatalogProduct = onCall(appCheckOptions, async (request) => {
   if (!name || !Number.isFinite(salePrice) || salePrice <= 0 || salePrice > 1_000_000 || !Number.isInteger(minStock) || minStock < 0 || minStock > 1_000_000) {
     throw new HttpsError('invalid-argument', 'Nombre, precio y stock mínimo no son válidos.');
   }
-
   const rawPresentations = Array.isArray(input.presentations) ? input.presentations : [];
   if (rawPresentations.length > 30) {
     throw new HttpsError('invalid-argument', 'Un producto admite como máximo 30 presentaciones.');
@@ -81,12 +80,24 @@ export const saveCatalogProduct = onCall(appCheckOptions, async (request) => {
       autoUnpackPriority: priority
     };
   });
-
+  const purchaseRequested = Object.prototype.hasOwnProperty.call(request.data ?? {}, 'purchase');
+  if (purchaseRequested && profile.role !== 'admin') throw new HttpsError('permission-denied', 'Solo el administrador puede registrar compras.');
+  const rawPurchase = request.data?.purchase;
+  let purchase: Record<string, unknown> | null = null;
+  if (purchaseRequested && rawPurchase !== null) {
+    if (!rawPurchase || typeof rawPurchase !== 'object' || Array.isArray(rawPurchase)) throw new HttpsError('invalid-argument', 'Compra inválida.');
+    const cost = round2(Number(rawPurchase.cost));
+    const presentation = rawPurchase.presentationId ? presentations.find((p) => p.id === rawPurchase.presentationId) : null;
+    if (!Number.isFinite(cost) || cost < 0 || cost > 1000000 || (rawPurchase.presentationId && !presentation)) throw new HttpsError('invalid-argument', 'Costo o presentación de compra inválidos.');
+    purchase = { tenantId: profile.tenantId, productId: productRef.id, cost,
+      presentationId: presentation?.id ?? null, presentationLabel: presentation?.description ?? unit,
+      factor: presentation?.factor ?? 1, baseCost: round2(cost / (presentation?.factor ?? 1)),
+      supplier: text(rawPurchase.supplier, 180), updatedAt: Date.now() };
+  }
   const codes = [barcode, ...presentations.map((presentation) => presentation.barcode ?? '')].filter(Boolean);
   if (new Set(codes.map((code) => code.toLowerCase())).size !== codes.length) {
     throw new HttpsError('already-exists', 'Un código de barras está repetido dentro del producto.');
   }
-
   const product = {
     tenantId: profile.tenantId,
     name,
@@ -101,7 +112,6 @@ export const saveCatalogProduct = onCall(appCheckOptions, async (request) => {
     presentations,
     updatedAt: Date.now()
   };
-
   return db.runTransaction(async (tx) => {
     const operation = await readOperation(tx, profile, 'catalog-product', commandId, request.data);
     if (operation.result) return operation.result;
@@ -139,7 +149,6 @@ export const saveCatalogProduct = onCall(appCheckOptions, async (request) => {
       .map((id) => tenantDoc(profile.tenantId, 'barcode_registry', id));
     const registrySnaps = await Promise.all(registryRefs.map((ref) => tx.get(ref)));
     const registryById = new Map(registrySnaps.map((snap) => [snap.id, snap]));
-
     for (const code of codes) {
       const registered = registryById.get(barcodeId(code));
       if (registered?.exists && registered.data()?.productId !== productRef.id) {
@@ -160,6 +169,23 @@ export const saveCatalogProduct = onCall(appCheckOptions, async (request) => {
         updatedAt: product.updatedAt
       });
     });
+    if (purchaseRequested) {
+      const purchaseRef = tenantDoc(profile.tenantId, 'product_purchase', productRef.id);
+      if (purchase) tx.set(purchaseRef, purchase); else tx.delete(purchaseRef);
+    }
+    if (currentSnap.exists) {
+      const changes: { label: string; previous: number; current: number }[] = [];
+      if (Number(current.salePrice) !== salePrice) changes.push({ label: unit, previous: Number(current.salePrice), current: salePrice });
+      for (const item of presentations) {
+        const old = oldPresentations.find((p) => p.id === item.id);
+        if (old && old.salePrice !== item.salePrice) changes.push({ label: item.description, previous: old.salePrice, current: item.salePrice });
+      }
+      const noticeAt = Date.now();
+      if (changes.length) tx.create(tenantDoc(profile.tenantId, 'price_notices', operation.ref.id), {
+        tenantId: profile.tenantId, productId: productRef.id, productName: name, changes,
+        createdAt: noticeAt, expiresAt: noticeAt + 5 * 3600000
+      });
+    }
     tx.set(productRef, { ...product, ...(current.internalCode ? { internalCode: current.internalCode } : {}), committedAt: FieldValue.serverTimestamp() });
     if (profile.role === 'trabajador') tx.create(creationRef, {
       tenantId: profile.tenantId, storeId: profile.storeId, userId: profile.uid, userName: profile.displayName,

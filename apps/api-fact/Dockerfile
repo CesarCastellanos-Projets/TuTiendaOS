@@ -1,4 +1,4 @@
-FROM php:8.2-cli-alpine
+FROM php:8.2-fpm-alpine
 
 # Instalar dependencias del sistema y extensiones requeridas para SUNAT y Greenter
 RUN apk add --no-cache \
@@ -9,16 +9,22 @@ RUN apk add --no-cache \
     sqlite-dev \
     git \
     unzip \
+    nginx \
+    supervisor \
+    gettext \
+    oniguruma-dev \
     && docker-php-ext-install -j$(nproc) \
     pdo_sqlite \
     soap \
     zip \
     curl \
     fileinfo \
-    bcmath
+    bcmath \
+    mbstring \
+    opcache
 
 # Copiar Composer desde imagen oficial
-COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /var/www
 
@@ -35,7 +41,8 @@ RUN mkdir -p storage/framework/sessions \
              bootstrap/cache \
              database \
     && touch database/database.sqlite \
-    && chmod -R 777 storage bootstrap/cache database
+    && chown -R www-data:www-data storage bootstrap/cache database \
+    && chmod -R 775 storage bootstrap/cache database
 
 # Instalar dependencias de producción
 RUN composer install --no-dev --optimize-autoloader --no-interaction
@@ -48,11 +55,10 @@ ENV DB_DATABASE=/var/www/database/database.sqlite
 ENV CACHE_STORE=file
 ENV SESSION_DRIVER=file
 ENV PORT=8000
+ENV PHP_FPM_MAX_CHILDREN=2
 EXPOSE 8000
 
-# Script de arranque: migraciones y servidor Laravel
-CMD test -n "$APP_KEY" && test -n "$API_FACT_TOKEN" \
-    && mkdir -p "${SUNAT_STORAGE_ROOT:-/var/www/storage/app/private}" "${SUNAT_CONFIG_DIR:-/var/www/storage/app/sunat}" "$(dirname "${DB_DATABASE:-/var/www/database/database.sqlite}")" \
-    && touch "${DB_DATABASE:-/var/www/database/database.sqlite}" \
-    && php artisan migrate --force \
-    && php artisan serve --host=0.0.0.0 --port=${PORT:-8000}
+COPY docker/php.ini /usr/local/etc/php/conf.d/denzoz.ini
+COPY docker/supervisord.conf /etc/supervisord.conf
+RUN sed -i 's/\r$//' docker/entrypoint.sh && chmod +x docker/entrypoint.sh
+ENTRYPOINT ["/var/www/docker/entrypoint.sh"]

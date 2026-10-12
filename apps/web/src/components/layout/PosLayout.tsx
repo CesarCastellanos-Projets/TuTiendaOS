@@ -1,7 +1,7 @@
+import { PriceBell } from '../PriceBell';
 import { useEffect, useState, Suspense } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { getDocs, limit, query } from 'firebase/firestore';
-import { CalendarBell } from '../calendar/CalendarBell';
 import { ReplenishmentBell } from '../inventory/ReplenishmentBell';
 import { RouteLoading } from '../RouteLoading';
 import { Brand } from '../Brand';
@@ -98,7 +98,7 @@ export function PosLayout() {
             <option value="" disabled>Elegir tienda</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
           </select> : <strong>{nav.find((item) => item.to === location.pathname)?.shortLabel ?? 'Operaciones de tienda'}</strong>}
         </div>
-        <div className="topbar-actions"><ReplenishmentBell /><CalendarBell /><AccountMenu name={profile.displayName} role={canChooseStore ? 'POS multitiendas' : 'Cajero'} onLogout={() => void handleLogout()} /></div>
+        <div className="topbar-actions"><ReplenishmentBell /><PriceBell /><AccountMenu name={profile.displayName} role={canChooseStore ? 'POS multitiendas' : 'Cajero'} onLogout={() => void handleLogout()} /></div>
       </header>
       {storeError && <p role="alert" className="mx-4 mt-2 text-sm text-critical">{storeError}</p>}
       <main id="main-content" className={`pos-content ${selling ? 'pos-content-sale' : 'page-content'}`}>

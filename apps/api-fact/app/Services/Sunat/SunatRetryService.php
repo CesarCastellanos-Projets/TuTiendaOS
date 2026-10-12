@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace App\Services\Sunat;
 
+use App\Services\DatabaseTransaction;
 use App\Models\SunatDocument;
-use Illuminate\Support\Facades\DB;
 use Throwable;
 
 final class SunatRetryService
@@ -54,7 +54,7 @@ final class SunatRetryService
 
     private function claim(int $id): ?SunatDocument
     {
-        return DB::transaction(function () use ($id): ?SunatDocument {
+        return DatabaseTransaction::run(function () use ($id): ?SunatDocument {
             $document = SunatDocument::query()->lockForUpdate()->find($id);
             if (! $document || ! in_array($document->estado_sunat, ['pendiente', 'procesando'], true)) {
                 return null;

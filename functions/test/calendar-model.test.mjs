@@ -9,6 +9,7 @@ const {
   nextOccurrence,
   firstReminder,
   nextReminder,
+  calendarDeadline,
   DAY
 } = require('../lib/calendar-model.js');
 const draft = {
@@ -52,12 +53,18 @@ test('repetición mensual conserva día 31 tras febrero y meses cortos', () => {
   assert.equal(nextOccurrence('2028-01-31', 'monthly', 31), '2028-02-29');
   assert.equal(nextOccurrence('2026-12-31', 'weekly'), '2027-01-07');
 });
-test('recordatorios saltan atrasos y vencidos recuerdan una vez al día', () => {
+test('recordatorios saltan atrasos y terminan al acabar la fecha en Perú', () => {
   const event = validateCalendar(draft);
   assert.equal(firstReminder(event, event.dueAt - 20 * DAY), event.dueAt - 7 * DAY);
   assert.equal(firstReminder(event, event.dueAt - 2 * DAY), event.dueAt - 2 * DAY);
   assert.equal(nextReminder(event, event.dueAt - 2 * DAY), event.dueAt - DAY);
-  assert.equal(nextReminder(event, event.dueAt + 3 * DAY + 1000), event.dueAt + 4 * DAY);
+  const deadline = Date.parse('2026-11-01T00:00:00-05:00');
+  assert.equal(calendarDeadline(event.dueDate), deadline);
+  assert.equal(nextReminder(event, event.dueAt + 1000), deadline);
+  assert.equal(firstReminder(event, deadline - 1), deadline - 1);
+  assert.equal(nextReminder(event, deadline), null);
+  assert.equal(firstReminder(event, deadline), null);
+  assert.equal(nextReminder(event, event.dueAt + 3 * DAY + 1000), null);
   assert.equal(firstReminder({ ...event, status: 'completado' }, Date.now()), null);
   assert.equal(peruDateAt('2026-10-01', '00:00'), Date.parse('2026-10-01T05:00:00Z'));
 });

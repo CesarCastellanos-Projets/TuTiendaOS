@@ -17,6 +17,7 @@ const TransfersPage = lazy(() => import('./pages/admin/Transfers').then((m) => (
 const AdjustmentsPage = lazy(() => import('./pages/admin/Adjustments').then((m) => ({ default: m.AdjustmentsPage })));
 const KardexPage = lazy(() => import('./pages/admin/Kardex').then((m) => ({ default: m.KardexPage })));
 const ReplenishmentAdminPage = lazy(() => import('./pages/admin/Replenishment').then((m) => ({ default: m.ReplenishmentAdminPage })));
+const QuotationCleanup = lazy(() => import('./pages/admin/QuotationCleanup').then((m) => ({ default: m.QuotationCleanup })));
 const UsersPage = lazy(() => import('./pages/admin/Users').then((m) => ({ default: m.UsersPage })));
 const SunatConfigPage = lazy(() => import('./pages/admin/SunatConfig').then((m) => ({ default: m.SunatConfigPage })));
 const TicketDesignerPage = lazy(() => import('./pages/admin/TicketDesigner').then((m) => ({ default: m.TicketDesignerPage })));
@@ -65,6 +66,7 @@ const router = createBrowserRouter([
           { path: 'reposiciones', element: <ReplenishmentAdminPage /> },
           { path: 'reposicion', element: <ReplenishmentAdminPage /> },
           { path: 'incidencias', element: <IncidentsAdminPage /> },
+          { path: 'cotizaciones', element: <QuotationCleanup /> },
           { path: 'usuarios', element: <UsersPage /> },
           { path: 'permisos-trabajadores', element: <AdminWorkerPermissions /> },
           { path: 'calendario', element: <AdminCalendar /> },

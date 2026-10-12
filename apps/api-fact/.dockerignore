@@ -6,3 +6,4 @@ storage/app/sunat/
 storage/app/private/
 database/*.sqlite
 composer.phar
+bootstrap/cache/*.php

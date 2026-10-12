@@ -4,11 +4,14 @@ import { useAuth } from '../../lib/auth';
 import { calendarDate, completeCalendar, peruToday } from '../../lib/calendar';
 import { enableCalendarPush } from '../../lib/calendar-push';
 import { useCalendarEvents } from '../../hooks/useCalendarEvents';
+import { useCalendarClock } from '../../hooks/useCalendarClock';
+import { calendarExpired } from '../../lib/calendar-lifecycle';
 import { Modal } from '../ui/Modal';
 import { CalendarEditor } from './CalendarEditor';
 import type { CalendarEvent } from '../../types';
 
 const LABELS = { pago: 'Pago', tarea: 'Tarea', vencimiento: 'Vencimiento', otro: 'Otro' };
+const RECURRENCE_LABELS = { none: '', daily: 'Cada día', weekly: 'Cada semana', monthly: 'Cada mes' };
 export function CalendarWorkspace() {
   const allowed = useAuth((state) => state.profile?.canManageCalendar);
   const [month, setMonth] = useState(() => peruToday().slice(0, 7));
@@ -20,6 +23,7 @@ export function CalendarWorkspace() {
   const [pushBusy, setPushBusy] = useState(false);
   const [showFinished, setShowFinished] = useState(false);
   const { events, error, loading, more, paging, loadMore } = useCalendarEvents(month);
+  const now = useCalendarClock();
   if (!allowed)
     return (
       <div className="p-6 text-sm">
@@ -29,16 +33,34 @@ export function CalendarWorkspace() {
   const first = new Date(`${month}-01T12:00:00Z`);
   const start = (first.getUTCDay() + 6) % 7;
   const days = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
-  const today = peruToday();
+  const today = peruToday(now);
   const visible = events.filter(
     (event) =>
-      (showFinished || event.status === 'pendiente') && (!selectedDate || event.dueDate === selectedDate)
+      (showFinished || (event.status === 'pendiente' && !calendarExpired(event.dueDate, now))) &&
+      (!selectedDate || event.dueDate === selectedDate)
   );
   const move = (direction: number) => {
     setMonth(
       new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + direction, 1)).toISOString().slice(0, 7)
     );
     setSelectedDate(null);
+  };
+  const complete = async (event: CalendarEvent, finishSeries = false) => {
+    setBusyId(event.id);
+    try {
+      await completeCalendar(event.id, event.version, finishSeries);
+      setMessage(
+        finishSeries
+          ? 'Repetición finalizada. No recibirás más avisos de este evento.'
+          : event.recurrence === 'none'
+            ? 'Evento completado.'
+            : 'Fecha completada. La próxima fecha queda pendiente.'
+      );
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No se pudo completar.');
+    } finally {
+      setBusyId(null);
+    }
   };
   return (
     <div className="mx-auto w-full max-w-6xl space-y-4">
@@ -115,7 +137,7 @@ export function CalendarWorkspace() {
             {Array.from({ length: days }, (_, index) => {
               const date = `${month}-${String(index + 1).padStart(2, '0')}`;
               const count = events.filter(
-                (event) => event.dueDate === date && event.status === 'pendiente'
+                (event) => event.dueDate === date && event.status === 'pendiente' && !calendarExpired(event.dueDate, now)
               ).length;
               return (
                 <button
@@ -162,6 +184,9 @@ export function CalendarWorkspace() {
               Ver todo el mes
             </button>
           )}
+          {showFinished && (
+            <p className="text-xs text-slate-500">Los vencidos se conservan sin avisos. Vencido no significa completado.</p>
+          )}
           {loading ? (
             <p className="text-sm text-slate-500">Cargando calendario…</p>
           ) : (
@@ -174,15 +199,15 @@ export function CalendarWorkspace() {
               <div className="flex justify-between gap-2">
                 <h3 className="break-words font-bold">{event.title}</h3>
                 <span
-                  className={`badge shrink-0 ${event.status === 'pendiente' && event.dueDate < today ? 'bg-red-50 text-critical' : 'bg-brand-50 text-primary'}`}
+                  className={`badge shrink-0 ${event.status === 'pendiente' && calendarExpired(event.dueDate, now) ? 'bg-red-50 text-critical' : 'bg-brand-50 text-primary'}`}
                 >
-                  {event.status === 'pendiente' && event.dueDate < today ? 'Vencido' : event.status}
+                  {event.status === 'pendiente' && calendarExpired(event.dueDate, now) ? 'Vencido' : event.status}
                 </span>
               </div>
               <p className="text-xs text-slate-500">
                 {LABELS[event.type]} · {calendarDate(event.dueDate)}
                 {event.dueTime && ` · ${event.dueTime}`}
-                {event.recurrence !== 'none' && ' · Se repite'}
+                {event.recurrence !== 'none' && ` · ${RECURRENCE_LABELS[event.recurrence]}`}
               </p>
               {event.description && (
                 <p className="whitespace-pre-wrap break-words text-sm">{event.description}</p>
@@ -201,23 +226,14 @@ export function CalendarWorkspace() {
                   <button
                     className="btn-primary text-xs"
                     disabled={Boolean(busyId)}
-                    onClick={async () => {
-                      setBusyId(event.id);
-                      try {
-                        await completeCalendar(event.id, event.version);
-                        setMessage(
-                          event.recurrence === 'none'
-                            ? 'Evento completado.'
-                            : 'Evento completado. Próxima fecha programada.'
-                        );
-                      } catch (error) {
-                        setMessage(error instanceof Error ? error.message : 'No se pudo completar.');
-                      } finally {
-                        setBusyId(null);
-                      }
-                    }}
+                    onClick={() => void complete(event)}
                   >
-                    {busyId === event.id ? 'Guardando…' : 'Completar'}
+                    {busyId === event.id ? 'Guardando…' : event.recurrence === 'none' ? 'Completar' : 'Completar esta fecha'}
+                  </button>
+                )}
+                {event.status === 'pendiente' && event.recurrence !== 'none' && (
+                  <button className="btn-ghost text-xs" disabled={Boolean(busyId)} onClick={() => void complete(event, true)}>
+                    Finalizar repetición
                   </button>
                 )}
               </div>

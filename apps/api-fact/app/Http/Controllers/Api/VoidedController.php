@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api;
 
+use App\Services\DatabaseTransaction;
 use App\Http\Controllers\Controller;
 use App\Models\SunatDocument;
 use App\Services\Sunat\FiscalPayloadValidator;
@@ -13,7 +14,6 @@ use App\Services\Sunat\FiscalSequence;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 final class VoidedController extends Controller
 {
@@ -33,7 +33,7 @@ final class VoidedController extends Controller
         $payloadHash = $validator->hash($data);
         $reference = 'baja:'.$data['fecha'].':'.substr($payloadHash, 0, 16);
 
-        $record = DB::transaction(function () use ($data, $payloadHash, $reference, $validator): SunatDocument {
+        $record = DatabaseTransaction::run(function () use ($data, $payloadHash, $reference, $validator): SunatDocument {
             FiscalSequence::lock('baja', 'RA');
             $existing = SunatDocument::query()->where('ref', $reference)->lockForUpdate()->first();
             if ($existing) {

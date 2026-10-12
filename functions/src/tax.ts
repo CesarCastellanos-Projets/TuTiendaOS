@@ -196,11 +196,11 @@ export const retryPendingSunatSales = onSchedule(
     if (!budget.canStart()) return;
     const maintenanceConfig = await db.doc('system/sunatMaintenance').get();
     const tenantIds = Array.isArray(maintenanceConfig.data()?.tenantIds)
-      ? maintenanceConfig.data()!.tenantIds.slice(0, 100)
+      ? maintenanceConfig.data()!.tenantIds
       : [];
     const turn = roundRobin(tenantIds, Number(maintenanceConfig.data()?.cursor ?? 0));
     let processed = 0;
-    for (const rawTenantId of turn.values) {
+    for (const rawTenantId of turn.values.slice(0, 100)) {
       if (!budget.canStart()) break;
       try {
         const tenantId = assertTenantId(rawTenantId);

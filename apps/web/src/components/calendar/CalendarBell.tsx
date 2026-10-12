@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { collection, limit, onSnapshot, orderBy, query, where } from 'firebase/firestore';
 import { Bell, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -7,10 +7,12 @@ import { db } from '../../lib/firebase';
 import { calendarDate, calendarReminderLabel, markCalendar } from '../../lib/calendar';
 import { disableCalendarPush, enableCalendarPush } from '../../lib/calendar-push';
 import { canReceiveNotifications } from '../../lib/notification-permissions';
+import { calendarExpired } from '../../lib/calendar-lifecycle';
+import { useCalendarClock } from '../../hooks/useCalendarClock';
 import type { CalendarNotification } from '../../types';
 import { Modal } from '../ui/Modal';
 
-export function CalendarBell() {
+export function CalendarBell({ priceContent, priceCount = 0 }: { priceContent?: ReactNode; priceCount?: number } = {}) {
   const profile = useAuth((state) => state.profile);
   const uid = useAuth((state) => state.user?.uid);
   const allowed = profile?.canManageCalendar === true;
@@ -21,7 +23,7 @@ export function CalendarBell() {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<CalendarNotification | null>(null);
-  const [now, setNow] = useState(Date.now());
+  const now = useCalendarClock();
   const started = useRef(Date.now());
   const calendarPath = profile?.role === 'admin' ? '/admin/calendario' : '/pos/calendario';
   useEffect(() => {
@@ -49,7 +51,7 @@ export function CalendarBell() {
         );
         setItems(notifications);
         const newest = notifications.find(
-          (item) => !item.readAt && !item.snoozedUntil && item.createdAt >= started.current
+          (item) => !item.readAt && !item.snoozedUntil && item.createdAt >= started.current && !calendarExpired(item.dueDate, Date.now())
         );
         if (newest) {
           const key = `denzoz-calendar-toast:${tenantId}:${uid}`;
@@ -68,14 +70,12 @@ export function CalendarBell() {
         setError(cause.code === 'failed-precondition' ? 'Los índices del calendario todavía no están disponibles. Espera a que termine su publicación y vuelve a abrir el calendario.' : cause.code === 'permission-denied' ? 'Tu usuario no tiene acceso a los recordatorios. Revisa el permiso de calendario y las reglas publicadas.' : 'No se pudieron cargar los recordatorios. Revisa tu conexión.');
       }
     );
-    const timer = setInterval(() => setNow(Date.now()), 60000);
     const refreshPush = setInterval(() => {
       if ('Notification' in window && Notification.permission === 'granted')
         void enableCalendarPush(false).catch(() => undefined);
     }, 12 * 3600000);
     return () => {
       unsubscribe();
-      clearInterval(timer);
       clearInterval(refreshPush);
     };
   }, [allowed, tenantId, uid, receivesNotifications]);
@@ -91,8 +91,10 @@ export function CalendarBell() {
       navigate(calendarPath, { replace: true });
     return () => navigator.serviceWorker?.removeEventListener('message', handle);
   }, [allowed, calendarPath, navigate]);
-  if (!allowed) return null;
-  const pending = items.filter((item) => !item.readAt && (!item.snoozedUntil || item.snoozedUntil <= now));
+  if (!allowed && !priceContent) return null;
+  const currentItems = items.filter((item) => !calendarExpired(item.dueDate, now));
+  const pending = currentItems.filter((item) => !item.readAt && (!item.snoozedUntil || item.snoozedUntil <= now));
+  const count = pending.length + priceCount;
   const act = async (item: CalendarNotification, action: 'read' | 'snooze') => {
     try {
       await markCalendar(item.id, action);
@@ -105,17 +107,17 @@ export function CalendarBell() {
     <>
       <button
         className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-brand-50"
-        aria-label={`Recordatorios del calendario${pending.length ? `, ${pending.length} pendientes` : ''}`}
+        aria-label={priceContent ? `Notificaciones: ${count} pendientes` : `Recordatorios del calendario${pending.length ? `, ${pending.length} pendientes` : ''}`}
         onClick={() => setOpen(true)}
       >
         <Bell size={19} />
-        {pending.length > 0 && (
+        {count > 0 && (
           <span className="absolute -right-1 -top-1 rounded-full bg-primary px-1.5 text-xs font-bold text-white">
-            {pending.length >= 50 ? '50+' : pending.length}
+            {count >= 50 ? '50+' : count}
           </span>
         )}
       </button>
-      {toast && items.some((item) => item.id === toast.id && !item.readAt) && (
+      {toast && pending.some((item) => item.id === toast.id) && (
         <div
           role="status"
           className="notice-toast notice-calendar"
@@ -143,7 +145,9 @@ export function CalendarBell() {
           </div>
         </div>
       )}
-      <Modal open={open} title="Recordatorios del calendario" onClose={() => setOpen(false)}>
+      <Modal open={open} title={priceContent ? 'Notificaciones' : 'Recordatorios del calendario'} onClose={() => setOpen(false)}>
+        {priceContent}
+        {allowed && <>
         {error && (
           <p role="alert" className="mb-3 text-sm text-critical">
             {error}
@@ -153,8 +157,8 @@ export function CalendarBell() {
           Últimos 50 avisos vigentes. Leer un aviso no completa el evento para la empresa.
         </p>
         <div className="space-y-2">
-          {!items.length && <p className="py-4 text-sm text-slate-500">No hay recordatorios.</p>}
-          {items.map((item) => (
+          {!currentItems.length && <p className="py-4 text-sm text-slate-500">No hay recordatorios.</p>}
+          {currentItems.map((item) => (
             <article
               key={item.id}
               className={`rounded-xl border p-3 ${item.readAt ? 'border-slate-100 text-slate-500' : 'border-brand-100 bg-brand-50/40'}`}
@@ -187,7 +191,7 @@ export function CalendarBell() {
               </div>
             </article>
           ))}
-        </div>
+        </div></>}
       </Modal>
     </>
   );

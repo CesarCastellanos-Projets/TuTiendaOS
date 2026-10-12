@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api;
 
+use App\Services\DatabaseTransaction;
 use App\Http\Controllers\Controller;
 use App\Models\SunatDocument;
 use App\Services\Sunat\FiscalPayloadValidator;
@@ -13,7 +14,6 @@ use App\Services\Sunat\FiscalSequence;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 final class SummaryController extends Controller
 {
@@ -38,7 +38,7 @@ final class SummaryController extends Controller
         $payloadHash = $validator->hash($data);
         $reference = $data['ref'];
 
-        $record = DB::transaction(function () use ($data, $payloadHash, $reference, $validator): SunatDocument {
+        $record = DatabaseTransaction::run(function () use ($data, $payloadHash, $reference, $validator): SunatDocument {
             FiscalSequence::lock('resumen', 'RC');
             $existing = SunatDocument::query()->where('ref', $reference)->lockForUpdate()->first();
             if ($existing) {

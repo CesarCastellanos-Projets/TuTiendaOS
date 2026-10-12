@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\Sunat;
 
+use App\Services\DatabaseTransaction;
 use App\Models\SunatDocument;
 use Greenter\Model\DocumentInterface;
 use Greenter\Model\Response\BillResult;
@@ -12,7 +13,6 @@ use Greenter\Model\Response\StatusResult;
 use Greenter\Model\Response\SummaryResult;
 use Greenter\See;
 use Throwable;
-use Illuminate\Support\Facades\DB;
 
 final class SunatSender
 {
@@ -93,7 +93,7 @@ final class SunatSender
 
     private function beginAttempt(SunatDocument $record, bool $respectBackoff = true): bool
     {
-        return DB::transaction(function () use ($record, $respectBackoff): bool {
+        return DatabaseTransaction::run(function () use ($record, $respectBackoff): bool {
             $current = SunatDocument::query()->lockForUpdate()->findOrFail($record->id);
             if (in_array($current->estado_sunat, ['aceptado', 'observado', 'rechazado', 'requiere_revision'], true)
                 || $current->send_lease_until?->isFuture()

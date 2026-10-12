@@ -1,3 +1,4 @@
+import { PasswordChange } from '../users/PasswordChange';
 import { useEffect, useRef } from 'react';
 import { NavLink } from 'react-router-dom';
 import { ChevronDown, LogOut, type LucideIcon } from 'lucide-react';
@@ -29,6 +30,6 @@ export function AccountMenu({ name, role, onLogout }: { name: string; role: stri
   }, []);
   return <details className="account-menu" ref={ref}>
     <summary aria-label={`Cuenta de ${name}`}><span className="account-avatar">{name.charAt(0).toUpperCase()}</span><span className="account-name">{name}<small>{role}</small></span><ChevronDown size={14} /></summary>
-    <div className="account-popover"><strong>{name}</strong><span>{role}</span><button onClick={onLogout}><LogOut size={16} /> Cerrar sesión</button></div>
+    <div className="account-popover"><strong>{name}</strong><span>{role}</span><PasswordChange /><button onClick={onLogout}><LogOut size={16} /> Cerrar sesión</button></div>
   </details>;
 }

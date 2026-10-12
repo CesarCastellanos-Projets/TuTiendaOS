@@ -23,6 +23,7 @@ const NAV: NavigationItem[] = [
   { to: '/admin/comprobantes', label: 'Comprobantes', icon: Receipt, group: 'Operación' },
   { to: '/admin/incidencias', label: 'Incidencias', icon: TriangleAlert, group: 'Operación' },
   { to: '/admin/calendario', label: 'Calendario', icon: CalendarDays, group: 'Operación' },
+  { to: '/admin/cotizaciones', label: 'Cotizaciones', icon: FileText, group: 'OPERACION' },
   { to: '/admin/usuarios', label: 'Usuarios', icon: Users, group: 'Equipo' },
   { to: '/admin/permisos-trabajadores', label: 'Permisos', icon: Users, group: 'Equipo' },
   { to: '/admin/tickets', label: 'Diseño de tickets', icon: Printer, group: 'Configuración' },

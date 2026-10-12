@@ -83,14 +83,38 @@ export const getSalesStatistics = onCall(appCheckOptions, async (request) => {
       }
     }
     // Las particiones se dividen cuando crecen; una consulta nunca devuelve resultados truncados.
-    for (const id of storeIds) {
-      const storeIndex = storeIds.indexOf(id);
-      const pages = await Promise.all(summaries[storeIndex].docs.map((summary) => tx.get(tenantCollection(profile.tenantId, 'sales_statistics_products')
-        .where('storeId', '==', id).where('month', '==', summary.data().month).limit(513))));
-      for (const page of pages) {
-        if (page.size > 512 || documentsRead + page.size > 5000) throw new HttpsError('resource-exhausted', 'Selecciona menos tiendas o un periodo más corto para este volumen de productos.');
-        documentsRead += Math.max(1, page.size);
-        for (const document of page.docs) {
+    const partitions = summaries.flatMap((summary, index) => summary.docs.map((document) => ({ storeId: storeIds[index], month: document.data().month })));
+    const exhausted = () => new HttpsError('resource-exhausted', 'Selecciona menos tiendas o un periodo más corto para este volumen de productos.');
+    let partitionIndex = 0;
+    while (partitionIndex < partitions.length) {
+      let remaining = 5000 - documentsRead - 1;
+      const batch: Array<{ storeId: string; month: unknown; limit: number }> = [];
+      while (partitionIndex < partitions.length && batch.length < 4 && remaining > 0) {
+        const readLimit = Math.min(513, remaining);
+        batch.push({ ...partitions[partitionIndex++], limit: readLimit });
+        remaining -= readLimit;
+      }
+      if (!batch.length) throw exhausted();
+      const pages = await Promise.all(batch.map((partition) => tx.get(tenantCollection(profile.tenantId, 'sales_statistics_products')
+        .where('storeId', '==', partition.storeId).where('month', '==', partition.month).limit(partition.limit))));
+      documentsRead += pages.reduce((sum, page) => sum + Math.max(1, page.size), 0);
+      for (let index = 0; index < pages.length; index++) {
+        let page = pages[index];
+        let readLimit = batch[index].limit;
+        const documents = [...page.docs];
+        // Reutilizar el presupuesto no consumido por la tanda para comprobar páginas limitadas.
+        while (page.size === readLimit) {
+          if (documents.length > 512) throw exhausted();
+          const remaining = 5000 - documentsRead - 1;
+          if (remaining < 1) throw exhausted();
+          readLimit = Math.min(513 - documents.length, remaining);
+          page = await tx.get(tenantCollection(profile.tenantId, 'sales_statistics_products')
+            .where('storeId', '==', batch[index].storeId).where('month', '==', batch[index].month)
+            .startAfter(documents.at(-1)!).limit(readLimit));
+          documentsRead += Math.max(1, page.size);
+          documents.push(...page.docs);
+        }
+        for (const document of documents) {
           for (const [productId, value] of Object.entries(document.data().products as Record<string, ProductStatistics>)) {
             const row = products.get(productId) ?? { productId, name: value.name, unit: value.unit, units: 0, revenue: 0, tickets: 0 };
             for (const [day, amounts] of Object.entries(value.days)) {

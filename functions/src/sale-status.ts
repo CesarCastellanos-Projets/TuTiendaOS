@@ -1,8 +1,19 @@
 import { db } from './firebase';
 import { tenantDoc } from './tenant';
+import { FieldValue } from 'firebase-admin/firestore';
+import { isDeepStrictEqual } from 'node:util';
 
 import { addCashSummary } from './payment-model';
 import { salePaymentParts } from './payment-model';
+
+function changesSale(sale: Record<string, unknown>, fields: Record<string, unknown>): boolean {
+  return Object.entries(fields).some(([key, value]) => {
+    if (value instanceof FieldValue) {
+      return value.isEqual(FieldValue.delete()) ? Object.hasOwn(sale, key) : true;
+    }
+    return value === undefined || !isDeepStrictEqual(sale[key], value);
+  });
+}
 
 export async function applySaleStatusPatch(tenantId: string, saleId: string, patch: Record<string, unknown>) {
   const ref = tenantDoc(tenantId, 'sales', saleId);
@@ -25,6 +36,6 @@ export async function applySaleStatusPatch(tenantId: string, saleId: string, pat
       fields.status = 'anulada';
       if (sale.voidedAt !== undefined) fields.voidedAt = sale.voidedAt;
     }
-    tx.set(ref, fields, { merge: true });
+    if (changesSale(sale, fields)) tx.set(ref, fields, { merge: true });
   });
 }

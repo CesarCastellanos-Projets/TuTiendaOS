@@ -44,6 +44,8 @@ return [
     |--------------------------------------------------------------------------
     */
     'api_token' => env('API_FACT_TOKEN', ''),
+    'tenant_requests_per_minute' => (int) env('API_FACT_TENANT_REQUESTS_PER_MINUTE', 60),
+    'global_requests_per_minute' => (int) env('API_FACT_GLOBAL_REQUESTS_PER_MINUTE', 60),
 
     'serie_nc_factura' => env('SUNAT_SERIE_NC_FACTURA', 'FC01'),
     'serie_nc_boleta' => env('SUNAT_SERIE_NC_BOLETA', 'BC01'),

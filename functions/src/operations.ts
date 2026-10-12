@@ -1,3 +1,5 @@
+import { quotationExpires } from './quotation-lifecycle';
+import { readUnique } from './transaction-reads';
 import { appCheckOptions } from './app-check';
 import { onCall, HttpsError, type CallableRequest } from 'firebase-functions/v2/https';
 import { createHash } from 'node:crypto';
@@ -230,9 +232,12 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
     }
     const quoteRef = quotationId ? tenantDoc(profile.tenantId, 'quotations', quotationId) : null;
     const quote = quoteRef ? await tx.get(quoteRef) : null;
-    if (quoteRef && (!quote?.exists || quote.data()?.storeId !== storeId || quote.data()?.status !== 'pendiente')) {
+    if (quoteRef && (!quote?.exists || quote.data()?.storeId !== storeId || quote.data()?.status !== 'pendiente' || quotationExpires(quote?.data() ?? {}) <= Date.now())) {
       throw new HttpsError('failed-precondition', 'La cotización ya fue procesada o pertenece a otra tienda.');
     }
+    const quoteReceipts = quoteRef && quote?.exists
+      ? (await tx.get(tenantCollection(profile.tenantId, 'operation_receipts').where('kind', '==', 'quotation').where('result.id', '==', quoteRef.id).limit(10))).docs
+      : [];
     const productIds = [...new Set(requestedItems.map((item) => shortText(item.productId, 128)))];
     if (productIds.some((id) => !/^[\w-]{1,128}$/.test(id))) {
       throw new HttpsError('invalid-argument', 'Hay un producto inválido.');
@@ -390,7 +395,14 @@ async function registerSale(request: CallableRequest<Record<string, unknown>>) {
         createdAt: now
       });
     }
-    if (quoteRef) tx.update(quoteRef, { status: 'facturada', saleId: saleRef.id, processedAt: now, processedBy: profile.uid });
+    if (quoteRef && quote?.exists) {
+      const data = quote.data()!;
+      tx.set(quoteRef, { tenantId: profile.tenantId, id: quoteRef.id, code: data.code ?? quoteRef.id,
+        storeId, status: 'facturada', saleId: saleRef.id, createdAt: data.createdAt,
+        expiresAt: quotationExpires(data), ...(data.receiptId ? { receiptId: data.receiptId } : {}),
+        processedAt: now, processedBy: profile.uid });
+      for (const receipt of quoteReceipts) tx.update(receipt.ref, { result: { id: quoteRef.id, sold: true } });
+    }
     tx.set(saleRef, sale);
     return { id: saleRef.id, sale };
   });
@@ -420,7 +432,7 @@ async function safeRegisterSale(request: CallableRequest<Record<string, unknown>
   }
 }
 
-export const createSaleRecord = onCall(safeRegisterSale);
+export const createSaleRecord = onCall(appCheckOptions, safeRegisterSale);
 
 export const resumeSaleRecord = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request);
@@ -476,9 +488,9 @@ export const receiveTransfer = onCall(appCheckOptions, async (request) => {
     }
     const stockRefs = items.map((item) => tenantDoc(profile.tenantId, 'product_stocks', `${String(item.productId)}_${storeId}`));
     const productRefs = items.map((item) => tenantDoc(profile.tenantId, 'products', String(item.productId)));
-    const snapshots = await Promise.all([
-      ...stockRefs.map((ref) => tx.get(ref)),
-      ...productRefs.map((ref) => tx.get(ref))
+    const snapshots = await readUnique(tx, [
+      ...stockRefs,
+      ...productRefs
     ]);
     const stockSnaps = snapshots.slice(0, items.length);
     const productSnaps = snapshots.slice(items.length);

@@ -1,3 +1,4 @@
+import { readUnique } from './transaction-reads';
 import { appCheckOptions } from './app-check';
 import { createHash, randomUUID } from 'node:crypto';
 import { HttpsError, onCall } from 'firebase-functions/v2/https';
@@ -111,10 +112,10 @@ export const recordStockIngress = onCall(appCheckOptions, async (request) => {
     const targetRef = locationRef(profile.tenantId, targetType, targetId);
     const productRefs = items.map((item) => tenantDoc(profile.tenantId, 'products', item.productId));
     const stockRefs = items.map((item) => tenantDoc(profile.tenantId, 'product_stocks', `${item.productId}_${targetId}`));
-    const snapshots = await Promise.all([
-      tx.get(targetRef),
-      ...productRefs.map((ref) => tx.get(ref)),
-      ...stockRefs.map((ref) => tx.get(ref))
+    const snapshots = await readUnique(tx, [
+      targetRef,
+      ...productRefs,
+      ...stockRefs
     ]);
     const targetSnap = snapshots[0];
     const productSnaps = snapshots.slice(1, 1 + items.length);
@@ -286,11 +287,11 @@ export const createInventoryTransfer = onCall(appCheckOptions, async (request) =
     const toRef = locationRef(profile.tenantId, toType, toId);
     const stockRefs = items.map((item) => tenantDoc(profile.tenantId, 'product_stocks', `${item.productId}_${fromId}`));
     const productRefs = items.map((item) => tenantDoc(profile.tenantId, 'products', item.productId));
-    const snapshots = await Promise.all([
-      tx.get(fromRef),
-      tx.get(toRef),
-      ...stockRefs.map((ref) => tx.get(ref)),
-      ...productRefs.map((ref) => tx.get(ref))
+    const snapshots = await readUnique(tx, [
+      fromRef,
+      toRef,
+      ...stockRefs,
+      ...productRefs
     ]);
     if (!snapshots[0].exists || !snapshots[1].exists || snapshots[0].data()?.active === false || snapshots[1].data()?.active === false) {
       throw new HttpsError('not-found', 'El origen o destino no existe.');
@@ -390,9 +391,9 @@ export const cancelInventoryTransfer = onCall(appCheckOptions, async (request) =
     }
     const stockRefs = items.map((item) => tenantDoc(profile.tenantId, 'product_stocks', `${String(item.productId)}_${String(transfer.fromLocationId)}`));
     const productRefs = items.map((item) => tenantDoc(profile.tenantId, 'products', String(item.productId)));
-    const snapshots = await Promise.all([
-      ...stockRefs.map((ref) => tx.get(ref)),
-      ...productRefs.map((ref) => tx.get(ref))
+    const snapshots = await readUnique(tx, [
+      ...stockRefs,
+      ...productRefs
     ]);
     const stockSnaps = snapshots.slice(0, items.length);
     const productSnaps = snapshots.slice(items.length);
@@ -472,11 +473,11 @@ export const attendReplenishmentRequest = onCall(appCheckOptions, async (request
     const storeRef = tenantDoc(profile.tenantId, 'stores', String(replenishment.storeId));
     const stockRefs = items.map((item) => tenantDoc(profile.tenantId, 'product_stocks', `${item.productId}_${warehouseId}`));
     const productRefs = items.map((item) => tenantDoc(profile.tenantId, 'products', item.productId));
-    const snapshots = await Promise.all([
-      tx.get(warehouseRef),
-      tx.get(storeRef),
-      ...stockRefs.map((ref) => tx.get(ref)),
-      ...productRefs.map((ref) => tx.get(ref))
+    const snapshots = await readUnique(tx, [
+      warehouseRef,
+      storeRef,
+      ...stockRefs,
+      ...productRefs
     ]);
     if (!snapshots[0].exists || snapshots[0].data()?.isCentral !== true || !snapshots[1].exists || snapshots[0].data()?.active === false || snapshots[1].data()?.active === false) {
       throw new HttpsError('failed-precondition', 'El almacén central o la tienda no son válidos.');

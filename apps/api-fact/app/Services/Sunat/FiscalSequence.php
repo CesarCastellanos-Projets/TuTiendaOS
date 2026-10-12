@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services\Sunat;
 
+use App\Services\DatabaseTransaction;
 use App\Models\SunatDocument;
 use Illuminate\Support\Facades\DB;
 
@@ -19,7 +20,7 @@ final class FiscalSequence
 
     public static function next(string $type, string $series): int
     {
-        return DB::transaction(function () use ($type, $series): int {
+        return DatabaseTransaction::run(function () use ($type, $series): int {
             $key = ['tenant_id' => (string) config('sunat.tenant_id', 'denzoz'), 'tipo' => $type, 'serie' => $series];
             $counter = self::lock($type, $series);
             $existing = (int) SunatDocument::query()->where('tipo', $type)->where('serie', $series)->max('correlativo');

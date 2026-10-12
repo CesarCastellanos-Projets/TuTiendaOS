@@ -1,0 +1,16 @@
+{
+  "score": 5,
+  "summary": "Revisión local del alcance funcional: permisos derivados de perfiles administrados por servidor, tiempo de servidor en Firestore y Storage, costos privados por lectura individual y escrituras de negocio mediante Functions. Pasaron las pruebas de aislamiento, escalamiento, revocación y horarios en emuladores. Esta evaluación no sustituye verificar la configuración efectivamente publicada.",
+  "findings": [],
+  "scope": ["firestore.rules", "storage.rules", "functions/src/authz.ts", "functions/src/access-schedule.ts", "functions/src/user-management.ts"],
+  "evidence": ["tools/functional-rules.test.mjs: 4 casos", "tools/firestore-rules.test.mjs: 15 casos", "tools/functional-emulator.test.mjs: permisos y revocación", "tools/functional-browser.test.py: bloqueo tras cambiar Date.now del navegador"],
+  "checks": {
+    "update_bypass": "El usuario solo puede actualizar su propio displayName. No puede cambiar rol, empresa, horario, permisos ni marca de revocación.",
+    "authority_source": "Perfil existente y JWT verificado. Las operaciones vuelven a comprobar el perfil dentro de la transacción.",
+    "ownership": "Empresa y UID determinan acceso. Perfil propio legible fuera de horario para cerrar sesión y mostrar el bloqueo.",
+    "private_costs": "Documento separado. Get para admin o POS con permiso explícito; list y write denegados al cliente.",
+    "bounds": "Avisos con máximo 50 por petición de reglas; interfaz pagina 20. Horarios validan días y minutos. Las rutas conservan los límites existentes.",
+    "revocation": "auth_time se compara con authValidAfter; cambiar contraseña o desactivar impide reutilizar el JWT anterior.",
+    "server_time": "request.time en reglas; Date.now del servidor en Functions; ventana de acceso en el navegador medida con performance.now."
+  }
+}

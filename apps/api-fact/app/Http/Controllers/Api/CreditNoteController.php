@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api;
 
+use App\Services\DatabaseTransaction;
 use App\Http\Controllers\Controller;
 use App\Models\SunatDocument;
 use App\Services\Sunat\FiscalPayloadValidator;
@@ -13,7 +14,6 @@ use App\Services\Sunat\FiscalSequence;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 final class CreditNoteController extends Controller
 {
@@ -72,7 +72,7 @@ final class CreditNoteController extends Controller
             ], 409);
         }
 
-        $record = DB::transaction(function () use ($data, $original, $validator): SunatDocument {
+        $record = DatabaseTransaction::run(function () use ($data, $original, $validator): SunatDocument {
             $series = $original->tipo === 'factura'
                 ? (string) config('sunat.serie_nc_factura', 'FC01')
                 : (string) config('sunat.serie_nc_boleta', 'BC01');
