@@ -7,12 +7,13 @@ import { useAuth } from '../../lib/auth';
 import { Modal } from '../ui/Modal';
 
 export function PasswordChange() {
-  const { user, logout } = useAuth();
+  const { user, profile, logout } = useAuth();
   const [open, setOpen] = useState(false);
   const [current, setCurrent] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  if (profile?.role !== 'admin') return null;
   return <><button onClick={() => setOpen(true)}>Cambiar contraseña</button>{createPortal(<Modal open={open} title="Cambiar contraseña" onClose={() => { if (!busy) { setOpen(false); setCurrent(''); setPassword(''); } }}><form className="space-y-3" onSubmit={async (event) => {
     event.preventDefault(); if (!user?.email) return; setBusy(true); setError('');
     try {

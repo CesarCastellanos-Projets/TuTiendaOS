@@ -16,7 +16,7 @@ Estado: siete etapas implementadas y verificadas localmente. No se publicó cód
 
 ## Uso
 
-- **Usuarios → Permisos y cuenta:** configurar horarios, permisos, restablecer contraseña o eliminar. La creación también permite escoger permisos del POS. Para la contraseña propia usar el menú de cuenta → Cambiar contraseña.
+- **Admin → Usuarios → Permisos y cuenta:** configurar horarios, permisos, restablecer contraseña o eliminar. La creación también permite escoger permisos del POS. Solo el administrador puede cambiar contraseñas mediante la función del sistema; su contraseña propia se cambia desde su fila con reautenticación. El menú de cuenta de todos los roles solo ofrece cerrar sesión.
 - **Productos → Nuevo/Editar → Avanzado:** elegir presentación, costo y proveedor. Para conservar datos existentes sin modificarlos, no es necesario abrir Avanzado.
 - **POS:** campanita para precios; pulsar el producto agotado para consultar otras ubicaciones; «Costo y proveedor» aparece con permiso.
 - **Cotizaciones:** escribir en «Buscar cotización». Se revisan hasta 100 documentos por llamada dentro de la tienda, pendientes y recientes, utilizando su índice. Si el lote no contiene coincidencias y aún quedan registros, se indica usar Siguiente; no se presenta una búsqueda parcial como agotada. La interfaz recibe como máximo 20 coincidencias por página. Nombres sin distinción de tildes/mayúsculas y teléfonos comparados también por dígitos.

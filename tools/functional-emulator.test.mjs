@@ -58,6 +58,14 @@ test('crea POS multitienda sin tienda fija, administra permisos y bloquea elimin
 });
 test('contraseña nueva invalida el token anterior y no almacena claves', { timeout: 60000 }, async () => {
   const f = await fixture();
+  for (const user of [f.worker, f.pos]) {
+    for (const uid of [user.uid, f.admin.uid]) {
+      const denied = await call('changeUserPassword', { uid, password: 'Denied456!' }, user);
+      assert.equal(denied.ok, false);
+      assert.equal(denied.error.status, 'PERMISSION_DENIED');
+    }
+    assert.equal((await db.doc(`users/${user.uid}`).get()).data().authValidAfter, undefined);
+  }
   okay(await call('changeUserPassword', { uid: f.worker.uid, password: 'Different456!' }, f.admin));
   assert.equal((await call('getAccessState', {}, f.worker)).ok, false);
   const profile = (await db.doc(`users/${f.worker.uid}`).get()).data();

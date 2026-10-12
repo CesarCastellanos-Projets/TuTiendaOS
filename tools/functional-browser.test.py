@@ -23,6 +23,11 @@ with sync_playwright() as p:
         page.get_by_role('button', name='Ingresar', exact=False).click()
         path = {'pos': '/pos', 'trabajador': '/w', 'admin': '/admin'}[role]
         expect(page).to_have_url(ORIGIN + path, timeout=45000)
+        page.locator('.account-menu summary').click()
+        menu = page.locator('.account-popover')
+        expect(menu.get_by_role('button', name='Cerrar sesión', exact=True)).to_be_visible()
+        expect(menu.get_by_role('button', name='Cambiar contraseña', exact=True)).to_have_count(0)
+        page.locator('.account-menu summary').click()
         if role != 'admin':
             bell = page.get_by_role('button', name='Notificaciones:', exact=False)
             expect(bell).to_be_visible(timeout=30000)

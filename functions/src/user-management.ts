@@ -44,9 +44,8 @@ export const setUserSettings = onCall(appCheckOptions, async (request) => {
 });
 
 export const changeUserPassword = onCall(appCheckOptions, async (request) => {
-  const actor = await requireActiveProfile(request, false, false);
+  const actor = await requireAdmin(request);
   const uid = documentId(request.data?.uid, 'Usuario');
-  if (actor.role !== 'admin' && actor.uid !== uid) throw new HttpsError('permission-denied', 'No puedes cambiar esta contraseña.');
   if (actor.uid === uid && Date.now() / 1000 - Number(request.auth?.token.auth_time ?? 0) > 300)
     throw new HttpsError('failed-precondition', 'Confirma tu contraseña actual nuevamente.');
   const password = request.data?.password;
