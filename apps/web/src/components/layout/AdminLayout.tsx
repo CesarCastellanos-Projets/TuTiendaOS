@@ -48,7 +48,7 @@ export function AdminLayout() {
     <div className="app-shell-body">
       <header className="app-topbar">
         <button className="icon-button lg:hidden" aria-label="Abrir menú" onClick={() => setMobileOpen(true)}><Menu size={21} /></button>
-        <div className="topbar-context"><span className="eyebrow">Administración</span><strong>{company?.razonSocial || 'D’ENZOZ'}</strong></div>
+        <div className="topbar-context"><span className="eyebrow">Administración</span><strong>{company?.razonSocial || 'TuTiendaOS'}</strong></div>
         <div className="topbar-actions"><ReplenishmentBell /><CalendarBell /><AccountMenu name={profile.displayName} role="Administrador" onLogout={() => void logout()} /></div>
       </header>
       <main id="main-content" className="admin-content page-content"><Suspense fallback={<RouteLoading />}><Outlet /></Suspense></main>

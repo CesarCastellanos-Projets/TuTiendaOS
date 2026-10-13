@@ -93,34 +93,24 @@ export function SunatConfigPage() {
     }
   };
 
-  const handleToggleDemoMode = async (targetDemo: boolean) => {
+  const handleToggleDemoMode = async (_targetDemo: boolean = true) => {
     setBusy(true);
     try {
-      if (targetDemo) {
-        await activateDemoMode();
-        const demoData = publicCompanyConfig(cfg, {
-          ...SUNAT_DEMO_CREDENTIALS,
-          isDemoMode: true,
-          entornoSunat: 'beta',
-          certFileName: 'certificado_demo_sunat.pfx',
-          certExpiresAt: new Date(Date.now() + 365 * 86400000).toISOString(),
-          certIssuer: 'SUNAT Demo CA (Autofirmado)'
-        });
-        await setDoc(tenantDoc('config', 'company'), demoData);
-        setCfg(demoData);
-        flash('Modo de prueba (BETA SUNAT) activado.');
-      } else {
-        const prodData = publicCompanyConfig(cfg, {
-          isDemoMode: false,
-          entornoSunat: 'produccion'
-        });
-        await setDoc(tenantDoc('config', 'company'), prodData);
-        setCfg(prodData);
-        flash('Modo Producción (EN VIVO CON SUNAT) activado. Ingresa tu RUC y claves SOL reales.');
-      }
+      await activateDemoMode();
+      const demoData = publicCompanyConfig(cfg, {
+        ...SUNAT_DEMO_CREDENTIALS,
+        isDemoMode: true,
+        entornoSunat: 'beta',
+        certFileName: 'certificado_demo_sunat.pfx',
+        certExpiresAt: new Date(Date.now() + 365 * 86400000).toISOString(),
+        certIssuer: 'SUNAT Demo CA (Autofirmado)'
+      });
+      await setDoc(tenantDoc('config', 'company'), demoData);
+      setCfg(demoData);
+      flash('Modo de prueba (BETA SUNAT) activado.');
       void runTest();
     } catch (err) {
-      flash(err instanceof Error ? `Error: ${err.message}` : 'Error al cambiar entorno');
+      flash(err instanceof Error ? `Error: ${err.message}` : 'Error al activar modo prueba');
     } finally {
       setBusy(false);
     }
@@ -289,24 +279,18 @@ export function SunatConfigPage() {
             </div>
           </div>
 
-          <div className="shrink-0">
-            {isDemo ? (
-              <button
-                disabled={busy}
-                onClick={() => handleToggleDemoMode(false)}
-                className="btn-ghost !border-slate-300 bg-white hover:bg-slate-50 text-xs font-bold shadow-xs"
-              >
-                Pasar a datos reales (Producción)
-              </button>
-            ) : (
-              <button
-                disabled={busy}
-                onClick={() => handleToggleDemoMode(true)}
-                className="btn-ghost !border-amber-300 bg-amber-100/60 hover:bg-amber-100 text-amber-900 text-xs font-bold shadow-xs"
-              >
-                Volver a modo de prueba
-              </button>
-            )}
+          <div className="shrink-0 flex flex-wrap items-center gap-2">
+            <span className="badge bg-amber-100/90 text-amber-900 border border-amber-300 font-semibold text-xs py-2 px-3 rounded-xl shadow-xs">
+              Modo Beta Activo (Exclusivo Demostración)
+            </span>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => handleToggleDemoMode(true)}
+              className="btn-ghost !border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-bold shadow-xs py-1.5 px-3"
+            >
+              Restablecer claves demo
+            </button>
           </div>
         </div>
       </div>
@@ -454,7 +438,7 @@ export function SunatConfigPage() {
                 name="razonSocial"
                 required
                 defaultValue={cfg?.razonSocial}
-                placeholder="Ej.: INVERSIONES D'ENZOZ S.A.C."
+                placeholder="Ej.: INVERSIONES TUTIENDAOS S.A.C."
                 className="field font-bold"
               />
             </div>

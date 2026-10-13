@@ -29,7 +29,7 @@ export function FullPageLoader(): ReactElement {
     <div className="grid min-h-screen place-items-center bg-slate-50">
       <div className="flex flex-col items-center gap-3">
         <span className="price-tag rounded-lg px-4 py-2 font-display text-2xl tracking-wide">
-          D'ENZOZ
+          TuTiendaOS
         </span>
         <span className="text-sm text-slate-500">Cargando…</span>
       </div>

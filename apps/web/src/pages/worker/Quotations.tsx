@@ -321,7 +321,7 @@ export function WorkerQuotations() {
 
   // Imprimir cotización térmica / papel
   const printQuotation = () => {
-    const companyName = escapeHtml(company?.razonSocial || "D'ENZOZ");
+    const companyName = escapeHtml(company?.razonSocial || "TuTiendaOS");
     const ruc = company?.ruc ? `RUC: ${escapeHtml(company.ruc)}` : '';
     const phone = company?.phone ? `Tel: ${escapeHtml(company.phone)}` : '';
     const dateStr = fmtDateTime(Date.now());

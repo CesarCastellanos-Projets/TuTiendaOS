@@ -21,14 +21,14 @@ export interface CatalogMeta {
   cursor?: { seconds: number; nanoseconds: number };
 }
 
-class DenzozDB extends Dexie {
+class TuTiendaOSDB extends Dexie {
   products!: Table<CachedProduct, string>;
   productDefinitions!: Table<CachedProductDefinition, string>;
   catalogMeta!: Table<CatalogMeta, string>;
   statisticsQueries!: Table<CachedStatistics, string>;
 
   constructor() {
-    super('denzoz');
+    super('tutiendaos');
     this.version(1).stores({
       products: 'id, productId, barcode, locationId, productName'
     });
@@ -51,7 +51,7 @@ class DenzozDB extends Dexie {
   }
 }
 
-export const localDb = new DenzozDB();
+export const localDb = new TuTiendaOSDB();
 
 export function cacheKey(tenantId: string, productId: string, locationId: string): string {
   return `${tenantId}:${productId}_${locationId}`;

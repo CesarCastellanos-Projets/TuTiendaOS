@@ -42,7 +42,7 @@ export function openQuotationWhatsApp(phone: string, desktopApp = false): boolea
     try { whatsappWindow.location.href = url; whatsappWindow.focus(); return true; }
     catch { whatsappWindow = null; }
   }
-  whatsappWindow = window.open(url, 'denzoz-whatsapp');
+  whatsappWindow = window.open(url, 'tutiendaos-whatsapp');
   if (!whatsappWindow) return false;
   try { whatsappWindow.opener = null; whatsappWindow.focus(); } catch { /* WhatsApp puede aislar su ventana al cargar. */ }
   return true;

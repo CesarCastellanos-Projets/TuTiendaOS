@@ -36,7 +36,7 @@ export function ticketHtml(sale: Sale, cfg?: CompanyConfig): string {
   return `<div class="thermal-ticket" data-ticket-width="${cfg?.ticketWidth === '58mm' ? '58mm' : '80mm'}" style="font-size:${design.fontSize}px;">
   <div class="head" style="text-align:${design.headerAlign};">
     ${logo ? `<div class="ticket-logo"><img src="${esc(logo)}" style="width:${design.logoWidth}px;" alt="Logo" /></div>` : ''}
-    <div class="brand">${esc(cfg?.razonSocial ?? "D'ENZOZ")}</div>
+    <div class="brand">${esc(cfg?.razonSocial ?? "TuTiendaOS")}</div>
     ${cfg?.slogan ? `<div>${esc(cfg.slogan)}</div>` : ''}
     ${cfg?.ruc ? `<div>R.U.C. ${esc(cfg.ruc)}</div>` : ''}
     ${cfg?.direccion ? `<div>${esc(cfg.direccion)}</div>` : ''}
@@ -137,7 +137,7 @@ export function cashCloseTicketHtml(
 
   return `<div class="thermal-ticket" data-ticket-width="${cfg?.ticketWidth === '58mm' ? '58mm' : '80mm'}">
   <div class="head">
-    <div class="brand">${esc(cfg?.razonSocial ?? "D'ENZOZ")}</div>
+    <div class="brand">${esc(cfg?.razonSocial ?? "TuTiendaOS")}</div>
     ${cfg?.ruc ? `<div>RUC ${esc(cfg.ruc)}</div>` : ''}
     <div>${esc(session.storeName ?? 'TIENDA')}</div>
     <div style="font-weight:bold;margin:4px 0;">=== CIERRE DE CAJA (CORTE Z) ===</div>

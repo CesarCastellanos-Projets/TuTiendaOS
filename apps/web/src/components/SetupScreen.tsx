@@ -17,7 +17,7 @@ export function SetupScreen() {
         <div className="flex items-center gap-3">
           <FirebaseLogo />
           <span className="price-tag rounded px-2.5 py-1 font-display text-xl tracking-wide">
-            D'ENZOZ
+            TuTiendaOS
           </span>
         </div>
 

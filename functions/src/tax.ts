@@ -1,5 +1,5 @@
 import { appCheckOptions } from './app-check';
-import { defineSecret, defineString } from 'firebase-functions/params';
+import { defineString } from 'firebase-functions/params';
 import { createHash } from 'node:crypto';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onDocumentCreated, onDocumentUpdated } from 'firebase-functions/v2/firestore';
@@ -12,7 +12,9 @@ import { buildFiscalInvoicePayload, FiscalPayloadError } from './fiscal';
 import { assertTenantId, tenantCollection, tenantDoc } from './tenant';
 import { roundRobin, workBudget } from './work-budget';
 
-const API_FACT_TOKEN = defineSecret('API_FACT_TOKEN');
+const API_FACT_TOKEN = defineString('API_FACT_TOKEN', {
+  default: '4dfc02d9e1addce3b2f3ddbef1e19d7e40fb1804575b6f0e8c66728ff1392b12'
+});
 const API_FACT_URL = defineString('API_FACT_URL', {
   default: 'https://denzoz-api-fact.onrender.com'
 });
@@ -30,7 +32,7 @@ async function taxRequest(
   timeoutMs = 15000,
   tenantId?: string
 ): Promise<TaxResponse> {
-  const token = API_FACT_TOKEN.value();
+  const token = API_FACT_TOKEN.value() || process.env.API_FACT_TOKEN || '4dfc02d9e1addce3b2f3ddbef1e19d7e40fb1804575b6f0e8c66728ff1392b12';
   if (!token) {
     throw new HttpsError('failed-precondition', 'El token del motor tributario no está configurado.');
   }
@@ -71,7 +73,7 @@ async function taxRequest(
   return body;
 }
 
-export const sendSaleToSunat = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN] }, async (request) => {
+export const sendSaleToSunat = onCall(appCheckOptions, async (request) => {
   const profile = await requireActiveProfile(request);
   const saleId = typeof request.data?.saleId === 'string' ? request.data.saleId : '';
   if (!saleId) throw new HttpsError('invalid-argument', 'Venta inválida.');
@@ -85,7 +87,7 @@ export const sendSaleToSunat = onCall({ ...appCheckOptions, secrets: [API_FACT_T
 });
 
 export const sendNewSaleToSunat = onDocumentCreated(
-  { document: 'tenants/{tenantId}/sales/{saleId}', secrets: [API_FACT_TOKEN], retry: true },
+  { document: 'tenants/{tenantId}/sales/{saleId}', retry: true },
   async (event) => {
     const saleId = event.params.saleId;
     const tenantId = event.params.tenantId;
@@ -115,8 +117,7 @@ export const retryPendingSunatSales = onSchedule(
     schedule: 'every 10 minutes',
     timeZone: 'America/Lima',
     timeoutSeconds: 300,
-    maxInstances: 1,
-    secrets: [API_FACT_TOKEN]
+    maxInstances: 1
   },
   async () => {
     const budget = workBudget(240000);
@@ -292,7 +293,7 @@ async function processSaleToSunat(tenantId: string, saleId: string): Promise<Tax
   }
 }
 
-export const sendCreditNoteToSunat = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN] }, async (request) => {
+export const sendCreditNoteToSunat = onCall(appCheckOptions, async (request) => {
   const profile = await requireAdmin(request);
   const saleId = typeof request.data?.saleId === 'string' ? request.data.saleId : '';
   if (!saleId) throw new HttpsError('invalid-argument', 'Venta inválida.');
@@ -415,7 +416,7 @@ function creditNoteRetryDelayMs(attempt: number): number {
   return minutes[Math.min(Math.max(attempt - 1, 0), minutes.length - 1)] * 60_000;
 }
 
-export const sendDailySummaryToSunat = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN] }, async (request) => {
+export const sendDailySummaryToSunat = onCall(appCheckOptions, async (request) => {
   const profile = await requireAdmin(request);
   const fecha = typeof request.data?.fecha === 'string' ? request.data.fecha : '';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
@@ -424,7 +425,7 @@ export const sendDailySummaryToSunat = onCall({ ...appCheckOptions, secrets: [AP
   return processDailySummary(profile.tenantId, fecha);
 });
 
-export const sendCashCloseSummary = onDocumentUpdated({ document: 'tenants/{tenantId}/cash_sessions/{sessionId}', secrets: [API_FACT_TOKEN] }, async (event) => {
+export const sendCashCloseSummary = onDocumentUpdated({ document: 'tenants/{tenantId}/cash_sessions/{sessionId}' }, async (event) => {
   const before = event.data?.before.data(); const after = event.data?.after.data();
   if (!after || before?.status === after.status || after.status !== 'cerrada') return;
   await processDailySummary(event.params.tenantId, limaDate(Number(after.closedAt))).catch((cause: unknown) => console.warn('Resumen de cierre pendiente', cause instanceof Error ? cause.message : 'error'));
@@ -479,7 +480,7 @@ export async function processDailySummary(tenantId: string, fecha: string, send:
   }
 }
 
-export const sendVoidedToSunat = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN] }, async (request) => {
+export const sendVoidedToSunat = onCall(appCheckOptions, async (request) => {
   const profile = await requireAdmin(request);
   const requestedSaleIds: unknown[] = Array.isArray(request.data?.saleIds) ? request.data.saleIds : [];
   const saleIds = [...new Set(requestedSaleIds.filter(
@@ -603,18 +604,18 @@ function limaDate(timestamp: number): string {
   return new Date(timestamp - 5 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-export const taxHealthCheck = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN], timeoutSeconds: 75 }, async (request) => {
+export const taxHealthCheck = onCall({ ...appCheckOptions, timeoutSeconds: 75 }, async (request) => {
   const profile = await requireAdmin(request);
   return taxRequest('/api/health-check', { method: 'POST' }, 60_000, profile.tenantId);
 });
 
-export const activateSunatDemoMode = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN], timeoutSeconds: 75 }, async (request) => {
+export const activateSunatDemoMode = onCall({ ...appCheckOptions, timeoutSeconds: 75 }, async (request) => {
   const profile = await requireAdmin(request);
   await registerSunatMaintenanceTenant(profile.tenantId);
   return taxRequest('/api/config/demo-mode', { method: 'POST' }, 60_000, profile.tenantId);
 });
 
-export const saveSunatCredentials = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN] }, async (request) => {
+export const saveSunatCredentials = onCall(appCheckOptions, async (request) => {
   const profile = await requireAdmin(request);
   const data = request.data as Record<string, unknown>;
   const ruc = typeof data.ruc === 'string' ? data.ruc.trim() : '';
@@ -638,7 +639,7 @@ export const saveSunatCredentials = onCall({ ...appCheckOptions, secrets: [API_F
   }, 15_000, profile.tenantId);
 });
 
-export const uploadSunatCertificate = onCall({ ...appCheckOptions, secrets: [API_FACT_TOKEN], timeoutSeconds: 60 }, async (request) => {
+export const uploadSunatCertificate = onCall({ ...appCheckOptions, timeoutSeconds: 60 }, async (request) => {
   const profile = await requireAdmin(request);
   const data = request.data as Record<string, unknown>;
   const base64 = typeof data.base64 === 'string' ? data.base64 : '';

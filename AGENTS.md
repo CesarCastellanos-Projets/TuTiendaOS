@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Convenciones del proyecto D'ENZOZ.
+Convenciones del proyecto TuTiendaOS.
 
 ## Comandos
 

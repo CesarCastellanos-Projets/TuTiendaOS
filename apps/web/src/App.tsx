@@ -147,7 +147,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, BoundarySt
       <div className="grid min-h-dvh place-items-center bg-slate-50 p-4">
         <div className="card max-w-md p-6 text-center">
           <span className="price-tag mx-auto inline-block rounded px-3 py-1 font-display text-xl">
-            D'ENZOZ
+            TuTiendaOS
           </span>
           <h1 className="mt-4 font-semibold">Algo salió mal</h1>
           <p className="mt-2 break-all font-mono text-xs text-slate-500">

@@ -30,7 +30,7 @@ export async function createQuotationPdf(data: QuotationPdfData, company?: Compa
   }
   pdf.setFont('helvetica', 'bold');
   pdf.setTextColor(25, 39, 65);
-  const companyLines = pdf.splitTextToSize(company?.razonSocial || "D'ENZOZ", 180) as string[];
+  const companyLines = pdf.splitTextToSize(company?.razonSocial || "TuTiendaOS", 180) as string[];
   pdf.setFontSize(15);
   pdf.text(companyLines, left, y);
   y += companyLines.length * 6 + 2;

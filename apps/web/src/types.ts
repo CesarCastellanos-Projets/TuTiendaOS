@@ -401,7 +401,7 @@ export interface CompanyConfig {
 
 export const DEFAULT_COMPANY: CompanyConfig = {
   ruc: '',
-  razonSocial: "D'ENZOZ",
+  razonSocial: 'TuTiendaOS',
   serieFactura: 'F001',
   serieBoleta: 'B001',
   serieNota: 'NV01',
